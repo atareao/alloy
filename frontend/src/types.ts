@@ -27,12 +27,17 @@ export interface NotifEvent {
 }
 
 export interface AppConfig {
-  jwt_secret: string;
+  oidc_configured: boolean;
   port: number;
   auto_update_enabled: boolean;
   auto_update_interval_hours: number;
   telegram_configured: boolean;
+  telegram_token_set: boolean;
+  telegram_chat_id: string | null;
   matrix_configured: boolean;
+  matrix_token_set: boolean;
+  matrix_homeserver: string | null;
+  matrix_room: string | null;
   allowed_containers: string[] | null;
 }
 

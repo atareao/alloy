@@ -216,10 +216,12 @@ pub async fn state_worker(
 pub async fn auto_update_worker(
     docker: Docker,
     config: Config,
+    settings: Arc<Mutex<Settings>>,
     notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
 ) {
-    if !config.auto_update() {
+    let enabled = { settings.lock().await.auto_update_enabled.unwrap_or_else(|| config.auto_update()) };
+    if !enabled {
         return;
     }
     let hours = config.auto_update_interval();
@@ -241,7 +243,7 @@ pub async fn auto_update_worker(
                     status: "🤖 auto-updated".into(),
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                 });
-                notify_all(&config, &name, "🤖 auto-actualizado").await;
+                notify_all(&config, &settings, &name, "🤖 auto-actualizado").await;
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
                     image: image.clone(),
@@ -264,6 +266,7 @@ pub async fn auto_update_worker(
 pub async fn alerts_worker(
     docker: Docker,
     config: Config,
+    settings: Arc<Mutex<Settings>>,
     notif_tx: broadcast::Sender<NotifEvent>,
     alerts: Arc<Mutex<Vec<AlertConfig>>>,
 ) {
@@ -307,7 +310,7 @@ pub async fn alerts_worker(
                         status: "alert: gone".into(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, container_name, &msg, &alert.notify_via).await;
+                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via).await;
                 }
                 continue;
             };
@@ -331,7 +334,7 @@ pub async fn alerts_worker(
                         status: format!("alert: {}", current_state),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, container_name, &msg, &alert.notify_via).await;
+                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via).await;
                 }
                 // Transición: algo malo → running (recuperación)
                 if current_state == "running"
@@ -346,7 +349,7 @@ pub async fn alerts_worker(
                         status: "alert: recovered".into(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, container_name, &msg, &alert.notify_via).await;
+                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via).await;
                 }
             }
         }

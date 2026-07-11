@@ -144,6 +144,13 @@ async fn main() {
         s
     }));
 
+    let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(
+        load_json::<Settings>(FILE_SETTINGS)
+            .into_iter()
+            .next()
+            .unwrap_or_default(),
+    ));
+
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
     let state = AppState {
@@ -159,6 +166,7 @@ async fn main() {
         alerts: alerts.clone(),
         schedules: schedules.clone(),
         cached_containers: cached_containers.clone(),
+        settings: settings.clone(),
     };
 
     // Spawn workers
@@ -171,12 +179,14 @@ async fn main() {
     tokio::spawn(auto_update_worker(
         docker.clone(),
         config.clone(),
+        settings.clone(),
         notif_tx.clone(),
         update_history.clone(),
     ));
     tokio::spawn(alerts_worker(
         docker.clone(),
         config.clone(),
+        settings.clone(),
         notif_tx.clone(),
         alerts.clone(),
     ));

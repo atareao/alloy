@@ -11,7 +11,6 @@ import NotifToast from "./NotifToast";
 
 // ── Types ────────────────────────────────────────────────────
 type CheckAllPhase = 'idle' | 'checking' | 'updating';
-type UpdatingContainer = 'idle' | 'checking' | 'updating';
 
 interface CheckAllResults {
   total: number;
