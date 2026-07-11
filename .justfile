@@ -1,3 +1,13 @@
+# ═══════════════════════════════════════════════════════════════
+# Pre-commit checklist
+# ═══════════════════════════════════════════════════════════════
+# Ejecutar siempre en este orden antes de commitear:
+#   just check
+# ═══════════════════════════════════════════════════════════════
+
+check:
+    cd backend && cargo fmt -- --check && cargo clippy -- -D warnings
+
 user     := "atareao"
 name     := "alloy"
 version  := `vampus show`
@@ -23,6 +33,83 @@ build:
 push:
     @podman image push {{user}}/{{name}}:{{version}}
     @podman image push {{user}}/{{name}}:latest
+
+# ═══════════════════════════════════════════════════════════════
+# GitFlow recipes
+# ═══════════════════════════════════════════════════════════════
+
+# Iniciar una feature (crea rama desde develop)
+gf-feature feature_name:
+    git checkout develop
+    git pull origin develop
+    git checkout -b feature/{{feature_name}}
+
+# Finalizar una feature (merge a develop con --no-ff)
+gf-finish feature_name:
+    git checkout develop
+    git pull origin develop
+    git merge --no-ff feature/{{feature_name}} -m "feat: merge feature/{{feature_name}} into develop"
+    git push origin develop
+    git branch -d feature/{{feature_name}}
+    @echo "✅ Feature {{feature_name}} merged into develop and branch deleted"
+
+# Iniciar un release (crea rama desde develop)
+gf-release version:
+    git checkout develop
+    git pull origin develop
+    git checkout -b release/{{version}}
+
+# Publicar un release (merge a main + develop + tag)
+gf-publish version:
+    #!/bin/fish
+    # Pre-commit checks
+    cd backend && cargo fmt -- --check; and cargo clippy -- -D warnings
+    or begin
+        echo "❌ Pre-commit checks failed. Aborting."
+        exit 1
+    end
+    # Merge a main
+    git checkout main
+    git pull origin main
+    git merge --no-ff release/$argv[1] -m "release: v$argv[1]"
+    git tag -a "v$argv[1]" -m "Version $argv[1]"
+    # Merge a develop
+    git checkout develop
+    git pull origin develop
+    git merge --no-ff release/$argv[1] -m "release: merge v$argv[1] into develop"
+    # Push both
+    git push origin main --tags
+    git push origin develop
+    git branch -d release/$argv[1]
+    echo "✅ Release v$argv[1] published to main and merged back to develop"
+
+# Iniciar un hotfix (crea rama desde main)
+gf-hotfix desc:
+    git checkout main
+    git pull origin main
+    git checkout -b hotfix/{{desc}}
+
+# Publicar un hotfix (merge a main + develop + tag)
+gf-hotfix-publish desc version:
+    #!/bin/fish
+    # Merge a main
+    git checkout main
+    git pull origin main
+    git merge --no-ff hotfix/$argv[1] -m "hotfix: $argv[1]"
+    git tag -a "$argv[2]" -m "Hotfix $argv[2]"
+    # Merge a develop
+    git checkout develop
+    git pull origin develop
+    git merge --no-ff hotfix/$argv[1] -m "hotfix: merge $argv[1] into develop"
+    # Push both
+    git push origin main --tags
+    git push origin develop
+    git branch -d hotfix/$argv[1]
+    echo "✅ Hotfix $argv[1] published"
+
+# Mostar el árbol de ramas
+gf-graph:
+    git log --oneline --graph --all --decorate=short -30
 
 upgrade:
     #!/bin/fish
