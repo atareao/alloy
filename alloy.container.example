@@ -2,6 +2,10 @@
 # Copiar a ~/.config/containers/systemd/alloy.container
 # Luego: systemctl --user daemon-reload && systemctl --user start alloy
 #
+# ═══════════════════════════════════════════════════════════
+# IMPORTANTE: Edita este fichero con tus valores reales
+# ═══════════════════════════════════════════════════════════
+#
 # Build de la imagen (desde la raíz del proyecto):
 #   cd /data/rust/alloy && just build
 # o manualmente:
@@ -27,19 +31,16 @@ Volume=/run/user/1000/podman/podman.sock:/var/run/docker.sock:Z
 # Datos persistentes (JSON: updates_history, alerts, health_checks, schedules)
 Volume=%h/.local/share/alloy/data:/app/data:Z
 
-# Configuración opcional — montar config.yaml personalizada
-#Volume=%h/.config/alloy/config.yaml:/app/config.yaml:Z,ro
-
 # Puerto de la interfaz web
 PublishPort=3066:3066
 
 # ═══════════════════════════════════════════════════════════
-# Variables de entorno — configuración mínima
+# Variables de entorno — CAMBIA estos valores
 # ═══════════════════════════════════════════════════════════
 
 # OIDC — OBLIGATORIO (PocketID o cualquier proveedor OIDC)
 Environment=OIDC_ISSUER_URL=https://auth.ejemplo.com
-Environment=OIDC_CLIENT_ID=alloy
+Environment=OIDC_CLIENT_ID=cambia-esto
 Environment=OIDC_CLIENT_SECRET=cambia-esto-en-produccion
 Environment=OIDC_REDIRECT_URL=https://alloy.ejemplo.com/api/auth/callback
 
@@ -47,11 +48,11 @@ Environment=OIDC_REDIRECT_URL=https://alloy.ejemplo.com/api/auth/callback
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
 
 # Opcional: puerto (por defecto 3066)
-Environment=PORT=3066
+#Environment=PORT=3066
 
 # Opcional: escucha en todas las interfaces
-Environment=HOST=0.0.0.0
-Environment=RUST_LOG=debug
+#Environment=HOST=0.0.0.0
+#Environment=RUST_LOG=debug
 
 # ═══════════════════════════════════════════════════════════
 # Notificaciones (opcional) — Telegram

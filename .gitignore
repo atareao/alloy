@@ -23,3 +23,6 @@ Thumbs.db
 backend/config.yaml
 *.log
 .env
+
+# Quadlet local (contiene credenciales reales)
+alloy.container
