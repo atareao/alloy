@@ -3,16 +3,10 @@ import { ActionIcon, AppShell, Badge, Button, Container, Group, Title, Tooltip, 
 import type { ContainerInfo } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
-import LogsPage from "./components/LogsPage";
-import StatsPage from "./components/StatsPage";
-import VolumesPage from "./components/VolumesPage";
-import NetworksPage from "./components/NetworksPage";
 import ConfigPage from "./components/ConfigPage";
-import TerminalPage from "./TerminalPage";
 import StacksPage from "./StacksPage";
 import HistoryPage from "./HistoryPage";
 import AlertsPage from "./AlertsPage";
-import HealthChecksPage from "./HealthChecksPage";
 import SchedulePage from "./SchedulePage";
 
 interface AppProps {
@@ -75,7 +69,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     <AppShell padding="md">
       <Container size="lg" py="md">
         <Group justify="space-between" mb="lg">
-          <Title order={2}>🐳 Cabina de Mando</Title>
+          <Title order={2}>
+            <img src="/favicon.svg" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
+            Alloy
+          </Title>
           <Group>
             {user && <Badge size="lg" variant="light" color="gray">{user.name}</Badge>}
             <Badge size="lg" variant="light" color="blue">{containers.length} containers</Badge>
@@ -91,29 +88,17 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         <Tabs defaultValue="dashboard">
           <Tabs.List mb="md">
             <Tabs.Tab value="dashboard">📊 Dashboard</Tabs.Tab>
-            <Tabs.Tab value="stats">📈 Stats</Tabs.Tab>
-            <Tabs.Tab value="terminal">🖥️ Terminal</Tabs.Tab>
-            <Tabs.Tab value="logs">📋 Logs</Tabs.Tab>
             <Tabs.Tab value="stacks">📦 Stacks</Tabs.Tab>
             <Tabs.Tab value="history">📜 Historial</Tabs.Tab>
-            <Tabs.Tab value="volumes">🗄️ Volúmenes</Tabs.Tab>
-            <Tabs.Tab value="networks">🌐 Redes</Tabs.Tab>
             <Tabs.Tab value="alerts">🔔 Alertas</Tabs.Tab>
-            <Tabs.Tab value="health">❤️ Health</Tabs.Tab>
             <Tabs.Tab value="schedule">⏰ Planif</Tabs.Tab>
             <Tabs.Tab value="config">⚙️ Config</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="dashboard"><DashboardPage /></Tabs.Panel>
-          <Tabs.Panel value="stats"><StatsPage /></Tabs.Panel>
-          <Tabs.Panel value="terminal"><TerminalPage containers={containers} /></Tabs.Panel>
-          <Tabs.Panel value="logs"><LogsPage containers={containers} /></Tabs.Panel>
           <Tabs.Panel value="stacks"><StacksPage /></Tabs.Panel>
           <Tabs.Panel value="history"><HistoryPage /></Tabs.Panel>
-          <Tabs.Panel value="volumes"><VolumesPage /></Tabs.Panel>
-          <Tabs.Panel value="networks"><NetworksPage /></Tabs.Panel>
           <Tabs.Panel value="alerts"><AlertsPage containers={containers} /></Tabs.Panel>
-          <Tabs.Panel value="health"><HealthChecksPage containers={containers} /></Tabs.Panel>
           <Tabs.Panel value="schedule"><SchedulePage containers={containers} /></Tabs.Panel>
           <Tabs.Panel value="config"><ConfigPage /></Tabs.Panel>
         </Tabs>

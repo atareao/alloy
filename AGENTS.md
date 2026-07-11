@@ -1,8 +1,8 @@
-# AGENTS.md — Cabina de Mando Docker
+# AGENTS.md — Alloy
 
 ## Project Overview
 
-**Cabina de Mando Docker** (`alloy`) is a full-featured Docker management dashboard with a Rust/Axum backend and a React/TypeScript/Vite frontend. It provides real-time container monitoring, management, and automation via SSE streams, with optional OIDC authentication and Telegram/Matrix notifications.
+**Alloy** is a full-featured Docker management dashboard with a Rust/Axum backend and a React/TypeScript/Vite frontend. It provides real-time container monitoring, management, and automation via SSE streams, with optional OIDC authentication and Telegram/Matrix notifications.
 
 ## Tech Stack
 

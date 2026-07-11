@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize)]
@@ -22,53 +22,6 @@ pub struct ContainerInfo {
 #[derive(Clone, Debug, Serialize)]
 pub struct StateEvent {
     pub containers: Vec<ContainerInfo>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ContainerStats {
-    pub name: String,
-    pub cpu_percent: f64,
-    pub memory_usage_mb: f64,
-    pub memory_limit_mb: f64,
-    pub network_rx_kb: f64,
-    pub network_tx_kb: f64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct PruneResult {
-    pub containers_pruned: u64,
-    pub images_pruned: u64,
-    pub networks_pruned: u64,
-    pub volumes_pruned: u64,
-    pub space_reclaimed_bytes: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct VolumeInfo {
-    pub name: String,
-    pub driver: String,
-    pub mountpoint: String,
-    pub size: Option<i64>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct NetworkInfo {
-    pub name: String,
-    pub driver: String,
-    pub scope: String,
-    pub subnet: Option<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct DockerInfoResp {
-    pub version: String,
-    pub os: String,
-    pub arch: String,
-    pub containers_total: i64,
-    pub containers_running: i64,
-    pub containers_paused: i64,
-    pub containers_stopped: i64,
-    pub images: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,8 +58,6 @@ pub struct SessionClaims {
     pub exp: usize,
 }
 
-/// Claims del JWT emitido por PocketID / OIDC Provider.
-/// Se validan contra JWKS del issuer.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct JwtClaims {
     pub sub: String,
@@ -155,11 +106,6 @@ pub struct ContainerNetworkInfo {
     pub gateway: String,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct TerminalInput {
-    pub input: String,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct StackService {
     pub service: String,
@@ -204,56 +150,16 @@ pub struct UpdateHistoryEntry {
 pub struct AlertConfig {
     #[serde(default = "default_alert_id")]
     pub id: String,
-    pub r#type: String,
     pub container: String,
-    #[serde(default)]
-    pub threshold: f64,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub notify_via: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HealthCheck {
-    #[serde(default = "default_hc_id")]
-    pub id: String,
-    pub r#type: String,
-    pub target: String,
-    #[serde(default = "default_interval")]
-    pub interval_secs: u64,
-    pub container: Option<String>,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_result: Option<HealthCheckResult>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct HealthCheckResult {
-    pub target: String,
-    pub status: String,
-    pub latency_ms: u64,
-    pub last_checked: String,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct CreateHealthCheck {
-    pub r#type: String,
-    pub target: String,
-    #[serde(default = "default_interval")]
-    pub interval_secs: u64,
-    pub container: Option<String>,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct CreateAlert {
-    pub r#type: String,
     pub container: String,
-    #[serde(default)]
-    pub threshold: f64,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -297,31 +203,20 @@ pub fn default_alert_id() -> String {
 pub fn default_enabled() -> bool {
     true
 }
-pub fn default_hc_id() -> String {
-    Uuid::new_v4().to_string()
-}
-pub fn default_interval() -> u64 {
-    60
-}
 pub fn default_schedule_id() -> String {
     Uuid::new_v4().to_string()
 }
-
-#[derive(Clone, Default)]
-pub struct PrevCpuData {
-    pub total_usage: u64,
-}
-pub type CpuStatsCache = Arc<Mutex<HashMap<String, PrevCpuData>>>;
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 
 // ── Constants ──────────────────────────────────────────────
-pub const FILE_UPDATES_HISTORY: &str = "updates_history.json";
-pub const FILE_ALERTS: &str = "alerts.json";
-pub const FILE_HEALTH_CHECKS: &str = "health_checks.json";
-pub const FILE_SCHEDULES: &str = "schedules.json";
+pub const FILE_UPDATES_HISTORY: &str = "data/updates_history.json";
+pub const FILE_ALERTS: &str = "data/alerts.json";
+pub const FILE_SCHEDULES: &str = "data/schedules.json";
+
+pub const ALL_CONTAINERS: &str = "*";
 
 pub const LABEL_COMPOSE_PROJECT: &str = "com.docker.compose.project";
 pub const LABEL_COMPOSE_SERVICE: &str = "com.docker.compose.service";
@@ -406,18 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_hc_id_is_uuid() {
-        let id = default_hc_id();
-        assert!(!id.is_empty());
-        assert!(Uuid::parse_str(&id).is_ok());
-    }
-
-    #[test]
-    fn test_default_interval() {
-        assert_eq!(default_interval(), 60);
-    }
-
-    #[test]
     fn test_default_schedule_id_is_uuid() {
         let id = default_schedule_id();
         assert!(!id.is_empty());
@@ -455,13 +338,10 @@ mod tests {
     fn test_alert_config_defaults() {
         let alert = AlertConfig {
             id: String::new(),
-            r#type: "cpu".into(),
             container: "web".into(),
-            threshold: 0.0,
             enabled: false,
             notify_via: vec![],
         };
-        assert_eq!(alert.r#type, "cpu");
         assert_eq!(alert.container, "web");
     }
 }

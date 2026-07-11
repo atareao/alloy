@@ -11,7 +11,6 @@ import {
   Switch,
   Table,
   Text,
-  TextInput,
 } from '@mantine/core'
 
 // ═══════════════════════════════════════════════════════════════
@@ -26,169 +25,158 @@ function apiFetch(path: string, opts?: RequestInit) {
   })
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════
-
 interface AlertRule {
-  id: number
-  type: string
+  id: string
   container: string
-  threshold: string
   enabled: boolean
-  notify_via: string
+  notify_via: string[]
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Page: Alerts (alertas custom)
-// ═══════════════════════════════════════════════════════════════
+interface AppConfig {
+  oidc_configured: boolean
+  port: number
+  auto_update_enabled: boolean
+  auto_update_interval_hours: number
+  telegram_configured: boolean
+  matrix_configured: boolean
+  allowed_containers: string[] | null
+}
 
-interface AlertsPageProps {
+interface AlertPageProps {
   containers: { name: string }[]
 }
 
-export default function AlertsPage({ containers }: AlertsPageProps) {
+const NOTIFY_OPTIONS = [
+  { value: 'telegram', label: '📱 Telegram' },
+  { value: 'matrix', label: '💬 Matrix' },
+]
+
+export default function AlertsPage({ containers }: AlertPageProps) {
   const [alerts, setAlerts] = useState<AlertRule[]>([])
+  const [config, setConfig] = useState<AppConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  // New alert form state
-  const [newType, setNewType] = useState<string | null>('resource')
   const [newContainer, setNewContainer] = useState<string | null>(null)
-  const [newThreshold, setNewThreshold] = useState('')
-  const [newNotifyVia, setNewNotifyVia] = useState<string | null>('telegram')
   const [newEnabled, setNewEnabled] = useState(true)
+  const [newNotify, setNewNotify] = useState<string[]>([])
 
   const loadAlerts = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await apiFetch('/api/alerts')
-      setAlerts(await res.json())
+      const [alertsRes, configRes] = await Promise.all([
+        apiFetch('/api/alerts'),
+        apiFetch('/api/config'),
+      ])
+      setAlerts(await alertsRes.json())
+      setConfig(await configRes.json())
     } catch { /* ignore */ }
     setLoading(false)
   }, [])
 
   useEffect(() => { loadAlerts() }, [loadAlerts])
 
+  const availableChannels = NOTIFY_OPTIONS.filter((opt) => {
+    if (!config) return false
+    if (opt.value === 'telegram') return config.telegram_configured
+    if (opt.value === 'matrix') return config.matrix_configured
+    return false
+  })
+
+  const hasNotificationChannels = availableChannels.length > 0
+
   const handleCreate = async () => {
-    if (!newType) return
+    if (!newContainer) return
     setSaving(true)
     try {
       const res = await apiFetch('/api/alerts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: newType,
-          container: newContainer || '',
-          threshold: newThreshold,
+          container: newContainer,
           enabled: newEnabled,
-          notify_via: newNotifyVia || 'telegram',
+          notify_via: newNotify,
         }),
       })
       if (res.ok) {
         await loadAlerts()
         setShowModal(false)
-        resetForm()
+        setNewContainer(null)
+        setNewEnabled(true)
+        setNewNotify([])
       }
     } catch { /* ignore */ }
     setSaving(false)
   }
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     try {
       await apiFetch(`/api/alerts/${id}`, { method: 'DELETE' })
       setAlerts((prev) => prev.filter((a) => a.id !== id))
     } catch { /* ignore */ }
   }
 
-  const resetForm = () => {
-    setNewType('resource')
-    setNewContainer(null)
-    setNewThreshold('')
-    setNewNotifyVia('telegram')
-    setNewEnabled(true)
-  }
-
   if (loading) return <Group justify="center" py="xl"><Loader /></Group>
-
-  const typeColor = (type: string) => {
-    switch (type) {
-      case 'resource': return 'orange'
-      case 'status': return 'blue'
-      case 'custom': return 'grape'
-      default: return 'gray'
-    }
-  }
 
   return (
     <Stack>
       <Paper shadow="sm" p="md" mb="md" withBorder>
         <Group justify="space-between">
           <Text size="sm" c="dimmed">
-            🔔 Alertas · {alerts.length} reglas
+            🔔 Alertas de estado · {alerts.length} monitoreados
           </Text>
           <Button onClick={() => setShowModal(true)} variant="filled">
-            + Nueva alerta
+            + Monitorear container
           </Button>
         </Group>
       </Paper>
 
       <Modal
         opened={showModal}
-        onClose={() => { setShowModal(false); resetForm() }}
-        title="➕ Nueva alerta"
+        onClose={() => { setShowModal(false); setNewContainer(null); setNewEnabled(true); setNewNotify([]) }}
+        title="➕ Monitorear container"
         size="md"
       >
         <Stack>
-          <Select
-            label="Tipo"
-            data={[
-              { value: 'resource', label: '💾 Recurso (CPU/RAM)' },
-              { value: 'status', label: '🔄 Estado' },
-              { value: 'custom', label: '⚙️ Personalizada' },
-            ]}
-            value={newType}
-            onChange={setNewType}
-          />
+          <Text size="sm" c="dimmed">
+            Recibirás una notificación cuando el container cambie a un estado anómalo
+            (exited, dead, paused, restarting) y cuando se recupere (vuelva a running).
+          </Text>
           <Select
             label="Container"
-            placeholder="Todos los containers"
-            data={[
-              { value: '', label: 'Todos los containers' },
-              ...containers.map((c) => ({ value: c.name, label: c.name })),
-            ]}
+            placeholder="Selecciona un container"
+            data={containers.map((c) => ({ value: c.name, label: c.name }))}
             value={newContainer}
             onChange={setNewContainer}
             searchable
             clearable
           />
-          <TextInput
-            label="Umbral"
-            placeholder="p.ej. cpu>80, memory>500mb"
-            value={newThreshold}
-            onChange={(e) => setNewThreshold(e.currentTarget.value)}
-          />
-          <Select
-            label="Notificar vía"
-            data={[
-              { value: 'telegram', label: '📱 Telegram' },
-              { value: 'matrix', label: '💬 Matrix' },
-              { value: 'both', label: 'Ambos' },
-            ]}
-            value={newNotifyVia}
-            onChange={setNewNotifyVia}
-          />
+          {hasNotificationChannels ? (
+            <Select
+              label="Notificar vía"
+              placeholder="Selecciona canales"
+              data={availableChannels}
+              value={newNotify.length === 1 ? newNotify[0] : null}
+              onChange={(val) => setNewNotify(val ? [val] : [])}
+              clearable
+            />
+          ) : (
+            <Text size="sm" c="orange">
+              ⚠️ No hay canales de notificación configurados.
+              Para recibir alertas, configura Telegram o Matrix en las variables de entorno.
+            </Text>
+          )}
           <Switch
-            label="Activada"
+            label="Activado"
             checked={newEnabled}
             onChange={(e) => setNewEnabled(e.currentTarget.checked)}
           />
           <Group justify="flex-end" mt="md">
-            <Button variant="default" onClick={() => { setShowModal(false); resetForm() }}>
+            <Button variant="default" onClick={() => { setShowModal(false); setNewContainer(null); setNewEnabled(true); setNewNotify([]) }}>
               Cancelar
             </Button>
-            <Button onClick={handleCreate} loading={saving}>
+            <Button onClick={handleCreate} loading={saving} disabled={!newContainer}>
               Crear alerta
             </Button>
           </Group>
@@ -198,8 +186,8 @@ export default function AlertsPage({ containers }: AlertsPageProps) {
       {alerts.length === 0 ? (
         <Paper shadow="sm" p="xl" withBorder>
           <Text ta="center" c="dimmed">
-            No hay alertas configuradas. Crea una alerta para recibir notificaciones
-            cuando un container supere un umbral o cambie de estado.
+            No hay containers monitoreados. Añade uno para recibir notificaciones
+            cuando cambie de estado.
           </Text>
         </Paper>
       ) : (
@@ -207,9 +195,7 @@ export default function AlertsPage({ containers }: AlertsPageProps) {
           <Table striped highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Tipo</Table.Th>
                 <Table.Th>Container</Table.Th>
-                <Table.Th>Umbral</Table.Th>
                 <Table.Th>Notificar vía</Table.Th>
                 <Table.Th>Estado</Table.Th>
                 <Table.Th>Acción</Table.Th>
@@ -219,22 +205,24 @@ export default function AlertsPage({ containers }: AlertsPageProps) {
               {alerts.map((alert) => (
                 <Table.Tr key={alert.id}>
                   <Table.Td>
-                    <Badge color={typeColor(alert.type)}>{alert.type}</Badge>
+                    <Text size="sm">{alert.container}</Text>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm">{alert.container || 'Todos'}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" style={{ fontFamily: 'monospace' }}>
-                      {alert.threshold}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge variant="light" color="blue">{alert.notify_via}</Badge>
+                    {alert.notify_via.length > 0 ? (
+                      <Group gap={4}>
+                        {alert.notify_via.map((ch) => (
+                          <Badge key={ch} variant="light" color="blue" size="sm">
+                            {ch === 'telegram' ? '📱 Telegram' : '💬 Matrix'}
+                          </Badge>
+                        ))}
+                      </Group>
+                    ) : (
+                      <Text size="xs" c="dimmed">—</Text>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     <Badge color={alert.enabled ? 'green' : 'gray'}>
-                      {alert.enabled ? 'Activa' : 'Inactiva'}
+                      {alert.enabled ? 'Monitoreando' : 'Inactivo'}
                     </Badge>
                   </Table.Td>
                   <Table.Td>
