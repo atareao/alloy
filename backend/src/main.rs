@@ -36,6 +36,11 @@ async fn main() {
         )
         .init();
 
+    // jsonwebtoken 10 requires explicit CryptoProvider
+    jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER
+        .install_default()
+        .expect("failed to install jsonwebtoken CryptoProvider");
+
     let config = Config::load();
 
     // ═══════════════════════════════════════════════════════
