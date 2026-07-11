@@ -1,0 +1,226 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+
+use crate::models::{AlertConfig, HealthCheck, ScheduleTask};
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Config {
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub scan_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub allowed_containers: Option<Vec<String>>,
+    #[serde(default)]
+    pub auto_update_enabled: Option<bool>,
+    #[serde(default)]
+    pub auto_update_interval_hours: Option<u64>,
+    #[serde(default)]
+    pub telegram_token: Option<String>,
+    #[serde(default)]
+    pub telegram_chat_id: Option<String>,
+    #[serde(default)]
+    pub matrix_homeserver: Option<String>,
+    #[serde(default)]
+    pub matrix_token: Option<String>,
+    #[serde(default)]
+    pub matrix_room: Option<String>,
+    #[serde(default)]
+    pub oidc_issuer_url: Option<String>,
+    #[serde(default)]
+    pub oidc_client_id: Option<String>,
+    #[serde(default)]
+    pub oidc_client_secret: Option<String>,
+    #[serde(default)]
+    pub oidc_redirect_url: Option<String>,
+    #[serde(default)]
+    pub alerts: Option<Vec<AlertConfig>>,
+    #[serde(default)]
+    pub schedule: Option<Vec<ScheduleTask>>,
+    #[serde(default)]
+    pub health_checks: Option<Vec<HealthCheck>>,
+}
+
+impl Config {
+    pub fn load() -> Self {
+        let mut cfg: Config = fs::read_to_string("config.yaml")
+            .ok()
+            .and_then(|c| serde_yaml::from_str(&c).ok())
+            .unwrap_or_default();
+        if let Ok(v) = std::env::var("HOST") {
+            cfg.host = Some(v);
+        }
+        if let Ok(v) = std::env::var("PORT") {
+            cfg.port = v.parse().ok();
+        }
+        if let Ok(v) = std::env::var("OIDC_ISSUER_URL") {
+            cfg.oidc_issuer_url = Some(v);
+        }
+        if let Ok(v) = std::env::var("OIDC_CLIENT_ID") {
+            cfg.oidc_client_id = Some(v);
+        }
+        if let Ok(v) = std::env::var("OIDC_CLIENT_SECRET") {
+            cfg.oidc_client_secret = Some(v);
+        }
+        if let Ok(v) = std::env::var("OIDC_REDIRECT_URL") {
+            cfg.oidc_redirect_url = Some(v);
+        }
+        if let Ok(v) = std::env::var("TELEGRAM_TOKEN") {
+            cfg.telegram_token = Some(v);
+        }
+        if let Ok(v) = std::env::var("TELEGRAM_CHAT_ID") {
+            cfg.telegram_chat_id = Some(v);
+        }
+        if let Ok(v) = std::env::var("MATRIX_HOMESERVER") {
+            cfg.matrix_homeserver = Some(v);
+        }
+        if let Ok(v) = std::env::var("MATRIX_TOKEN") {
+            cfg.matrix_token = Some(v);
+        }
+        if let Ok(v) = std::env::var("MATRIX_ROOM") {
+            cfg.matrix_room = Some(v);
+        }
+        cfg
+    }
+
+    pub fn host(&self) -> &str {
+        self.host.as_deref().unwrap_or("0.0.0.0")
+    }
+    pub fn port(&self) -> u16 {
+        self.port.unwrap_or(3066)
+    }
+    pub fn scan_interval(&self) -> u64 {
+        self.scan_interval_secs.unwrap_or(5)
+    }
+    pub fn auto_update(&self) -> bool {
+        self.auto_update_enabled.unwrap_or(false)
+    }
+    pub fn auto_update_interval(&self) -> u64 {
+        self.auto_update_interval_hours.unwrap_or(6)
+    }
+
+    pub fn oidc_issuer(&self) -> &str {
+        self.oidc_issuer_url
+            .as_deref()
+            .expect("OIDC_ISSUER_URL is required")
+    }
+    pub fn oidc_client_id(&self) -> &str {
+        self.oidc_client_id
+            .as_deref()
+            .expect("OIDC_CLIENT_ID is required")
+    }
+    pub fn oidc_client_secret(&self) -> &str {
+        self.oidc_client_secret
+            .as_deref()
+            .expect("OIDC_CLIENT_SECRET is required")
+    }
+    pub fn oidc_redirect_url(&self) -> &str {
+        self.oidc_redirect_url
+            .as_deref()
+            .expect("OIDC_REDIRECT_URL is required")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_host() {
+        let cfg = Config::default();
+        assert_eq!(cfg.host(), "0.0.0.0");
+    }
+
+    #[test]
+    fn test_custom_host() {
+        let cfg = Config {
+            host: Some("127.0.0.1".into()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.host(), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_default_port() {
+        let cfg = Config::default();
+        assert_eq!(cfg.port(), 3066);
+    }
+
+    #[test]
+    fn test_custom_port() {
+        let cfg = Config {
+            port: Some(8080),
+            ..Default::default()
+        };
+        assert_eq!(cfg.port(), 8080);
+    }
+
+    #[test]
+    fn test_default_scan_interval() {
+        let cfg = Config::default();
+        assert_eq!(cfg.scan_interval(), 5);
+    }
+
+    #[test]
+    fn test_custom_scan_interval() {
+        let cfg = Config {
+            scan_interval_secs: Some(10),
+            ..Default::default()
+        };
+        assert_eq!(cfg.scan_interval(), 10);
+    }
+
+    #[test]
+    fn test_default_auto_update_disabled() {
+        let cfg = Config::default();
+        assert!(!cfg.auto_update());
+    }
+
+    #[test]
+    fn test_auto_update_enabled() {
+        let cfg = Config {
+            auto_update_enabled: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.auto_update());
+    }
+
+    #[test]
+    fn test_default_auto_update_interval() {
+        let cfg = Config::default();
+        assert_eq!(cfg.auto_update_interval(), 6);
+    }
+
+    #[test]
+    fn test_custom_auto_update_interval() {
+        let cfg = Config {
+            auto_update_interval_hours: Some(12),
+            ..Default::default()
+        };
+        assert_eq!(cfg.auto_update_interval(), 12);
+    }
+
+    #[test]
+    #[should_panic(expected = "OIDC_ISSUER_URL is required")]
+    fn test_oidc_issuer_panics_when_empty() {
+        let cfg = Config::default();
+        cfg.oidc_issuer();
+    }
+
+    #[test]
+    fn test_config_yaml_deserialize() {
+        let yaml = r#"
+host: "127.0.0.1"
+port: 8080
+scan_interval_secs: 10
+auto_update_enabled: true
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.host(), "127.0.0.1");
+        assert_eq!(cfg.port(), 8080);
+        assert_eq!(cfg.scan_interval(), 10);
+        assert!(cfg.auto_update());
+    }
+}

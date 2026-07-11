@@ -1,0 +1,42 @@
+# ── Cabina de Mando Docker — Configuración ───────────────────
+# Solo autenticación OIDC (estilo PocketID)
+
+# Puerto del servidor (default: 3066)
+port: 3066
+
+# ═══════════════════════════════════════════════════════════
+# OIDC — OBLIGATORIO (no hay fallback JWT simple)
+# ═══════════════════════════════════════════════════════════
+# Se pueden configurar via variables de entorno:
+#   OIDC_ISSUER_URL, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URL
+#oidc_issuer_url: "https://auth.ejemplo.com"
+#oidc_client_id: "alloy"
+#oidc_client_secret: "..."
+#oidc_redirect_url: "https://alloy.ejemplo.com/api/auth/callback"
+
+# Intervalo de escaneo SSE en segundos (default: 5)
+scan_interval_secs: 5
+
+# Lista blanca de containers a monitorizar (vacío = todos)
+# allowed_containers:
+#   - traefik
+#   - ollama
+
+# ── Auto-update ──────────────────────────────────────────────
+
+# Activar actualización automática
+auto_update_enabled: false
+
+# Cada cuántas horas checkear registry (default: 6)
+auto_update_interval_hours: 6
+
+# ── Notificaciones ───────────────────────────────────────────
+
+# Telegram (opcional)
+# telegram_token: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+# telegram_chat_id: "-1001234567890"
+
+# Matrix (opcional)
+# matrix_homeserver: "https://matrix.example.com"
+# matrix_token: "syt_abcdefghijklmnopqrstuvwxyz"
+# matrix_room: "!roomid:example.com"
