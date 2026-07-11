@@ -9,6 +9,24 @@ import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData } from "../
 import { apiFetch } from "../api";
 import NotifToast from "./NotifToast";
 
+// ── Types ────────────────────────────────────────────────────
+type CheckAllPhase = 'idle' | 'checking' | 'updating';
+type UpdatingContainer = 'idle' | 'checking' | 'updating';
+
+interface CheckAllResults {
+  total: number;
+  updated: number;    // containers with available update
+  uptodate: number;   // already up-to-date
+  failed: number;     // check failed
+  errors: string[];
+}
+
+interface UpdateAllResults {
+  done: number;
+  failed: number;
+  errors: string[];
+}
+
 export default function DashboardPage() {
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [progress, setProgress] = useState<Map<string, UpdateProgress>>(new Map());
@@ -22,14 +40,20 @@ export default function DashboardPage() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [actionNotif, setActionNotif] = useState<{ container: string; action: string; error?: string } | null>(null);
   const [checkedUpdates, setCheckedUpdates] = useState<Record<string, boolean>>({});
-  const [isCheckingAll, setIsCheckingAll] = useState(false);
-  const [checkProgress, setCheckProgress] = useState({ current: 0, total: 0 });
-  const [currentCheckImage, setCurrentCheckImage] = useState<string>("");
-  const cancelCheckRef = useRef(false);
-  const [checkResults, setCheckResults] = useState<{ updated: number; uptodate: number; failed: number; errors: string[] }>({ updated: 0, uptodate: 0, failed: 0, errors: [] });
-  const [showCheckSummary, setShowCheckSummary] = useState(false);
+  const [singleCheckLoading, setSingleCheckLoading] = useState<string | null>(null);
+
+  // Check all / Update all state
+  const [batchPhase, setBatchPhase] = useState<CheckAllPhase>('idle');
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+  const [batchCurrentItem, setBatchCurrentItem] = useState("");
+  const cancelBatchRef = useRef(false);
+  const [checkResults, setCheckResults] = useState<CheckAllResults>({ total: 0, updated: 0, uptodate: 0, failed: 0, errors: [] });
+  const [updateResults, setUpdateResults] = useState<UpdateAllResults>({ done: 0, failed: 0, errors: [] });
+  const [showSummary, setShowSummary] = useState(false);
 
   const isMobile = useMediaQuery("(max-width: 768px)");
+
+  // ── Data fetching ──────────────────────────────────────────
 
   useEffect(() => {
     apiFetch("/api/containers")
@@ -76,27 +100,57 @@ export default function DashboardPage() {
     return () => evtSource.close();
   }, []);
 
-  const updateContainer = async (name: string) => {
-    setUpdating(name);
-    try { await apiFetch(`/api/update/${encodeURIComponent(name)}`, { method: "POST" }); }
-    catch { setUpdating(null); }
+  // ── Single container actions ───────────────────────────────
+
+  const checkSingleContainer = async (name: string) => {
+    setSingleCheckLoading(name);
+    try {
+      const res = await apiFetch(`/api/check-update/${encodeURIComponent(name)}`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        const hasUpdate = data.has_update === true;
+        setCheckedUpdates(prev => ({ ...prev, [name]: hasUpdate }));
+        setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: c.has_update || hasUpdate } : c));
+        setActionNotif({
+          container: name,
+          action: hasUpdate ? "actualización disponible ⬆️" : "está actualizado ✅",
+        });
+        setTimeout(() => setActionNotif(null), 3000);
+      } else {
+        setActionNotif({ container: name, action: "error al comprobar", error: `HTTP ${res.status}` });
+        setTimeout(() => setActionNotif(null), 4000);
+      }
+    } catch (e: any) {
+      setActionNotif({ container: name, action: "error al comprobar", error: e.message });
+      setTimeout(() => setActionNotif(null), 4000);
+    }
+    setSingleCheckLoading(null);
   };
 
-  const updateAll = async () => {
-    setUpdating("__all__");
+  const updateSingleContainer = async (name: string) => {
+    setUpdating(name);
     try {
-      const res = await apiFetch("/api/update-all", { method: "POST" });
-      setProgress(new Map((await res.json()).map((r: UpdateProgress) => [r.container, r])));
-    } catch { /* ignore */ }
+      await apiFetch(`/api/update/${encodeURIComponent(name)}`, { method: "POST" });
+      setActionNotif({ container: name, action: "actualizado ✅" });
+      setTimeout(() => setActionNotif(null), 3000);
+    } catch {
+      setActionNotif({ container: name, action: "error al actualizar", error: "fallo en la petición" });
+      setTimeout(() => setActionNotif(null), 4000);
+    }
     setUpdating(null);
   };
 
+  // ── Check all ──────────────────────────────────────────────
+
   const checkAll = async () => {
-    setIsCheckingAll(true);
-    cancelCheckRef.current = false;
-    setCheckResults({ updated: 0, uptodate: 0, failed: 0, errors: [] });
-    setCheckProgress({ current: 0, total: containers.length });
-    setCurrentCheckImage("");
+    const initialContainers = containers;
+    cancelBatchRef.current = false;
+    setBatchPhase('checking');
+    setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, errors: [] });
+    setUpdateResults({ done: 0, failed: 0, errors: [] });
+    setBatchProgress({ current: 0, total: initialContainers.length });
+    setBatchCurrentItem("");
+    setShowSummary(false);
 
     const updatedUpdates: Record<string, boolean> = {};
     let updatedCount = 0;
@@ -104,13 +158,13 @@ export default function DashboardPage() {
     let failedCount = 0;
     const errors: string[] = [];
 
-    for (let i = 0; i < containers.length; i++) {
-      if (cancelCheckRef.current) break;
+    for (let i = 0; i < initialContainers.length; i++) {
+      if (cancelBatchRef.current) break;
 
-      const c = containers[i];
+      const c = initialContainers[i];
       const imgLabel = `${c.image}:${c.image_tag}`;
-      setCurrentCheckImage(imgLabel);
-      setCheckProgress(prev => ({ ...prev, current: i + 1 }));
+      setBatchCurrentItem(`🔍 ${c.name} — ${imgLabel}`);
+      setBatchProgress(prev => ({ ...prev, current: i + 1 }));
 
       try {
         const res = await apiFetch(`/api/check-update/${encodeURIComponent(c.name)}`, { method: "POST" });
@@ -135,15 +189,111 @@ export default function DashboardPage() {
 
     setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
     setContainers(prev => prev.map(c => ({ ...c, has_update: c.has_update || !!updatedUpdates[c.name] })));
-    setCheckResults({ updated: updatedCount, uptodate: uptodateCount, failed: failedCount, errors });
-    setIsCheckingAll(false);
-    setCurrentCheckImage("");
-    setShowCheckSummary(true);
+    setCheckResults({ total: initialContainers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, errors });
+    setBatchProgress({ current: initialContainers.length, total: initialContainers.length });
+
+    setTimeout(() => {
+      setBatchPhase('idle');
+      setShowSummary(true);
+    }, 500);
   };
 
-  const handleCancelCheck = () => {
-    cancelCheckRef.current = true;
+  // ── Update all (check first, then update) ──────────────────
+
+  const updateAll = async () => {
+    const initialContainers = containers;
+    cancelBatchRef.current = false;
+    setBatchPhase('checking');
+    setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, errors: [] });
+    setUpdateResults({ done: 0, failed: 0, errors: [] });
+    setBatchProgress({ current: 0, total: initialContainers.length });
+    setBatchCurrentItem("");
+    setShowSummary(false);
+
+    // ── Phase 1: Check all ───────────────────────────────────
+    const containersToUpdate: ContainerInfo[] = [];
+    let checkUpdated = 0;
+    let checkUptodate = 0;
+    let checkFailed = 0;
+    const checkErrors: string[] = [];
+
+    for (let i = 0; i < initialContainers.length; i++) {
+      if (cancelBatchRef.current) break;
+
+      const c = initialContainers[i];
+      setBatchCurrentItem(`🔍 ${c.name} — ${c.image}:${c.image_tag}`);
+      setBatchProgress(prev => ({ ...prev, current: i + 1 }));
+
+      try {
+        const res = await apiFetch(`/api/check-update/${encodeURIComponent(c.name)}`, { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          const hasUpdate = data.has_update === true;
+          if (hasUpdate) {
+            containersToUpdate.push(c);
+            checkUpdated++;
+          } else {
+            checkUptodate++;
+          }
+        } else {
+          checkFailed++;
+          checkErrors.push(`${c.name}: HTTP ${res.status}`);
+        }
+      } catch (e: any) {
+        checkFailed++;
+        checkErrors.push(`${c.name}: ${e.message || "unknown error"}`);
+      }
+    }
+
+    const updatedUpdates: Record<string, boolean> = {};
+    containersToUpdate.forEach(c => { updatedUpdates[c.name] = true; });
+    setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
+    setContainers(prev => prev.map(c => ({ ...c, has_update: c.has_update || !!updatedUpdates[c.name] })));
+    setCheckResults({ total: initialContainers.length, updated: checkUpdated, uptodate: checkUptodate, failed: checkFailed, errors: checkErrors });
+
+    // ── Phase 2: Update only those that need it ──────────────
+    if (containersToUpdate.length > 0 && !cancelBatchRef.current) {
+      setBatchPhase('updating');
+      setBatchProgress({ current: 0, total: containersToUpdate.length });
+      let updateDone = 0;
+      let updateFailed = 0;
+      const updateErrors: string[] = [];
+
+      for (let i = 0; i < containersToUpdate.length; i++) {
+        if (cancelBatchRef.current) break;
+
+        const c = containersToUpdate[i];
+        setBatchCurrentItem(`⬆️ ${c.name} — ${c.image}:${c.image_tag}`);
+        setBatchProgress(prev => ({ ...prev, current: i + 1 }));
+
+        try {
+          const res = await apiFetch(`/api/update/${encodeURIComponent(c.name)}`, { method: "POST" });
+          if (res.ok) {
+            updateDone++;
+          } else {
+            updateFailed++;
+            updateErrors.push(`${c.name}: HTTP ${res.status}`);
+          }
+        } catch (e: any) {
+          updateFailed++;
+          updateErrors.push(`${c.name}: ${e.message || "unknown error"}`);
+        }
+      }
+
+      setUpdateResults({ done: updateDone, failed: updateFailed, errors: updateErrors });
+    }
+
+    setTimeout(() => {
+      setBatchPhase('idle');
+      setShowSummary(true);
+    }, 500);
   };
+
+  const handleCancelBatch = () => {
+    cancelBatchRef.current = true;
+  };
+
+  // ── Container lifecycle ────────────────────────────────────
 
   const handleContainerAction = async (name: string, action: string) => {
     try {
@@ -185,6 +335,8 @@ export default function DashboardPage() {
     }
   };
 
+  // ── Derived data ───────────────────────────────────────────
+
   if (loading)
     return (
       <Container py="xl">
@@ -208,10 +360,50 @@ export default function DashboardPage() {
   }
   const sortedGroups = Array.from(grouped.entries()).sort(([a], [b]) => a.localeCompare(b));
 
+  const isBusy = batchPhase !== 'idle';
+
+  // ── Container menu (shared between mobile & desktop) ────────
+  const renderMenu = (c: ContainerInfo) => {
+    const isSingleChecking = singleCheckLoading === c.name;
+    const isSingleUpdating = updating === c.name;
+    const hasUpdate = c.has_update || checkedUpdates[c.name];
+    return (
+      <Menu shadow="md" width={220}>
+        <Menu.Target>
+          <ActionIcon variant="subtle" size="sm" aria-label="Menú">⋮</ActionIcon>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Item leftSection="🔍" onClick={() => handleInspect(c.name)}>Inspeccionar</Menu.Item>
+          <Menu.Divider />
+          <Menu.Item
+            leftSection={isSingleChecking ? <Loader size="xs" /> : "🔍"}
+            onClick={() => checkSingleContainer(c.name)}
+            disabled={isSingleChecking || isBusy}
+          >
+            {isSingleChecking ? 'Comprobando...' : 'Check update'}
+          </Menu.Item>
+          <Menu.Item
+            leftSection={isSingleUpdating ? <Loader size="xs" /> : (hasUpdate ? "⬆️" : "⬆️")}
+            onClick={() => updateSingleContainer(c.name)}
+            disabled={isSingleUpdating || isBusy}
+          >
+            {isSingleUpdating ? 'Actualizando...' : 'Actualizar'}
+          </Menu.Item>
+          <Menu.Divider />
+          <Menu.Item leftSection="▶️" onClick={() => handleContainerAction(c.name, "start")} disabled={c.state === "running"}>Iniciar</Menu.Item>
+          <Menu.Item leftSection="⏹️" onClick={() => handleContainerAction(c.name, "stop")} disabled={c.state !== "running"}>Parar</Menu.Item>
+          <Menu.Item leftSection="🔄" onClick={() => handleContainerAction(c.name, "restart")}>Reiniciar</Menu.Item>
+          <Menu.Divider />
+          <Menu.Item leftSection="🗑️" color="red" onClick={() => setConfirmDelete(c.name)}>Eliminar</Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
+    );
+  };
+
   // ── Mobile card view ────────────────────────────────────────
   const renderMobileCard = (c: ContainerInfo) => {
     const p = progress.get(c.name);
-    const isUpdating = updating === c.name || p?.done === false;
+    const isSingleUpdating = updating === c.name || p?.done === false;
     const hasUpdate = c.has_update || checkedUpdates[c.name];
     return (
       <Paper key={c.id} shadow="sm" p="sm" withBorder>
@@ -227,19 +419,7 @@ export default function DashboardPage() {
                 {c.status.includes("healthy") ? "healthy" : c.state}
               </Badge>
             </Group>
-            <Menu shadow="md" width={200}>
-              <Menu.Target>
-                <ActionIcon variant="subtle" size="sm" aria-label="Menú">⋮</ActionIcon>
-              </Menu.Target>
-              <Menu.Dropdown>
-                <Menu.Item leftSection="🔍" onClick={() => handleInspect(c.name)}>Inspeccionar</Menu.Item>
-                <Menu.Item leftSection="▶️" onClick={() => handleContainerAction(c.name, "start")} disabled={c.state === "running"}>Iniciar</Menu.Item>
-                <Menu.Item leftSection="⏹️" onClick={() => handleContainerAction(c.name, "stop")} disabled={c.state !== "running"}>Parar</Menu.Item>
-                <Menu.Item leftSection="🔄" onClick={() => handleContainerAction(c.name, "restart")}>Reiniciar</Menu.Item>
-                <Menu.Divider />
-                <Menu.Item leftSection="🗑️" color="red" onClick={() => setConfirmDelete(c.name)}>Eliminar</Menu.Item>
-              </Menu.Dropdown>
-            </Menu>
+            {renderMenu(c)}
           </Group>
 
           {/* Image + update button */}
@@ -249,7 +429,7 @@ export default function DashboardPage() {
             </Text>
             {hasUpdate && (
               <Tooltip label="Actualizar container">
-                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateContainer(c.name)} loading={isUpdating}>⬆</ActionIcon>
+                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateSingleContainer(c.name)} loading={isSingleUpdating}>⬆</ActionIcon>
               </Tooltip>
             )}
             {c.registry_url && (
@@ -301,7 +481,7 @@ export default function DashboardPage() {
   // ── Desktop row ─────────────────────────────────────────────
   const renderRow = (c: ContainerInfo) => {
     const p = progress.get(c.name);
-    const isUpdating = updating === c.name || p?.done === false;
+    const isSingleUpdating = updating === c.name || p?.done === false;
     const hasUpdate = c.has_update || checkedUpdates[c.name];
     return (
       <Table.Tr key={c.id}>
@@ -311,7 +491,7 @@ export default function DashboardPage() {
             <Text size="sm" c="dimmed">{c.image}:{c.image_tag}</Text>
             {hasUpdate && (
               <Tooltip label="Actualizar container">
-                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateContainer(c.name)} loading={isUpdating}>⬆</ActionIcon>
+                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateSingleContainer(c.name)} loading={isSingleUpdating}>⬆</ActionIcon>
               </Tooltip>
             )}
             {c.registry_url && (
@@ -346,23 +526,14 @@ export default function DashboardPage() {
           </Badge>
         </Table.Td>
         <Table.Td>
-          <Menu shadow="md" width={200}>
-            <Menu.Target><ActionIcon variant="subtle" size="sm" aria-label="Menú">⋮</ActionIcon></Menu.Target>
-            <Menu.Dropdown>
-              <Menu.Item leftSection="🔍" onClick={() => handleInspect(c.name)}>Inspeccionar</Menu.Item>
-              <Menu.Item leftSection="▶️" onClick={() => handleContainerAction(c.name, "start")} disabled={c.state === "running"}>Iniciar</Menu.Item>
-              <Menu.Item leftSection="⏹️" onClick={() => handleContainerAction(c.name, "stop")} disabled={c.state !== "running"}>Parar</Menu.Item>
-              <Menu.Item leftSection="🔄" onClick={() => handleContainerAction(c.name, "restart")}>Reiniciar</Menu.Item>
-              <Menu.Divider />
-              <Menu.Item leftSection="🗑️" color="red" onClick={() => setConfirmDelete(c.name)}>Eliminar</Menu.Item>
-            </Menu.Dropdown>
-          </Menu>
+          {renderMenu(c)}
         </Table.Td>
       </Table.Tr>
     );
   };
 
-  // ── Mobile group card ───────────────────────────────────────
+  // ── Group renderers ─────────────────────────────────────────
+
   const renderMobileGroup = (project: string, items: ContainerInfo[]) => (
     <Paper shadow="sm" withBorder mb="md" key={project}>
       <Group px="md" pt="sm" pb="xs">
@@ -375,7 +546,6 @@ export default function DashboardPage() {
     </Paper>
   );
 
-  // ── Desktop group ───────────────────────────────────────────
   const renderGroup = (project: string, items: ContainerInfo[]) => (
     <Paper shadow="sm" withBorder mb="md" key={project}>
       <Group px="md" pt="sm" pb="xs">
@@ -401,6 +571,48 @@ export default function DashboardPage() {
     </Paper>
   );
 
+  // ── Batch progress bar ──────────────────────────────────────
+  const renderBatchProgress = () => {
+    const isUpdatePhase = batchPhase === 'updating';
+    const total = isUpdatePhase
+      ? checkResults.updated  // only updating containers that need it
+      : batchProgress.total;
+    const pct = total > 0 ? (batchProgress.current / total) * 100 : 0;
+
+    return (
+      <Stack gap="xs">
+        <Group justify="space-between">
+          <Text size="sm" fw={500}>
+            {isUpdatePhase ? '⬆️ Actualizando containers...' : '🔍 Comprobando actualizaciones...'}
+          </Text>
+          <Group gap="xs">
+            {!isUpdatePhase && (
+              <Text size="xs" c="dimmed" mr="sm">
+                ✅ {checkResults.updated} upd · ⏹️ {checkResults.uptodate} ok{checkResults.failed > 0 ? ` · ❌ ${checkResults.failed}` : ''}
+              </Text>
+            )}
+            <Button size="xs" color="red" variant="outline" onClick={handleCancelBatch}>
+              Cancelar
+            </Button>
+          </Group>
+        </Group>
+        <Progress value={pct} animated color={isUpdatePhase ? 'yellow' : 'cyan'} />
+        <Group justify="space-between">
+          <Text size="xs" c="dimmed">
+            {batchProgress.current} / {total} — {batchCurrentItem || "iniciando..."}
+          </Text>
+          {isUpdatePhase && (
+            <Text size="xs" c="dimmed">
+              ✅ {updateResults.done} hechos{updateResults.failed > 0 ? ` · ❌ ${updateResults.failed} errores` : ''}
+            </Text>
+          )}
+        </Group>
+      </Stack>
+    );
+  };
+
+  // ── Main render ─────────────────────────────────────────────
+
   return (
     <>
       {notifications.length > 0 && (
@@ -411,31 +623,22 @@ export default function DashboardPage() {
           ))}
         </Paper>
       )}
-      <Paper shadow="sm" p="md" mb="md" withBorder>
-        {isCheckingAll ? (
-          <Stack gap="xs">
-            <Group justify="space-between">
-              <Text size="sm" fw={500}>🔍 Comprobando actualizaciones...</Text>
-              <Button size="xs" color="red" variant="outline" onClick={handleCancelCheck}>
-                Cancelar
-              </Button>
-            </Group>
-            <Progress value={(checkProgress.current / Math.max(checkProgress.total, 1)) * 100} animated />
-            <Group justify="space-between">
-              <Text size="xs" c="dimmed">
-                {checkProgress.current} / {checkProgress.total} — {currentCheckImage || "iniciando..."}
-              </Text>
-              <Text size="xs" c={checkResults.failed > 0 ? "red" : "dimmed"}>
-                ✅ {checkResults.updated} actualizaciones · ⏹️ {checkResults.uptodate} actuales{checkResults.failed > 0 ? ` · ❌ ${checkResults.failed} errores` : ""}
-              </Text>
-            </Group>
-          </Stack>
-        ) : (
-          isMobile ? (
+
+      {/* Batch progress bar (checking or updating) */}
+      {batchPhase !== 'idle' && (
+        <Paper shadow="sm" p="md" mb="md" withBorder>
+          {renderBatchProgress()}
+        </Paper>
+      )}
+
+      {/* Action buttons — only visible when idle */}
+      {batchPhase === 'idle' && (
+        <Paper shadow="sm" p="md" mb="md" withBorder>
+          {isMobile ? (
             <Stack gap="sm">
               <Text size="sm" c="dimmed">SSE en tiempo real · {containers.length} containers</Text>
               <Button onClick={checkAll} variant="filled" color="cyan" fullWidth>🔍 Check all</Button>
-              <Button onClick={updateAll} loading={updating === "__all__"} variant="filled" color="yellow" fullWidth>Actualizar todo</Button>
+              <Button onClick={updateAll} variant="filled" color="yellow" fullWidth>⬆️ Actualizar todo</Button>
             </Stack>
           ) : (
             <Group justify="space-between">
@@ -444,14 +647,14 @@ export default function DashboardPage() {
                 <Tooltip label="Comprueba todos los containers contra el registry">
                   <Button onClick={checkAll} variant="filled" color="cyan">🔍 Check all</Button>
                 </Tooltip>
-                <Tooltip label="Actualiza todas las imágenes y reinicia containers">
-                  <Button onClick={updateAll} loading={updating === "__all__"} variant="filled" color="yellow">Actualizar todo</Button>
+                <Tooltip label="Comprueba y actualiza solo los que tengan update disponible">
+                  <Button onClick={updateAll} variant="filled" color="yellow">⬆️ Actualizar todo</Button>
                 </Tooltip>
               </Group>
             </Group>
-          )
-        )}
-      </Paper>
+          )}
+        </Paper>
+      )}
 
       {/* Container groups — mobile vs desktop */}
       {isMobile ? (
@@ -499,6 +702,7 @@ export default function DashboardPage() {
         </>
       )}
 
+      {/* Toast notification */}
       {actionNotif && (
         <Paper shadow="md" p="sm" withBorder mb="xs" style={{ position: "fixed", bottom: isMobile ? 0 : 20, right: isMobile ? 0 : 20, left: isMobile ? 0 : undefined, zIndex: 1000, background: actionNotif.error ? "#3d1f1f" : "#1f3d1f", borderColor: actionNotif.error ? "#e03131" : "#2f9e44" }}>
           <Group justify="space-between">
@@ -506,6 +710,8 @@ export default function DashboardPage() {
           </Group>
         </Paper>
       )}
+
+      {/* Inspect modal */}
       <Modal opened={inspectName !== null} onClose={() => { setInspectName(null); setInspectData(null); setInspectError(null); }} title={`🔍 Inspeccionar ${inspectName || ""}`} size={isMobile ? "100%" : "xl"}>
         {inspectLoading ? (
           <Group justify="center" py="xl"><Loader /><Text>Obteniendo información...</Text></Group>
@@ -533,38 +739,23 @@ export default function DashboardPage() {
             </Tabs.Panel>
             <Tabs.Panel value="ports">
               {inspectData.ports?.length > 0 ? (
-                <Table.ScrollContainer minWidth={400}>
-                  <Table striped>
-                    <Table.Thead><Table.Tr><Table.Th>Puerto Privado</Table.Th><Table.Th>Puerto Público</Table.Th><Table.Th>Tipo</Table.Th></Table.Tr></Table.Thead>
-                    <Table.Tbody>{inspectData.ports.map((p: any, i: number) => (
-                      <Table.Tr key={i}><Table.Td>{p.private_port}</Table.Td><Table.Td>{p.public_port != null ? p.public_port : "-"}</Table.Td><Table.Td>{p.type}</Table.Td></Table.Tr>
-                    ))}</Table.Tbody>
-                  </Table>
-                </Table.ScrollContainer>
+                <Table.ScrollContainer minWidth={400}><Table striped><Table.Thead><Table.Tr><Table.Th>Puerto Privado</Table.Th><Table.Th>Puerto Público</Table.Th><Table.Th>Tipo</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{inspectData.ports.map((p: any, i: number) => (
+                  <Table.Tr key={i}><Table.Td>{p.private_port}</Table.Td><Table.Td>{p.public_port != null ? p.public_port : "-"}</Table.Td><Table.Td>{p.type}</Table.Td></Table.Tr>
+                ))}</Table.Tbody></Table></Table.ScrollContainer>
               ) : <Text size="sm" c="dimmed" py="md">Sin puertos expuestos</Text>}
             </Tabs.Panel>
             <Tabs.Panel value="volumes">
               {inspectData.mounts?.length > 0 ? (
-                <Table.ScrollContainer minWidth={400}>
-                  <Table striped>
-                    <Table.Thead><Table.Tr><Table.Th>Origen</Table.Th><Table.Th>Destino</Table.Th><Table.Th>Modo</Table.Th></Table.Tr></Table.Thead>
-                    <Table.Tbody>{inspectData.mounts.map((m: any, i: number) => (
-                      <Table.Tr key={i}><Table.Td><Text size="sm">{m.source}</Text></Table.Td><Table.Td><Text size="sm">{m.destination}</Text></Table.Td><Table.Td><Badge variant="light">{m.mode}</Badge></Table.Td></Table.Tr>
-                    ))}</Table.Tbody>
-                  </Table>
-                </Table.ScrollContainer>
+                <Table.ScrollContainer minWidth={400}><Table striped><Table.Thead><Table.Tr><Table.Th>Origen</Table.Th><Table.Th>Destino</Table.Th><Table.Th>Modo</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{inspectData.mounts.map((m: any, i: number) => (
+                  <Table.Tr key={i}><Table.Td><Text size="sm">{m.source}</Text></Table.Td><Table.Td><Text size="sm">{m.destination}</Text></Table.Td><Table.Td><Badge variant="light">{m.mode}</Badge></Table.Td></Table.Tr>
+                ))}</Table.Tbody></Table></Table.ScrollContainer>
               ) : <Text size="sm" c="dimmed" py="md">Sin volúmenes montados</Text>}
             </Tabs.Panel>
             <Tabs.Panel value="networks">
               {inspectData.networks?.length > 0 ? (
-                <Table.ScrollContainer minWidth={400}>
-                  <Table striped>
-                    <Table.Thead><Table.Tr><Table.Th>Red</Table.Th><Table.Th>IP</Table.Th><Table.Th>Gateway</Table.Th></Table.Tr></Table.Thead>
-                    <Table.Tbody>{inspectData.networks.map((n: any, i: number) => (
-                      <Table.Tr key={i}><Table.Td><Text size="sm">{n.name}</Text></Table.Td><Table.Td><Code>{n.ip_address}</Code></Table.Td><Table.Td><Code>{n.gateway}</Code></Table.Td></Table.Tr>
-                    ))}</Table.Tbody>
-                  </Table>
-                </Table.ScrollContainer>
+                <Table.ScrollContainer minWidth={400}><Table striped><Table.Thead><Table.Tr><Table.Th>Red</Table.Th><Table.Th>IP</Table.Th><Table.Th>Gateway</Table.Th></Table.Tr></Table.Thead><Table.Tbody>{inspectData.networks.map((n: any, i: number) => (
+                  <Table.Tr key={i}><Table.Td><Text size="sm">{n.name}</Text></Table.Td><Table.Td><Code>{n.ip_address}</Code></Table.Td><Table.Td><Code>{n.gateway}</Code></Table.Td></Table.Tr>
+                ))}</Table.Tbody></Table></Table.ScrollContainer>
               ) : <Text size="sm" c="dimmed" py="md">Sin redes</Text>}
             </Tabs.Panel>
             <Tabs.Panel value="env">
@@ -582,6 +773,8 @@ export default function DashboardPage() {
           </Tabs>
         ) : null}
       </Modal>
+
+      {/* Confirm delete modal */}
       <Modal opened={confirmDelete !== null} onClose={() => setConfirmDelete(null)} title="🗑️ Confirmar Eliminación" size="sm">
         <Text mb="md">¿Seguro que quieres eliminar <b>{confirmDelete}</b>? Esta acción no se puede deshacer.</Text>
         <Group justify="flex-end">
@@ -589,18 +782,26 @@ export default function DashboardPage() {
           <Button color="red" onClick={() => confirmDelete && handleRemove(confirmDelete)}>Eliminar</Button>
         </Group>
       </Modal>
-      <Modal opened={showCheckSummary} onClose={() => setShowCheckSummary(false)} title="📋 Resumen de comprobación" size="sm">
+
+      {/* Summary dialog (after check-all or update-all) */}
+      <Modal
+        opened={showSummary}
+        onClose={() => setShowSummary(false)}
+        title={updateResults.done > 0 || updateResults.failed > 0 ? "📋 Resumen de actualización" : "📋 Resumen de comprobación"}
+        size="sm"
+      >
         <Stack gap="md">
+          {/* Check results */}
           <Paper p="md" withBorder>
-            <Text size="sm" c="dimmed" mb="xs">Resultados</Text>
+            <Text size="sm" c="dimmed" mb="xs">🔍 Comprobación</Text>
             <Group gap="lg">
               <Stack gap="0" align="center">
-                <Text size="xl" fw={700}>{checkProgress.total}</Text>
+                <Text size="xl" fw={700}>{checkResults.total}</Text>
                 <Text size="xs" c="dimmed">Comprobados</Text>
               </Stack>
               <Stack gap="0" align="center">
                 <Text size="xl" fw={700} c="yellow">{checkResults.updated}</Text>
-                <Text size="xs" c="dimmed">Actualizaciones</Text>
+                <Text size="xs" c="dimmed">Actualizables</Text>
               </Stack>
               <Stack gap="0" align="center">
                 <Text size="xl" fw={700} c="green">{checkResults.uptodate}</Text>
@@ -612,19 +813,40 @@ export default function DashboardPage() {
               </Stack>
             </Group>
           </Paper>
-          {cancelCheckRef.current && (
-            <Text size="sm" c="orange">⚠️ Comprobación cancelada por el usuario.</Text>
+
+          {/* Update results (only if update-all ran) */}
+          {(updateResults.done > 0 || updateResults.failed > 0) && (
+            <Paper p="md" withBorder>
+              <Text size="sm" c="dimmed" mb="xs">⬆️ Actualización</Text>
+              <Group gap="lg">
+                <Stack gap="0" align="center">
+                  <Text size="xl" fw={700} c="green">{updateResults.done}</Text>
+                  <Text size="xs" c="dimmed">Actualizados</Text>
+                </Stack>
+                <Stack gap="0" align="center">
+                  <Text size="xl" fw={700} c="red">{updateResults.failed}</Text>
+                  <Text size="xs" c="dimmed">Fallos</Text>
+                </Stack>
+              </Group>
+            </Paper>
           )}
-          {checkResults.errors.length > 0 && (
+
+          {cancelBatchRef.current && (
+            <Text size="sm" c="orange">⚠️ Operación cancelada por el usuario.</Text>
+          )}
+
+          {/* Errors */}
+          {[...checkResults.errors, ...updateResults.errors].length > 0 && (
             <Paper p="sm" withBorder bg="red.0">
               <Text size="xs" fw={500} mb="xs" c="red">Errores:</Text>
-              {checkResults.errors.map((err, i) => (
+              {[...checkResults.errors, ...updateResults.errors].map((err, i) => (
                 <Text key={i} size="xs" c="red">{err}</Text>
               ))}
             </Paper>
           )}
+
           <Group justify="flex-end">
-            <Button onClick={() => setShowCheckSummary(false)}>Cerrar</Button>
+            <Button onClick={() => setShowSummary(false)}>Cerrar</Button>
           </Group>
         </Stack>
       </Modal>
