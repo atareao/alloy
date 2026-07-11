@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
@@ -11,6 +12,7 @@ import {
   Switch,
   Table,
   Text,
+  Divider,
 } from '@mantine/core'
 
 // ═══════════════════════════════════════════════════════════════
@@ -52,6 +54,7 @@ const NOTIFY_OPTIONS = [
 ]
 
 export default function AlertsPage({ containers }: AlertPageProps) {
+  const isMobile = useMediaQuery('(max-width: 768px)')
   const [alerts, setAlerts] = useState<AlertRule[]>([])
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [loading, setLoading] = useState(true)
@@ -119,6 +122,44 @@ export default function AlertsPage({ containers }: AlertPageProps) {
 
   if (loading) return <Group justify="center" py="xl"><Loader /></Group>
 
+  // ── Mobile card ─────────────────────────────────────────────
+  const renderMobileCard = (alert: AlertRule) => (
+    <Paper key={alert.id} shadow="sm" p="sm" withBorder>
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>{alert.container}</Text>
+          <Badge size="sm" color={alert.enabled ? 'green' : 'gray'}>
+            {alert.enabled ? 'Monitoreando' : 'Inactivo'}
+          </Badge>
+        </Group>
+        <Divider />
+        <Group gap="xs">
+          <Text size="xs" c="dimmed">Notificar vía:</Text>
+          {alert.notify_via.length > 0 ? (
+            <Group gap={4}>
+              {alert.notify_via.map((ch) => (
+                <Badge key={ch} variant="light" color="blue" size="sm">
+                  {ch === 'telegram' ? '📱 Telegram' : '💬 Matrix'}
+                </Badge>
+              ))}
+            </Group>
+          ) : (
+            <Text size="xs" c="dimmed">—</Text>
+          )}
+        </Group>
+        <Button
+          size="xs"
+          color="red"
+          variant="light"
+          fullWidth
+          onClick={() => handleDelete(alert.id)}
+        >
+          Eliminar
+        </Button>
+      </Stack>
+    </Paper>
+  )
+
   return (
     <Stack>
       <Paper shadow="sm" p="md" mb="md" withBorder>
@@ -126,7 +167,7 @@ export default function AlertsPage({ containers }: AlertPageProps) {
           <Text size="sm" c="dimmed">
             🔔 Alertas de estado · {alerts.length} monitoreados
           </Text>
-          <Button onClick={() => setShowModal(true)} variant="filled">
+          <Button onClick={() => setShowModal(true)} variant="filled" size={isMobile ? 'sm' : 'md'}>
             + Monitorear container
           </Button>
         </Group>
@@ -136,7 +177,7 @@ export default function AlertsPage({ containers }: AlertPageProps) {
         opened={showModal}
         onClose={() => { setShowModal(false); setNewContainer(null); setNewEnabled(true); setNewNotify([]) }}
         title="➕ Monitorear container"
-        size="md"
+        size={isMobile ? '100%' : 'md'}
       >
         <Stack>
           <Text size="sm" c="dimmed">
@@ -190,55 +231,61 @@ export default function AlertsPage({ containers }: AlertPageProps) {
             cuando cambie de estado.
           </Text>
         </Paper>
+      ) : isMobile ? (
+        <Stack gap="sm">
+          {alerts.map(renderMobileCard)}
+        </Stack>
       ) : (
         <Paper shadow="sm" withBorder>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Container</Table.Th>
-                <Table.Th>Notificar vía</Table.Th>
-                <Table.Th>Estado</Table.Th>
-                <Table.Th>Acción</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {alerts.map((alert) => (
-                <Table.Tr key={alert.id}>
-                  <Table.Td>
-                    <Text size="sm">{alert.container}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    {alert.notify_via.length > 0 ? (
-                      <Group gap={4}>
-                        {alert.notify_via.map((ch) => (
-                          <Badge key={ch} variant="light" color="blue" size="sm">
-                            {ch === 'telegram' ? '📱 Telegram' : '💬 Matrix'}
-                          </Badge>
-                        ))}
-                      </Group>
-                    ) : (
-                      <Text size="xs" c="dimmed">—</Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge color={alert.enabled ? 'green' : 'gray'}>
-                      {alert.enabled ? 'Monitoreando' : 'Inactivo'}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Button
-                      size="xs"
-                      color="red"
-                      variant="light"
-                      onClick={() => handleDelete(alert.id)}
-                    >
-                      Eliminar
-                    </Button>
-                  </Table.Td>
+          <Table.ScrollContainer minWidth={450}>
+            <Table striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Container</Table.Th>
+                  <Table.Th>Notificar vía</Table.Th>
+                  <Table.Th>Estado</Table.Th>
+                  <Table.Th>Acción</Table.Th>
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+              </Table.Thead>
+              <Table.Tbody>
+                {alerts.map((alert) => (
+                  <Table.Tr key={alert.id}>
+                    <Table.Td>
+                      <Text size="sm">{alert.container}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      {alert.notify_via.length > 0 ? (
+                        <Group gap={4}>
+                          {alert.notify_via.map((ch) => (
+                            <Badge key={ch} variant="light" color="blue" size="sm">
+                              {ch === 'telegram' ? '📱 Telegram' : '💬 Matrix'}
+                            </Badge>
+                          ))}
+                        </Group>
+                      ) : (
+                        <Text size="xs" c="dimmed">—</Text>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge color={alert.enabled ? 'green' : 'gray'}>
+                        {alert.enabled ? 'Monitoreando' : 'Inactivo'}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Button
+                        size="xs"
+                        color="red"
+                        variant="light"
+                        onClick={() => handleDelete(alert.id)}
+                      >
+                        Eliminar
+                      </Button>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         </Paper>
       )}
     </Stack>
