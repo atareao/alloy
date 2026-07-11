@@ -28,18 +28,21 @@ async fn auth_login(
     let meta = oidc_metadata
         .as_ref()
         .ok_or_else(|| (StatusCode::SERVICE_UNAVAILABLE, "OIDC not configured").into_response())?;
-    let csrf = Uuid::new_v4().to_string();
-    let state_id = Uuid::new_v4().to_string();
+    // Generamos un solo valor `state` (UUID aleatorio) que sirve como:
+    // 1. Clave de búsqueda en el mapa de estados
+    // 2. Protección CSRF (PocketID lo devuelve sin cambios)
+    // 3. Parámetro estándar OIDC (todos los proveedores lo soportan)
+    let state = Uuid::new_v4().to_string();
     oidc_states
         .lock()
         .await
-        .insert(state_id.clone(), (csrf.clone(), Instant::now()));
+        .insert(state.clone(), (state.clone(), Instant::now()));
     let auth_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope=openid+profile+email&state={}&state_id={}",
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope=openid+profile+email&state={}",
         meta.authorization_endpoint,
         url_encode(config.oidc_client_id()),
         url_encode(config.oidc_redirect_url()),
-        csrf, state_id,
+        state,
     );
     Ok(Redirect::to(&auth_url))
 }
@@ -57,19 +60,21 @@ async fn auth_callback(
     let code = params
         .get("code")
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing code").into_response())?;
-    let state_id = params
-        .get("state_id")
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing state_id").into_response())?;
-    let stored_csrf = oidc_states
+    // `state` es el parámetro estándar OIDC que PocketID devuelve sin cambios.
+    // Lo usamos como clave para recuperar el CSRF almacenado, eliminando
+    // el parámetro personalizado `state_id` que PocketID no conoce.
+    let state = params
+        .get("state")
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "Missing state").into_response())?;
+    let stored = oidc_states
         .lock()
         .await
-        .remove(state_id)
+        .remove(state)
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "Invalid state").into_response())?;
-    let stored_csrf = stored_csrf.0;
-    if let Some(returned_state) = params.get("state") {
-        if returned_state != &stored_csrf {
-            return Err((StatusCode::BAD_REQUEST, "CSRF mismatch").into_response());
-        }
+    // El valor almacenado es (csrf, timestamp). Verificamos que coincida.
+    let _stored_csrf = stored.0;
+    if _stored_csrf != *state {
+        return Err((StatusCode::BAD_REQUEST, "CSRF mismatch").into_response());
     }
 
     // Exchange authorization code for tokens
@@ -101,10 +106,13 @@ async fn auth_callback(
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "No access_token in response").into_response())?;
 
     // Validate token against JWKS (PocketID style via JwtValidator)
-    let jwt_claims = jwt_validator.validate_token(access_token).await.map_err(|e| {
-        tracing::error!("Token validation failed: {}", e);
-        (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
-    })?;
+    let jwt_claims = jwt_validator
+        .validate_token(access_token)
+        .await
+        .map_err(|e| {
+            tracing::error!("Token validation failed: {}", e);
+            (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+        })?;
 
     let sub = jwt_claims.sub;
     let name = jwt_claims

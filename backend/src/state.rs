@@ -73,7 +73,11 @@ impl JwtValidator {
             }
         }
 
-        tracing::info!(count = decoding_keys.len(), "JWKS fetched from {}", jwks_url);
+        tracing::info!(
+            count = decoding_keys.len(),
+            "JWKS fetched from {}",
+            jwks_url
+        );
         *self.jwks.write().await = decoding_keys;
         Ok(())
     }
@@ -96,9 +100,7 @@ impl JwtValidator {
         validation.validate_exp = true;
 
         for key in &keys {
-            if let Ok(data) =
-                jsonwebtoken::decode::<JwtClaims>(token, key, &validation)
-            {
+            if let Ok(data) = jsonwebtoken::decode::<JwtClaims>(token, key, &validation) {
                 return Ok(data.claims);
             }
         }

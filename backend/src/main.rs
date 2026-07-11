@@ -88,7 +88,10 @@ async fn main() {
     // Initialize JWT Validator (PocketID style — fetches JWKS from issuer)
     let jwt_validator = JwtValidator::new(config.oidc_issuer(), config.oidc_client_id());
     match jwt_validator.fetch_jwks().await {
-        Ok(()) => tracing::info!("✅ JWKS fetched from {}/.well-known/jwks.json", config.oidc_issuer().trim_end_matches('/')),
+        Ok(()) => tracing::info!(
+            "✅ JWKS fetched from {}/.well-known/jwks.json",
+            config.oidc_issuer().trim_end_matches('/')
+        ),
         Err(e) => {
             tracing::error!("❌ JWKS fetch failed: {}. OIDC will not work.", e);
             std::process::exit(1);
