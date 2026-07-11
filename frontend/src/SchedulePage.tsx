@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
@@ -13,6 +14,7 @@ import {
   Text,
   TextInput,
   Tooltip,
+  Divider,
 } from '@mantine/core'
 
 // ═══════════════════════════════════════════════════════════════
@@ -66,6 +68,7 @@ const ACTION_OPTIONS = [
 ]
 
 export default function SchedulePage({ containers }: SchedulePageProps) {
+  const isMobile = useMediaQuery('(max-width: 768px)')
   const [schedules, setSchedules] = useState<ScheduleEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
@@ -142,6 +145,42 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     return opt ? opt.label : action
   }
 
+  // ── Mobile card ─────────────────────────────────────────────
+  const renderMobileCard = (sched: ScheduleEntry) => (
+    <Paper key={sched.id} shadow="sm" p="sm" withBorder>
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>{sched.container}</Text>
+          <Badge size="sm" color={sched.enabled ? 'green' : 'gray'}>
+            {sched.enabled ? 'Activa' : 'Inactiva'}
+          </Badge>
+        </Group>
+        <Divider />
+        <Stack gap={2}>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Acción:</Text>
+            <Badge color={actionColor(sched.action)} variant="light" size="sm">
+              {actionLabel(sched.action)}
+            </Badge>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Cron:</Text>
+            <Text size="xs" style={{ fontFamily: 'monospace' }}>{sched.cron}</Text>
+          </Group>
+        </Stack>
+        <Button
+          size="xs"
+          color="red"
+          variant="light"
+          fullWidth
+          onClick={() => handleDelete(sched.id)}
+        >
+          Eliminar
+        </Button>
+      </Stack>
+    </Paper>
+  )
+
   return (
     <Stack>
       <Paper shadow="sm" p="md" mb="md" withBorder>
@@ -149,7 +188,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
           <Text size="sm" c="dimmed">
             ⏰ Planificador Cron · {schedules.length} tareas
           </Text>
-          <Button onClick={() => setShowModal(true)} variant="filled">
+          <Button onClick={() => setShowModal(true)} variant="filled" size={isMobile ? 'sm' : 'md'}>
             + Nueva tarea
           </Button>
         </Group>
@@ -159,7 +198,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
         opened={showModal}
         onClose={() => { setShowModal(false); resetForm() }}
         title="➕ Nueva tarea programada"
-        size="md"
+        size={isMobile ? '100%' : 'md'}
       >
         <Stack>
           <Select
@@ -217,55 +256,61 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
             actualizaciones, reinicios y limpieza de Docker.
           </Text>
         </Paper>
+      ) : isMobile ? (
+        <Stack gap="sm">
+          {schedules.map(renderMobileCard)}
+        </Stack>
       ) : (
         <Paper shadow="sm" withBorder>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Container</Table.Th>
-                <Table.Th>Acción</Table.Th>
-                <Table.Th>Expresión Cron</Table.Th>
-                <Table.Th>Estado</Table.Th>
-                <Table.Th>Acción</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {schedules.map((sched) => (
-                <Table.Tr key={sched.id}>
-                  <Table.Td>
-                    <Text size="sm" fw={500}>{sched.container}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge color={actionColor(sched.action)} variant="light">
-                      {actionLabel(sched.action)}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Tooltip label={sched.cron}>
-                      <Text size="xs" style={{ fontFamily: 'monospace' }}>
-                        {sched.cron}
-                      </Text>
-                    </Tooltip>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge color={sched.enabled ? 'green' : 'gray'}>
-                      {sched.enabled ? 'Activa' : 'Inactiva'}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Button
-                      size="xs"
-                      color="red"
-                      variant="light"
-                      onClick={() => handleDelete(sched.id)}
-                    >
-                      Eliminar
-                    </Button>
-                  </Table.Td>
+          <Table.ScrollContainer minWidth={500}>
+            <Table striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Container</Table.Th>
+                  <Table.Th>Acción</Table.Th>
+                  <Table.Th>Expresión Cron</Table.Th>
+                  <Table.Th>Estado</Table.Th>
+                  <Table.Th>Acción</Table.Th>
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+              </Table.Thead>
+              <Table.Tbody>
+                {schedules.map((sched) => (
+                  <Table.Tr key={sched.id}>
+                    <Table.Td>
+                      <Text size="sm" fw={500}>{sched.container}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge color={actionColor(sched.action)} variant="light">
+                        {actionLabel(sched.action)}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Tooltip label={sched.cron}>
+                        <Text size="xs" style={{ fontFamily: 'monospace' }}>
+                          {sched.cron}
+                        </Text>
+                      </Tooltip>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge color={sched.enabled ? 'green' : 'gray'}>
+                        {sched.enabled ? 'Activa' : 'Inactiva'}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Button
+                        size="xs"
+                        color="red"
+                        variant="light"
+                        onClick={() => handleDelete(sched.id)}
+                      >
+                        Eliminar
+                      </Button>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         </Paper>
       )}
     </Stack>

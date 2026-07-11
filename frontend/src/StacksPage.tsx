@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
@@ -10,6 +11,7 @@ import {
   Text,
   Title,
   Tooltip,
+  Divider,
 } from '@mantine/core'
 
 // ═══════════════════════════════════════════════════════════════
@@ -45,6 +47,7 @@ interface StackInfo {
 // ═══════════════════════════════════════════════════════════════
 
 export default function StacksPage() {
+  const isMobile = useMediaQuery('(max-width: 768px)')
   const [stacks, setStacks] = useState<StackInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [updatingProject, setUpdatingProject] = useState<string | null>(null)
@@ -61,12 +64,11 @@ export default function StacksPage() {
   useEffect(() => { loadStacks() }, [loadStacks])
 
   const handleUpdate = useCallback(async (project: string) => {
-    if (updatingProject) return // already updating
+    if (updatingProject) return
     setUpdatingProject(project)
     try {
       await apiFetch(`/api/stacks/${encodeURIComponent(project)}/update`, { method: 'POST' })
     } catch { /* ignore */ }
-    // Reload stacks after update completes
     await loadStacks()
     setUpdatingProject(null)
   }, [updatingProject, loadStacks])
@@ -86,6 +88,108 @@ export default function StacksPage() {
     return 'red'
   }
 
+  // ── Mobile card ─────────────────────────────────────────────
+  const renderMobileCard = (svc: ServiceInfo) => (
+    <Paper key={svc.service} shadow="sm" p="sm" withBorder>
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Text size="sm" fw={500}>{svc.service}</Text>
+          <Badge size="sm" color={statusColor(svc.status)}>{svc.status}</Badge>
+        </Group>
+        <Divider />
+        <Stack gap={2}>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Container:</Text>
+            <Text size="xs">{svc.container_name}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Imagen:</Text>
+            <Text size="xs">{svc.image}</Text>
+          </Group>
+        </Stack>
+      </Stack>
+    </Paper>
+  )
+
+  // ── Mobile group ────────────────────────────────────────────
+  const renderMobileGroup = (stack: StackInfo) => (
+    <Paper key={stack.project} shadow="sm" withBorder>
+      <Group px="md" pt="sm" pb="xs" justify="space-between">
+        <Title order={4}>📦 {stack.project}</Title>
+        <Tooltip label="Actualizar este stack (pull + up -d)">
+          <Button
+            size="xs"
+            variant="light"
+            color="cyan"
+            loading={updatingProject === stack.project}
+            disabled={updatingProject !== null}
+            onClick={() => handleUpdate(stack.project)}
+          >
+            {updatingProject === stack.project ? 'Actualizando...' : 'Actualizar'}
+          </Button>
+        </Tooltip>
+      </Group>
+      <Stack px="md" pb="md" gap="sm">
+        {stack.services.map(renderMobileCard)}
+      </Stack>
+    </Paper>
+  )
+
+  // ── Desktop group ───────────────────────────────────────────
+  const renderDesktopGroup = (stack: StackInfo) => (
+    <Paper key={stack.project} shadow="sm" withBorder>
+      <Stack gap={0}>
+        <Paper p="sm" style={{ background: 'var(--mantine-color-dark-6)' }}>
+          <Group justify="space-between">
+            <Title order={4}>📦 {stack.project}</Title>
+            <Tooltip label={updatingProject === stack.project ? 'Actualizando...' : 'Actualizar este stack (pull + up -d)'}>
+              <Button
+                size="xs"
+                variant="light"
+                color="cyan"
+                loading={updatingProject === stack.project}
+                disabled={updatingProject !== null}
+                onClick={() => handleUpdate(stack.project)}
+              >
+                {updatingProject === stack.project ? 'Actualizando...' : 'Actualizar stack'}
+              </Button>
+            </Tooltip>
+          </Group>
+        </Paper>
+        <Table.ScrollContainer minWidth={500}>
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Servicio</Table.Th>
+                <Table.Th>Container</Table.Th>
+                <Table.Th>Imagen</Table.Th>
+                <Table.Th>Estado</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {stack.services.map((svc) => (
+                <Table.Tr key={svc.service}>
+                  <Table.Td>
+                    <Text size="sm" fw={500}>{svc.service}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" c="dimmed">{svc.container_name}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" c="dimmed">{svc.image}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Badge color={statusColor(svc.status)}>{svc.status}</Badge>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      </Stack>
+    </Paper>
+  )
+
   return (
     <Stack>
       <Paper shadow="sm" p="md" mb="md" withBorder>
@@ -97,61 +201,9 @@ export default function StacksPage() {
         </Group>
       </Paper>
 
-      {stacks.map((stack) => (
-        <Paper key={stack.project} shadow="sm" withBorder>
-          <Stack gap={0}>
-            <Paper p="sm" style={{ background: 'var(--mantine-color-dark-6)' }}>
-              <Group justify="space-between">
-                <Title order={4}>
-                  📦 {stack.project}
-                </Title>
-                <Tooltip label={updatingProject === stack.project ? 'Actualizando...' : 'Actualizar este stack (pull + up -d)'}>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="cyan"
-                    loading={updatingProject === stack.project}
-                    disabled={updatingProject !== null}
-                    onClick={() => handleUpdate(stack.project)}
-                  >
-                    {updatingProject === stack.project ? 'Actualizando...' : 'Actualizar stack'}
-                  </Button>
-                </Tooltip>
-              </Group>
-            </Paper>
-            <Table striped highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Servicio</Table.Th>
-                  <Table.Th>Container</Table.Th>
-                  <Table.Th>Imagen</Table.Th>
-                  <Table.Th>Estado</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {stack.services.map((svc) => (
-                  <Table.Tr key={svc.service}>
-                    <Table.Td>
-                      <Text size="sm" fw={500}>{svc.service}</Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed">{svc.container_name}</Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed">{svc.image}</Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Badge color={statusColor(svc.status)}>
-                        {svc.status}
-                      </Badge>
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Stack>
-        </Paper>
-      ))}
+      {stacks.map((stack) =>
+        isMobile ? renderMobileGroup(stack) : renderDesktopGroup(stack)
+      )}
     </Stack>
   )
 }

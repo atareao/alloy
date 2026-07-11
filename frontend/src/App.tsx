@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { ActionIcon, AppShell, Badge, Button, Container, Group, Title, Tooltip, Tabs } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
+import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip, Tabs } from "@mantine/core";
 import type { ContainerInfo } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
@@ -21,6 +22,7 @@ interface UserInfo {
 }
 
 export default function App({ colorScheme, setColorScheme }: AppProps) {
+  const isMobile = useMediaQuery("(max-width: 768px)");
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
@@ -68,31 +70,54 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   return (
     <AppShell padding="md">
       <Container size="lg" py="md">
-        <Group justify="space-between" mb="lg">
-          <Title order={2}>
-            <img src="/favicon.svg" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
-            Alloy
-          </Title>
-          <Group>
-            {user && <Badge size="lg" variant="light" color="gray">{user.name}</Badge>}
-            <Badge size="lg" variant="light" color="blue">{containers.length} containers</Badge>
-            <Tooltip label={colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"}>
-              <ActionIcon variant="outline" color="gray" onClick={toggleColorScheme} size="lg" aria-label="Toggle color scheme">
-                {colorScheme === "dark" ? "☀️" : "🌙"}
-              </ActionIcon>
-            </Tooltip>
-            <Button size="xs" variant="outline" color="gray" onClick={logout}>🚪 Salir</Button>
+        {isMobile ? (
+          <Stack mb="md">
+            <Group justify="space-between">
+              <Title order={2}>
+                <img src="/favicon.svg" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
+                Alloy
+              </Title>
+              <Group gap="xs">
+                <Tooltip label={colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"}>
+                  <ActionIcon variant="outline" color="gray" onClick={toggleColorScheme} size="lg" aria-label="Toggle color scheme">
+                    {colorScheme === "dark" ? "☀️" : "🌙"}
+                  </ActionIcon>
+                </Tooltip>
+                <Button size="xs" variant="outline" color="gray" onClick={logout}>🚪</Button>
+              </Group>
+            </Group>
+            <Group gap="xs" wrap="wrap">
+              {user && <Badge size="sm" variant="light" color="gray">{user.name}</Badge>}
+              <Badge size="sm" variant="light" color="blue">{containers.length} containers</Badge>
+            </Group>
+          </Stack>
+        ) : (
+          <Group justify="space-between" mb="lg">
+            <Title order={2}>
+              <img src="/favicon.svg" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
+              Alloy
+            </Title>
+            <Group>
+              {user && <Badge size="lg" variant="light" color="gray">{user.name}</Badge>}
+              <Badge size="lg" variant="light" color="blue">{containers.length} containers</Badge>
+              <Tooltip label={colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"}>
+                <ActionIcon variant="outline" color="gray" onClick={toggleColorScheme} size="lg" aria-label="Toggle color scheme">
+                  {colorScheme === "dark" ? "☀️" : "🌙"}
+                </ActionIcon>
+              </Tooltip>
+              <Button size="xs" variant="outline" color="gray" onClick={logout}>🚪 Salir</Button>
+            </Group>
           </Group>
-        </Group>
+        )}
 
         <Tabs defaultValue="dashboard">
-          <Tabs.List mb="md">
-            <Tabs.Tab value="dashboard">📊 Dashboard</Tabs.Tab>
-            <Tabs.Tab value="stacks">📦 Stacks</Tabs.Tab>
-            <Tabs.Tab value="history">📜 Historial</Tabs.Tab>
-            <Tabs.Tab value="alerts">🔔 Alertas</Tabs.Tab>
-            <Tabs.Tab value="schedule">⏰ Planif</Tabs.Tab>
-            <Tabs.Tab value="config">⚙️ Config</Tabs.Tab>
+          <Tabs.List mb="md" style={{ overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none' }}>
+            <Tabs.Tab value="dashboard" style={{ whiteSpace: 'nowrap' }}>📊 Dashboard</Tabs.Tab>
+            <Tabs.Tab value="stacks" style={{ whiteSpace: 'nowrap' }}>📦 Stacks</Tabs.Tab>
+            <Tabs.Tab value="history" style={{ whiteSpace: 'nowrap' }}>📜 Historial</Tabs.Tab>
+            <Tabs.Tab value="alerts" style={{ whiteSpace: 'nowrap' }}>🔔 Alertas</Tabs.Tab>
+            <Tabs.Tab value="schedule" style={{ whiteSpace: 'nowrap' }}>⏰ Planif</Tabs.Tab>
+            <Tabs.Tab value="config" style={{ whiteSpace: 'nowrap' }}>⚙️ Config</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="dashboard"><DashboardPage /></Tabs.Panel>

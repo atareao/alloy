@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
@@ -9,6 +10,7 @@ import {
   Stack,
   Table,
   Text,
+  Divider,
 } from '@mantine/core'
 
 // ═══════════════════════════════════════════════════════════════
@@ -42,6 +44,7 @@ interface HistoryEntry {
 // ═══════════════════════════════════════════════════════════════
 
 export default function HistoryPage() {
+  const isMobile = useMediaQuery('(max-width: 768px)')
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -93,6 +96,46 @@ export default function HistoryPage() {
     }
   }
 
+  const shortDigest = (d: string | undefined) => {
+    if (!d) return '-'
+    return d.length > 20 ? d.substring(0, 20) + '...' : d
+  }
+
+  // ── Mobile card ─────────────────────────────────────────────
+  const renderMobileCard = (entry: HistoryEntry, i: number) => (
+    <Paper key={i} shadow="sm" p="sm" withBorder>
+      <Stack gap="xs">
+        <Group justify="space-between" wrap="nowrap">
+          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>{entry.container}</Text>
+          <Badge size="sm" color={statusColor(entry.status)}>{entry.status}</Badge>
+        </Group>
+        <Divider />
+        <Stack gap={2}>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Imagen:</Text>
+            <Text size="xs">{entry.image}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Anterior:</Text>
+            <Text size="xs" style={{ fontFamily: 'monospace' }}>{shortDigest(entry.old_digest)}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Nueva:</Text>
+            <Text size="xs" style={{ fontFamily: 'monospace' }}>{shortDigest(entry.new_digest)}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Duración:</Text>
+            <Text size="xs">{formatDuration(entry.duration_ms)}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Fecha:</Text>
+            <Text size="xs">{formatDate(entry.timestamp)}</Text>
+          </Group>
+        </Stack>
+      </Stack>
+    </Paper>
+  )
+
   return (
     <Stack>
       <Paper shadow="sm" p="md" mb="md" withBorder>
@@ -105,9 +148,9 @@ export default function HistoryPage() {
               onClick={() => setConfirmClear(true)}
               variant="filled"
               color="red"
-              size="xs"
+              size={isMobile ? 'xs' : 'sm'}
             >
-              🗑️ Limpiar historial
+              🗑️ Limpiar
             </Button>
           )}
         </Group>
@@ -140,58 +183,60 @@ export default function HistoryPage() {
             aparecerá aquí.
           </Text>
         </Paper>
+      ) : isMobile ? (
+        <Stack gap="sm">
+          {history.map((entry, i) => renderMobileCard(entry, i))}
+        </Stack>
       ) : (
         <Paper shadow="sm" withBorder>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Container</Table.Th>
-                <Table.Th>Imagen</Table.Th>
-                <Table.Th>Versión anterior</Table.Th>
-                <Table.Th>Nueva versión</Table.Th>
-                <Table.Th>Estado</Table.Th>
-                <Table.Th>Duración</Table.Th>
-                <Table.Th>Fecha</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {history.map((entry, i) => (
-                <Table.Tr key={i}>
-                  <Table.Td>
-                    <Text size="sm" fw={500}>{entry.container}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed">{entry.image}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-                      {entry.old_digest?.length > 20
-                        ? entry.old_digest.substring(0, 20) + '...'
-                        : entry.old_digest || '-'}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
-                      {entry.new_digest?.length > 20
-                        ? entry.new_digest.substring(0, 20) + '...'
-                        : entry.new_digest || '-'}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Badge color={statusColor(entry.status)}>
-                      {entry.status}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed">{formatDuration(entry.duration_ms)}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="xs" c="dimmed">{formatDate(entry.timestamp)}</Text>
-                  </Table.Td>
+          <Table.ScrollContainer minWidth={700}>
+            <Table striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Container</Table.Th>
+                  <Table.Th>Imagen</Table.Th>
+                  <Table.Th>Versión anterior</Table.Th>
+                  <Table.Th>Nueva versión</Table.Th>
+                  <Table.Th>Estado</Table.Th>
+                  <Table.Th>Duración</Table.Th>
+                  <Table.Th>Fecha</Table.Th>
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+              </Table.Thead>
+              <Table.Tbody>
+                {history.map((entry, i) => (
+                  <Table.Tr key={i}>
+                    <Table.Td>
+                      <Text size="sm" fw={500}>{entry.container}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="xs" c="dimmed">{entry.image}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                        {shortDigest(entry.old_digest)}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                        {shortDigest(entry.new_digest)}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge color={statusColor(entry.status)}>
+                        {entry.status}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="xs" c="dimmed">{formatDuration(entry.duration_ms)}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="xs" c="dimmed">{formatDate(entry.timestamp)}</Text>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         </Paper>
       )}
     </Stack>

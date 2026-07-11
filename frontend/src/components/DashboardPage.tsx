@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef } from "react";
+import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Group, Loader, Menu, Paper, Table, Text,
-  Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress,
+  Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
+  SimpleGrid,
 } from "@mantine/core";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData } from "../types";
 import { apiFetch } from "../api";
@@ -26,6 +28,8 @@ export default function DashboardPage() {
   const cancelCheckRef = useRef(false);
   const [checkResults, setCheckResults] = useState<{ updated: number; uptodate: number; failed: number; errors: string[] }>({ updated: 0, uptodate: 0, failed: 0, errors: [] });
   const [showCheckSummary, setShowCheckSummary] = useState(false);
+
+  const isMobile = useMediaQuery("(max-width: 768px)");
 
   useEffect(() => {
     apiFetch("/api/containers")
@@ -129,7 +133,6 @@ export default function DashboardPage() {
       }
     }
 
-    // Apply the updates found
     setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
     setContainers(prev => prev.map(c => ({ ...c, has_update: c.has_update || !!updatedUpdates[c.name] })));
     setCheckResults({ updated: updatedCount, uptodate: uptodateCount, failed: failedCount, errors });
@@ -205,6 +208,97 @@ export default function DashboardPage() {
   }
   const sortedGroups = Array.from(grouped.entries()).sort(([a], [b]) => a.localeCompare(b));
 
+  // ── Mobile card view ────────────────────────────────────────
+  const renderMobileCard = (c: ContainerInfo) => {
+    const p = progress.get(c.name);
+    const isUpdating = updating === c.name || p?.done === false;
+    const hasUpdate = c.has_update || checkedUpdates[c.name];
+    return (
+      <Paper key={c.id} shadow="sm" p="sm" withBorder>
+        <Stack gap="xs">
+          {/* Header: name + status + menu */}
+          <Group justify="space-between" wrap="nowrap">
+            <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+              <Text size="sm" fw={500} truncate>{c.name}</Text>
+              <Badge
+                size="sm"
+                color={c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red"}
+              >
+                {c.status.includes("healthy") ? "healthy" : c.state}
+              </Badge>
+            </Group>
+            <Menu shadow="md" width={200}>
+              <Menu.Target>
+                <ActionIcon variant="subtle" size="sm" aria-label="Menú">⋮</ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown>
+                <Menu.Item leftSection="🔍" onClick={() => handleInspect(c.name)}>Inspeccionar</Menu.Item>
+                <Menu.Item leftSection="▶️" onClick={() => handleContainerAction(c.name, "start")} disabled={c.state === "running"}>Iniciar</Menu.Item>
+                <Menu.Item leftSection="⏹️" onClick={() => handleContainerAction(c.name, "stop")} disabled={c.state !== "running"}>Parar</Menu.Item>
+                <Menu.Item leftSection="🔄" onClick={() => handleContainerAction(c.name, "restart")}>Reiniciar</Menu.Item>
+                <Menu.Divider />
+                <Menu.Item leftSection="🗑️" color="red" onClick={() => setConfirmDelete(c.name)}>Eliminar</Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
+          </Group>
+
+          {/* Image + update button */}
+          <Group gap="xs" wrap="nowrap">
+            <Text size="xs" c="dimmed" truncate style={{ flex: 1 }}>
+              {c.image}:{c.image_tag}
+            </Text>
+            {hasUpdate && (
+              <Tooltip label="Actualizar container">
+                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateContainer(c.name)} loading={isUpdating}>⬆</ActionIcon>
+              </Tooltip>
+            )}
+            {c.registry_url && (
+              <Tooltip label="Ver en registry">
+                <ActionIcon component="a" href={c.registry_url} target="_blank" rel="noopener noreferrer" variant="subtle" size="sm">📦</ActionIcon>
+              </Tooltip>
+            )}
+          </Group>
+
+          {p && (
+            <Group gap="xs">
+              <Loader size="xs" />
+              <Text size="xs" c="dimmed">{p.status}</Text>
+            </Group>
+          )}
+
+          <Divider />
+
+          {/* Details grid */}
+          <SimpleGrid cols={2} spacing="xs">
+            {c.compose_project && (
+              <Stack gap={0}>
+                <Text size="xs" c="dimmed">Stack</Text>
+                <Badge size="sm" variant="light" color="grape">{c.compose_project}</Badge>
+              </Stack>
+            )}
+            {c.ports.length > 0 && (
+              <Stack gap={0}>
+                <Text size="xs" c="dimmed">Puertos</Text>
+                <Stack gap={2}>
+                  {c.ports.map((port, i) => <Code key={i}>{port}</Code>)}
+                </Stack>
+              </Stack>
+            )}
+            {c.traefik_url && (
+              <Stack gap={0}>
+                <Text size="xs" c="dimmed">Traefik</Text>
+                <Anchor href={c.traefik_url} target="_blank" rel="noopener noreferrer" size="xs" truncate>
+                  {c.traefik_url.replace(/^https?:\/\//, "")}
+                </Anchor>
+              </Stack>
+            )}
+          </SimpleGrid>
+        </Stack>
+      </Paper>
+    );
+  };
+
+  // ── Desktop row ─────────────────────────────────────────────
   const renderRow = (c: ContainerInfo) => {
     const p = progress.get(c.name);
     const isUpdating = updating === c.name || p?.done === false;
@@ -268,26 +362,42 @@ export default function DashboardPage() {
     );
   };
 
+  // ── Mobile group card ───────────────────────────────────────
+  const renderMobileGroup = (project: string, items: ContainerInfo[]) => (
+    <Paper shadow="sm" withBorder mb="md" key={project}>
+      <Group px="md" pt="sm" pb="xs">
+        <Title order={4}>📦 {project}</Title>
+        <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
+      </Group>
+      <Stack px="md" pb="md" gap="sm">
+        {items.map(renderMobileCard)}
+      </Stack>
+    </Paper>
+  );
+
+  // ── Desktop group ───────────────────────────────────────────
   const renderGroup = (project: string, items: ContainerInfo[]) => (
     <Paper shadow="sm" withBorder mb="md" key={project}>
       <Group px="md" pt="sm" pb="xs">
         <Title order={4}>📦 {project}</Title>
         <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
       </Group>
-      <Table striped highlightOnHover>
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Container</Table.Th>
-            <Table.Th>Imagen</Table.Th>
-            <Table.Th>Stack</Table.Th>
-            <Table.Th>Puertos</Table.Th>
-            <Table.Th>Traefik</Table.Th>
-            <Table.Th>Estado</Table.Th>
-            <Table.Th>Menú</Table.Th>
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>{items.map(renderRow)}</Table.Tbody>
-      </Table>
+      <Table.ScrollContainer minWidth={700}>
+        <Table striped highlightOnHover>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Container</Table.Th>
+              <Table.Th>Imagen</Table.Th>
+              <Table.Th>Stack</Table.Th>
+              <Table.Th>Puertos</Table.Th>
+              <Table.Th>Traefik</Table.Th>
+              <Table.Th>Estado</Table.Th>
+              <Table.Th>Menú</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>{items.map(renderRow)}</Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
     </Paper>
   );
 
@@ -321,50 +431,82 @@ export default function DashboardPage() {
             </Group>
           </Stack>
         ) : (
-          <Group justify="space-between">
-            <Text size="sm" c="dimmed">SSE en tiempo real · {containers.length} containers</Text>
-            <Group gap="xs">
-              <Tooltip label="Comprueba todos los containers contra el registry">
-                <Button onClick={checkAll} variant="filled" color="cyan">🔍 Check all</Button>
-              </Tooltip>
-              <Tooltip label="Actualiza todas las imágenes y reinicia containers">
-                <Button onClick={updateAll} loading={updating === "__all__"} variant="filled" color="yellow">Actualizar todo</Button>
-              </Tooltip>
+          isMobile ? (
+            <Stack gap="sm">
+              <Text size="sm" c="dimmed">SSE en tiempo real · {containers.length} containers</Text>
+              <Button onClick={checkAll} variant="filled" color="cyan" fullWidth>🔍 Check all</Button>
+              <Button onClick={updateAll} loading={updating === "__all__"} variant="filled" color="yellow" fullWidth>Actualizar todo</Button>
+            </Stack>
+          ) : (
+            <Group justify="space-between">
+              <Text size="sm" c="dimmed">SSE en tiempo real · {containers.length} containers</Text>
+              <Group gap="xs">
+                <Tooltip label="Comprueba todos los containers contra el registry">
+                  <Button onClick={checkAll} variant="filled" color="cyan">🔍 Check all</Button>
+                </Tooltip>
+                <Tooltip label="Actualiza todas las imágenes y reinicia containers">
+                  <Button onClick={updateAll} loading={updating === "__all__"} variant="filled" color="yellow">Actualizar todo</Button>
+                </Tooltip>
+              </Group>
             </Group>
-          </Group>
+          )
         )}
       </Paper>
-      {sortedGroups.map(([project, items]) => renderGroup(project, items))}
-      {noStack.length > 0 && (
-        <Paper shadow="sm" withBorder>
-          <Group px="md" pt="sm" pb="xs">
-            <Title order={4}>📦 Sin stack</Title>
-            <Badge size="lg" variant="light" color="gray">{noStack.length} containers</Badge>
-          </Group>
-          <Table striped highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Container</Table.Th>
-                <Table.Th>Imagen</Table.Th>
-                <Table.Th>Stack</Table.Th>
-                <Table.Th>Puertos</Table.Th>
-                <Table.Th>Traefik</Table.Th>
-                <Table.Th>Estado</Table.Th>
-                <Table.Th>Menú</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>{noStack.map(renderRow)}</Table.Tbody>
-          </Table>
-        </Paper>
+
+      {/* Container groups — mobile vs desktop */}
+      {isMobile ? (
+        <>
+          {sortedGroups.map(([project, items]) => renderMobileGroup(project, items))}
+          {noStack.length > 0 && (
+            <Paper shadow="sm" withBorder>
+              <Group px="md" pt="sm" pb="xs">
+                <Title order={4}>📦 Sin stack</Title>
+                <Badge size="lg" variant="light" color="gray">{noStack.length} containers</Badge>
+              </Group>
+              <Stack px="md" pb="md" gap="sm">
+                {noStack.map(renderMobileCard)}
+              </Stack>
+            </Paper>
+          )}
+        </>
+      ) : (
+        <>
+          {sortedGroups.map(([project, items]) => renderGroup(project, items))}
+          {noStack.length > 0 && (
+            <Paper shadow="sm" withBorder>
+              <Group px="md" pt="sm" pb="xs">
+                <Title order={4}>📦 Sin stack</Title>
+                <Badge size="lg" variant="light" color="gray">{noStack.length} containers</Badge>
+              </Group>
+              <Table.ScrollContainer minWidth={700}>
+                <Table striped highlightOnHover>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Container</Table.Th>
+                      <Table.Th>Imagen</Table.Th>
+                      <Table.Th>Stack</Table.Th>
+                      <Table.Th>Puertos</Table.Th>
+                      <Table.Th>Traefik</Table.Th>
+                      <Table.Th>Estado</Table.Th>
+                      <Table.Th>Menú</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>{noStack.map(renderRow)}</Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
+            </Paper>
+          )}
+        </>
       )}
+
       {actionNotif && (
-        <Paper shadow="md" p="sm" withBorder mb="xs" style={{ position: "fixed", bottom: 20, right: 20, zIndex: 1000, background: actionNotif.error ? "#3d1f1f" : "#1f3d1f", borderColor: actionNotif.error ? "#e03131" : "#2f9e44" }}>
+        <Paper shadow="md" p="sm" withBorder mb="xs" style={{ position: "fixed", bottom: isMobile ? 0 : 20, right: isMobile ? 0 : 20, left: isMobile ? 0 : undefined, zIndex: 1000, background: actionNotif.error ? "#3d1f1f" : "#1f3d1f", borderColor: actionNotif.error ? "#e03131" : "#2f9e44" }}>
           <Group justify="space-between">
             <Text size="sm"><b>{actionNotif.container}</b> — {actionNotif.error ? `❌ ${actionNotif.error}` : `✅ ${actionNotif.action}`}</Text>
           </Group>
         </Paper>
       )}
-      <Modal opened={inspectName !== null} onClose={() => { setInspectName(null); setInspectData(null); setInspectError(null); }} title={`🔍 Inspeccionar ${inspectName || ""}`} size="xl">
+      <Modal opened={inspectName !== null} onClose={() => { setInspectName(null); setInspectData(null); setInspectError(null); }} title={`🔍 Inspeccionar ${inspectName || ""}`} size={isMobile ? "100%" : "xl"}>
         {inspectLoading ? (
           <Group justify="center" py="xl"><Loader /><Text>Obteniendo información...</Text></Group>
         ) : inspectError ? <Text c="red">{inspectError}</Text> : inspectData ? (
@@ -391,32 +533,38 @@ export default function DashboardPage() {
             </Tabs.Panel>
             <Tabs.Panel value="ports">
               {inspectData.ports?.length > 0 ? (
-                <Table striped>
-                  <Table.Thead><Table.Tr><Table.Th>Puerto Privado</Table.Th><Table.Th>Puerto Público</Table.Th><Table.Th>Tipo</Table.Th></Table.Tr></Table.Thead>
-                  <Table.Tbody>{inspectData.ports.map((p: any, i: number) => (
-                    <Table.Tr key={i}><Table.Td>{p.private_port}</Table.Td><Table.Td>{p.public_port != null ? p.public_port : "-"}</Table.Td><Table.Td>{p.type}</Table.Td></Table.Tr>
-                  ))}</Table.Tbody>
-                </Table>
+                <Table.ScrollContainer minWidth={400}>
+                  <Table striped>
+                    <Table.Thead><Table.Tr><Table.Th>Puerto Privado</Table.Th><Table.Th>Puerto Público</Table.Th><Table.Th>Tipo</Table.Th></Table.Tr></Table.Thead>
+                    <Table.Tbody>{inspectData.ports.map((p: any, i: number) => (
+                      <Table.Tr key={i}><Table.Td>{p.private_port}</Table.Td><Table.Td>{p.public_port != null ? p.public_port : "-"}</Table.Td><Table.Td>{p.type}</Table.Td></Table.Tr>
+                    ))}</Table.Tbody>
+                  </Table>
+                </Table.ScrollContainer>
               ) : <Text size="sm" c="dimmed" py="md">Sin puertos expuestos</Text>}
             </Tabs.Panel>
             <Tabs.Panel value="volumes">
               {inspectData.mounts?.length > 0 ? (
-                <Table striped>
-                  <Table.Thead><Table.Tr><Table.Th>Origen</Table.Th><Table.Th>Destino</Table.Th><Table.Th>Modo</Table.Th></Table.Tr></Table.Thead>
-                  <Table.Tbody>{inspectData.mounts.map((m: any, i: number) => (
-                    <Table.Tr key={i}><Table.Td><Text size="sm">{m.source}</Text></Table.Td><Table.Td><Text size="sm">{m.destination}</Text></Table.Td><Table.Td><Badge variant="light">{m.mode}</Badge></Table.Td></Table.Tr>
-                  ))}</Table.Tbody>
-                </Table>
+                <Table.ScrollContainer minWidth={400}>
+                  <Table striped>
+                    <Table.Thead><Table.Tr><Table.Th>Origen</Table.Th><Table.Th>Destino</Table.Th><Table.Th>Modo</Table.Th></Table.Tr></Table.Thead>
+                    <Table.Tbody>{inspectData.mounts.map((m: any, i: number) => (
+                      <Table.Tr key={i}><Table.Td><Text size="sm">{m.source}</Text></Table.Td><Table.Td><Text size="sm">{m.destination}</Text></Table.Td><Table.Td><Badge variant="light">{m.mode}</Badge></Table.Td></Table.Tr>
+                    ))}</Table.Tbody>
+                  </Table>
+                </Table.ScrollContainer>
               ) : <Text size="sm" c="dimmed" py="md">Sin volúmenes montados</Text>}
             </Tabs.Panel>
             <Tabs.Panel value="networks">
               {inspectData.networks?.length > 0 ? (
-                <Table striped>
-                  <Table.Thead><Table.Tr><Table.Th>Red</Table.Th><Table.Th>IP</Table.Th><Table.Th>Gateway</Table.Th></Table.Tr></Table.Thead>
-                  <Table.Tbody>{inspectData.networks.map((n: any, i: number) => (
-                    <Table.Tr key={i}><Table.Td><Text size="sm">{n.name}</Text></Table.Td><Table.Td><Code>{n.ip_address}</Code></Table.Td><Table.Td><Code>{n.gateway}</Code></Table.Td></Table.Tr>
-                  ))}</Table.Tbody>
-                </Table>
+                <Table.ScrollContainer minWidth={400}>
+                  <Table striped>
+                    <Table.Thead><Table.Tr><Table.Th>Red</Table.Th><Table.Th>IP</Table.Th><Table.Th>Gateway</Table.Th></Table.Tr></Table.Thead>
+                    <Table.Tbody>{inspectData.networks.map((n: any, i: number) => (
+                      <Table.Tr key={i}><Table.Td><Text size="sm">{n.name}</Text></Table.Td><Table.Td><Code>{n.ip_address}</Code></Table.Td><Table.Td><Code>{n.gateway}</Code></Table.Td></Table.Tr>
+                    ))}</Table.Tbody>
+                  </Table>
+                </Table.ScrollContainer>
               ) : <Text size="sm" c="dimmed" py="md">Sin redes</Text>}
             </Tabs.Panel>
             <Tabs.Panel value="env">
