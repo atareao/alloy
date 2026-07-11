@@ -1,0 +1,303 @@
+use axum::{
+    extract::{Path, State},
+    response::Json,
+    routing::{get, post},
+    Router,
+};
+use bollard::{container::ListContainersOptions, Docker};
+use chrono::Local;
+use std::collections::HashMap;
+use tokio::sync::broadcast;
+
+use crate::config::Config;
+use crate::models::*;
+use crate::notifications::notify_all;
+use crate::state::AppState;
+
+fn get_compose_projects() -> HashMap<String, String> {
+    let output = std::process::Command::new("docker")
+        .args(["compose", "ls", "--format", "json"])
+        .output();
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        _ => return HashMap::new(),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut projects: HashMap<String, String> = HashMap::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if let (Some(name), Some(files)) = (
+                val.get("Name").and_then(|n| n.as_str()),
+                val.get("ConfigFiles").and_then(|f| f.as_str()),
+            ) {
+                let first_file = files.split(',').next().unwrap_or(files).trim().to_string();
+                tracing::info!("Detected compose project '{}' at {}", name, first_file);
+                projects.insert(name.to_string(), first_file);
+            }
+        }
+    }
+    projects
+}
+
+fn get_compose_project_path(project: &str) -> Option<String> {
+    let projects = get_compose_projects();
+    projects.get(project).cloned()
+}
+
+async fn list_stacks_h(State(docker): State<Docker>) -> Json<Vec<StackInfo>> {
+    let containers = docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+        .unwrap_or_default();
+    let mut projects: HashMap<String, Vec<StackService>> = HashMap::new();
+    for c in &containers {
+        let labels = c.labels.as_ref();
+        let project = labels.and_then(|l| l.get(LABEL_COMPOSE_PROJECT)).cloned();
+        let service = labels.and_then(|l| l.get(LABEL_COMPOSE_SERVICE)).cloned();
+        if let (Some(project), Some(service)) = (project, service) {
+            let name = c
+                .names
+                .as_ref()
+                .and_then(|n| n.first())
+                .map(|n| strip_name(n))
+                .unwrap_or_default();
+            let image = c.image.as_deref().unwrap_or("unknown").to_string();
+            let status = c.status.as_deref().unwrap_or("unknown").to_string();
+            let state = c.state.as_deref().unwrap_or("unknown").to_string();
+            projects.entry(project).or_default().push(StackService {
+                service,
+                container_name: name,
+                image,
+                status,
+                state,
+            });
+        }
+    }
+    let stacks: Vec<StackInfo> = projects
+        .into_iter()
+        .map(|(project, services)| StackInfo { project, services })
+        .collect();
+    Json(stacks)
+}
+
+async fn update_stack_h(
+    State(docker): State<Docker>,
+    State(config): State<Config>,
+    State(update_tx): State<broadcast::Sender<UpdateProgress>>,
+    State(notif_tx): State<broadcast::Sender<NotifEvent>>,
+    Path(project): Path<String>,
+) -> Result<Json<StackUpdateResponse>, AppError> {
+    let containers = docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+        .map_err(|e| AppError::Docker(e.to_string()))?;
+    let project_containers: Vec<_> = containers
+        .iter()
+        .filter(|c| {
+            c.labels
+                .as_ref()
+                .and_then(|l| l.get(LABEL_COMPOSE_PROJECT))
+                .map(|p| p == project.as_str())
+                .unwrap_or(false)
+        })
+        .collect();
+    if project_containers.is_empty() {
+        return Err(AppError::NotFound(format!("Stack '{}' not found", project)));
+    }
+    let mut services: Vec<String> = Vec::new();
+    for c in &project_containers {
+        if let Some(svc) = c
+            .labels
+            .as_ref()
+            .and_then(|l| l.get(LABEL_COMPOSE_SERVICE))
+            .cloned()
+        {
+            if !services.contains(&svc) {
+                services.push(svc);
+            }
+        }
+    }
+    let compose_file = project_containers
+        .first()
+        .and_then(|c| c.labels.as_ref())
+        .and_then(|l| l.get(LABEL_COMPOSE_CONFIG_FILES))
+        .cloned()
+        .or_else(|| {
+            project_containers
+                .first()
+                .and_then(|c| c.labels.as_ref())
+                .and_then(|l| l.get(LABEL_COMPOSE_WORKING_DIR))
+                .map(|dir| format!("{}/docker-compose.yml", dir))
+        })
+        .filter(|p| std::path::Path::new(p).exists())
+        .or_else(|| get_compose_project_path(&project));
+    let compose_file = match compose_file {
+        Some(f) => f,
+        None => {
+            tracing::warn!("No compose file found for project '{}'", project);
+            return Err(AppError::NotFound(format!(
+                "No compose file for '{}'",
+                project
+            )));
+        }
+    };
+    let _ = update_tx.send(UpdateProgress {
+        container: project.clone(),
+        status: format!(
+            "🔄 Updating stack '{}' ({} services)...",
+            project,
+            services.len()
+        ),
+        done: false,
+        error: None,
+    });
+    let mut results = Vec::new();
+    for service in &services {
+        let start = std::time::Instant::now();
+        let _ = update_tx.send(UpdateProgress {
+            container: format!("{}/{}", project, service),
+            status: format!("📥 Pulling {}...", service),
+            done: false,
+            error: None,
+        });
+        let pull_result = tokio::process::Command::new("docker")
+            .args(["compose", "-f", &compose_file, "pull", service])
+            .output()
+            .await;
+        match pull_result {
+            Ok(output) if output.status.success() => {
+                let _ = update_tx.send(UpdateProgress {
+                    container: format!("{}/{}", project, service),
+                    status: format!("🔄 Recreating {}...", service),
+                    done: false,
+                    error: None,
+                });
+                let up_result = tokio::process::Command::new("docker")
+                    .args([
+                        "compose",
+                        "-f",
+                        &compose_file,
+                        "up",
+                        "-d",
+                        "--no-deps",
+                        service,
+                    ])
+                    .output()
+                    .await;
+                match up_result {
+                    Ok(up_output) if up_output.status.success() => {
+                        let duration = start.elapsed().as_millis() as u64;
+                        results.push(StackUpdateResult {
+                            service: service.clone(),
+                            status: "ok".into(),
+                            duration_ms: duration,
+                            error: None,
+                        });
+                        let _ = update_tx.send(UpdateProgress {
+                            container: format!("{}/{}", project, service),
+                            status: format!("✅ {} updated", service),
+                            done: true,
+                            error: None,
+                        });
+                        let ts = Local::now().format("%H:%M:%S").to_string();
+                        let _ = notif_tx.send(NotifEvent {
+                            container: format!("{}/{}", project, service),
+                            status: "updated ✅".into(),
+                            timestamp: ts,
+                        });
+                        notify_all(
+                            &config,
+                            &format!("{}/{}", project, service),
+                            "✅ actualizado via stack",
+                        )
+                        .await;
+                    }
+                    Ok(up_output) => {
+                        let stderr = String::from_utf8_lossy(&up_output.stderr).to_string();
+                        results.push(StackUpdateResult {
+                            service: service.clone(),
+                            status: "error".into(),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            error: Some(stderr.clone()),
+                        });
+                        let _ = update_tx.send(UpdateProgress {
+                            container: format!("{}/{}", project, service),
+                            status: format!("❌ {} error: {}", service, stderr),
+                            done: true,
+                            error: Some(stderr),
+                        });
+                    }
+                    Err(e) => {
+                        results.push(StackUpdateResult {
+                            service: service.clone(),
+                            status: "error".into(),
+                            duration_ms: start.elapsed().as_millis() as u64,
+                            error: Some(e.to_string()),
+                        });
+                        let _ = update_tx.send(UpdateProgress {
+                            container: format!("{}/{}", project, service),
+                            status: format!("❌ {} error: {}", service, e),
+                            done: true,
+                            error: Some(e.to_string()),
+                        });
+                    }
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                results.push(StackUpdateResult {
+                    service: service.clone(),
+                    status: "error".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(stderr.clone()),
+                });
+                let _ = update_tx.send(UpdateProgress {
+                    container: format!("{}/{}", project, service),
+                    status: format!("❌ {} pull error: {}", service, stderr),
+                    done: true,
+                    error: Some(stderr),
+                });
+            }
+            Err(e) => {
+                results.push(StackUpdateResult {
+                    service: service.clone(),
+                    status: "error".into(),
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    error: Some(e.to_string()),
+                });
+                let _ = update_tx.send(UpdateProgress {
+                    container: format!("{}/{}", project, service),
+                    status: format!("❌ {} error: {}", service, e),
+                    done: true,
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+    let _ = update_tx.send(UpdateProgress {
+        container: project.clone(),
+        status: format!("🏁 Stack '{}' update complete", project),
+        done: true,
+        error: None,
+    });
+    Ok(Json(StackUpdateResponse {
+        project: project.to_string(),
+        results,
+    }))
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/stacks", get(list_stacks_h))
+        .route("/api/stacks/{project}/update", post(update_stack_h))
+}

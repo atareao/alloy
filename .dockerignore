@@ -1,0 +1,26 @@
+# Git
+.git/
+.gitignore
+
+# Rust build artifacts
+backend/target/
+
+# Frontend (only node_modules excluded — src and dist needed for frontend build stage)
+frontend/node_modules/
+
+# Persistence files (generated at runtime)
+*.json
+*.log
+
+# Docs / config examples
+AGENTS.md
+README.md
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

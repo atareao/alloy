@@ -1,0 +1,77 @@
+# alloy.container — Quadlet para Cabina de Mando Docker (alloy)
+# Copiar a ~/.config/containers/systemd/alloy.container
+# Luego: systemctl --user daemon-reload && systemctl --user start alloy
+#
+# Build de la imagen (desde la raíz del proyecto):
+#   cd /data/rust/alloy && just build
+# o manualmente:
+#   podman build --tag=localhost/atareao/alloy:latest .
+
+[Unit]
+Description=Alloy — Cabina de Mando Docker (Docker Dashboard)
+Documentation=https://github.com/atareao/alloy
+After=network-online.target
+
+[Container]
+ContainerName=alloy
+UserNS=keep-id
+
+# Imagen construida localmente con `just build`
+Image=localhost/atareao/alloy:latest
+
+# Docker socket — necesario para Bollard (Docker API client)
+# Para Docker Engine:         /var/run/docker.sock
+# Para Podman rootless:      /run/user/1000/podman/podman.sock
+Volume=/run/user/1000/podman/podman.sock:/var/run/docker.sock:Z
+
+# Datos persistentes (JSON: updates_history, alerts, health_checks, schedules)
+Volume=%h/.local/share/alloy/data:/app/data:Z
+
+# Configuración opcional — montar config.yaml personalizada
+#Volume=%h/.config/alloy/config.yaml:/app/config.yaml:Z,ro
+
+# Puerto de la interfaz web
+PublishPort=3066:3066
+
+# ═══════════════════════════════════════════════════════════
+# Variables de entorno — configuración mínima
+# ═══════════════════════════════════════════════════════════
+
+# OIDC — OBLIGATORIO (PocketID o cualquier proveedor OIDC)
+Environment=OIDC_ISSUER_URL=https://auth.ejemplo.com
+Environment=OIDC_CLIENT_ID=alloy
+Environment=OIDC_CLIENT_SECRET=cambia-esto-en-produccion
+Environment=OIDC_REDIRECT_URL=https://alloy.ejemplo.com/api/auth/callback
+
+# DOCKER_HOST apunta al socket DENTRO del contenedor (montado vía Volume)
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+
+# Opcional: puerto (por defecto 3066)
+Environment=PORT=3066
+
+# Opcional: escucha en todas las interfaces
+Environment=HOST=0.0.0.0
+Environment=RUST_LOG=debug
+
+# ═══════════════════════════════════════════════════════════
+# Notificaciones (opcional) — Telegram
+# ═══════════════════════════════════════════════════════════
+#Environment=TELEGRAM_TOKEN=...
+#Environment=TELEGRAM_CHAT_ID=...
+
+# ═══════════════════════════════════════════════════════════
+# Notificaciones (opcional) — Matrix
+# ═══════════════════════════════════════════════════════════
+#Environment=MATRIX_HOMESERVER=https://matrix.ejemplo.com
+#Environment=MATRIX_TOKEN=...
+#Environment=MATRIX_ROOM=!room:ejemplo.com
+
+# Grupo del socket Docker (típicamente docker:136, o podman:1000 en rootless)
+GroupAdd=136
+
+[Service]
+Restart=always
+TimeoutStartSec=30
+
+[Install]
+WantedBy=default.target

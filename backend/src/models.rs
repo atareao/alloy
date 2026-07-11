@@ -1,0 +1,467 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use uuid::Uuid;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerInfo {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub image_tag: String,
+    pub size_mb: f64,
+    pub status: String,
+    pub state: String,
+    pub has_update: bool,
+    pub compose_project: Option<String>,
+    pub ports: Vec<String>,
+    pub traefik_url: Option<String>,
+    pub registry_url: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StateEvent {
+    pub containers: Vec<ContainerInfo>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerStats {
+    pub name: String,
+    pub cpu_percent: f64,
+    pub memory_usage_mb: f64,
+    pub memory_limit_mb: f64,
+    pub network_rx_kb: f64,
+    pub network_tx_kb: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PruneResult {
+    pub containers_pruned: u64,
+    pub images_pruned: u64,
+    pub networks_pruned: u64,
+    pub volumes_pruned: u64,
+    pub space_reclaimed_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VolumeInfo {
+    pub name: String,
+    pub driver: String,
+    pub mountpoint: String,
+    pub size: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NetworkInfo {
+    pub name: String,
+    pub driver: String,
+    pub scope: String,
+    pub subnet: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DockerInfoResp {
+    pub version: String,
+    pub os: String,
+    pub arch: String,
+    pub containers_total: i64,
+    pub containers_running: i64,
+    pub containers_paused: i64,
+    pub containers_stopped: i64,
+    pub images: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    pub container: String,
+    pub status: String,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct NotifEvent {
+    pub container: String,
+    pub status: String,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PublicConfig {
+    pub oidc_configured: bool,
+    pub port: u16,
+    pub auto_update_enabled: bool,
+    pub auto_update_interval_hours: u64,
+    pub telegram_configured: bool,
+    pub matrix_configured: bool,
+    pub allowed_containers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionClaims {
+    pub sub: String,
+    pub name: String,
+    pub email: String,
+    pub exp: usize,
+}
+
+/// Claims del JWT emitido por PocketID / OIDC Provider.
+/// Se validan contra JWKS del issuer.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct JwtClaims {
+    pub sub: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub preferred_username: Option<String>,
+    pub exp: Option<usize>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerInspectResponse {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub created: String,
+    pub state: String,
+    pub status: String,
+    pub ports: Vec<PortInfo>,
+    pub mounts: Vec<MountInfo>,
+    pub env: Vec<String>,
+    pub networks: Vec<ContainerNetworkInfo>,
+    pub labels: HashMap<String, String>,
+    pub restart_policy: String,
+    pub health: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PortInfo {
+    pub private_port: u16,
+    pub public_port: Option<u16>,
+    pub r#type: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MountInfo {
+    pub source: String,
+    pub destination: String,
+    pub mode: String,
+    pub rw: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerNetworkInfo {
+    pub name: String,
+    pub ip_address: String,
+    pub gateway: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TerminalInput {
+    pub input: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StackService {
+    pub service: String,
+    pub container_name: String,
+    pub image: String,
+    pub status: String,
+    pub state: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StackInfo {
+    pub project: String,
+    pub services: Vec<StackService>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StackUpdateResult {
+    pub service: String,
+    pub status: String,
+    pub duration_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StackUpdateResponse {
+    pub project: String,
+    pub results: Vec<StackUpdateResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateHistoryEntry {
+    pub container: String,
+    pub image: String,
+    pub old_digest: String,
+    pub new_digest: String,
+    pub timestamp: String,
+    pub status: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AlertConfig {
+    #[serde(default = "default_alert_id")]
+    pub id: String,
+    pub r#type: String,
+    pub container: String,
+    #[serde(default)]
+    pub threshold: f64,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub notify_via: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HealthCheck {
+    #[serde(default = "default_hc_id")]
+    pub id: String,
+    pub r#type: String,
+    pub target: String,
+    #[serde(default = "default_interval")]
+    pub interval_secs: u64,
+    pub container: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<HealthCheckResult>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HealthCheckResult {
+    pub target: String,
+    pub status: String,
+    pub latency_ms: u64,
+    pub last_checked: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CreateHealthCheck {
+    pub r#type: String,
+    pub target: String,
+    #[serde(default = "default_interval")]
+    pub interval_secs: u64,
+    pub container: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CreateAlert {
+    pub r#type: String,
+    pub container: String,
+    #[serde(default)]
+    pub threshold: f64,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub notify_via: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct CreateSchedule {
+    pub container: String,
+    pub cron: String,
+    pub action: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct VersionCompare {
+    pub local_tag: String,
+    pub remote_tag: Option<String>,
+    pub has_update: Option<bool>,
+    pub local_digest: Option<String>,
+    pub remote_digest: Option<String>,
+    pub changelog_url: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScheduleTask {
+    #[serde(default = "default_schedule_id")]
+    pub id: String,
+    pub container: String,
+    pub cron: String,
+    pub action: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+pub fn default_alert_id() -> String {
+    Uuid::new_v4().to_string()
+}
+pub fn default_enabled() -> bool {
+    true
+}
+pub fn default_hc_id() -> String {
+    Uuid::new_v4().to_string()
+}
+pub fn default_interval() -> u64 {
+    60
+}
+pub fn default_schedule_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+#[derive(Clone, Default)]
+pub struct PrevCpuData {
+    pub total_usage: u64,
+}
+pub type CpuStatsCache = Arc<Mutex<HashMap<String, PrevCpuData>>>;
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+
+// ── Constants ──────────────────────────────────────────────
+pub const FILE_UPDATES_HISTORY: &str = "updates_history.json";
+pub const FILE_ALERTS: &str = "alerts.json";
+pub const FILE_HEALTH_CHECKS: &str = "health_checks.json";
+pub const FILE_SCHEDULES: &str = "schedules.json";
+
+pub const LABEL_COMPOSE_PROJECT: &str = "com.docker.compose.project";
+pub const LABEL_COMPOSE_SERVICE: &str = "com.docker.compose.service";
+pub const LABEL_COMPOSE_CONFIG_FILES: &str = "com.docker.compose.project.config_files";
+pub const LABEL_COMPOSE_WORKING_DIR: &str = "com.docker.compose.project.working_dir";
+
+pub fn strip_name(name: &str) -> String {
+    name.trim_start_matches('/').to_string()
+}
+
+#[derive(Debug)]
+pub enum AppError {
+    NotFound(String),
+    Docker(String),
+    Internal(String),
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let (status, msg) = match &self {
+            AppError::NotFound(m) => (StatusCode::NOT_FOUND, m.clone()),
+            AppError::Docker(m) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Docker: {}", m)),
+            AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m.clone()),
+        };
+        tracing::error!("{:?}: {}", status, msg);
+        (status, Json(serde_json::json!({"error": msg}))).into_response()
+    }
+}
+
+impl From<StatusCode> for AppError {
+    fn from(s: StatusCode) -> Self {
+        AppError::Internal(s.to_string())
+    }
+}
+
+impl From<bollard::errors::Error> for AppError {
+    fn from(e: bollard::errors::Error) -> Self {
+        AppError::Docker(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn test_strip_name_with_slash() {
+        assert_eq!(strip_name("/test"), "test");
+    }
+
+    #[test]
+    fn test_strip_name_without_slash() {
+        assert_eq!(strip_name("test"), "test");
+    }
+
+    #[test]
+    fn test_strip_name_empty() {
+        assert_eq!(strip_name(""), "");
+    }
+
+    #[test]
+    fn test_strip_name_only_slash() {
+        assert_eq!(strip_name("/"), "");
+    }
+
+    #[test]
+    fn test_strip_name_multi_slash() {
+        assert_eq!(strip_name("///test"), "test");
+    }
+
+    #[test]
+    fn test_default_alert_id_is_uuid() {
+        let id = default_alert_id();
+        assert!(!id.is_empty());
+        assert!(Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn test_default_enabled() {
+        assert!(default_enabled());
+    }
+
+    #[test]
+    fn test_default_hc_id_is_uuid() {
+        let id = default_hc_id();
+        assert!(!id.is_empty());
+        assert!(Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn test_default_interval() {
+        assert_eq!(default_interval(), 60);
+    }
+
+    #[test]
+    fn test_default_schedule_id_is_uuid() {
+        let id = default_schedule_id();
+        assert!(!id.is_empty());
+        assert!(Uuid::parse_str(&id).is_ok());
+    }
+
+    #[test]
+    fn test_app_error_not_found_status() {
+        let err = AppError::NotFound("missing".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_app_error_docker_status() {
+        let err = AppError::Docker("connection failed".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_app_error_internal_status() {
+        let err = AppError::Internal("oops".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_app_error_from_status_code() {
+        let err = AppError::from(StatusCode::BAD_REQUEST);
+        assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn test_alert_config_defaults() {
+        let alert = AlertConfig {
+            id: String::new(),
+            r#type: "cpu".into(),
+            container: "web".into(),
+            threshold: 0.0,
+            enabled: false,
+            notify_via: vec![],
+        };
+        assert_eq!(alert.r#type, "cpu");
+        assert_eq!(alert.container, "web");
+    }
+}
