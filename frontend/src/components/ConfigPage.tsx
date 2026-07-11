@@ -26,7 +26,7 @@ export default function ConfigPage() {
         <Title order={4} mb="md">🐳 Información del Daemon</Title>
         {dockerInfo ? (
           <Stack>
-            <SimpleGrid cols={2}>
+            <SimpleGrid cols={{ base: 1, sm: 2 }}>
               <div><Text size="xs" c="dimmed">Versión</Text><Text size="sm" fw={500}>{dockerInfo.version}</Text></div>
               <div><Text size="xs" c="dimmed">Sistema Operativo</Text><Text size="sm" fw={500}>{dockerInfo.os}</Text></div>
               <div><Text size="xs" c="dimmed">Arquitectura</Text><Text size="sm" fw={500}>{dockerInfo.arch}</Text></div>
@@ -34,7 +34,7 @@ export default function ConfigPage() {
             </SimpleGrid>
             <Divider />
             <Text size="sm" fw={500} mb="xs">Containers</Text>
-            <SimpleGrid cols={4}>
+            <SimpleGrid cols={{ base: 2, sm: 4 }}>
               <div><Text size="xs" c="dimmed">Total</Text><Text size="sm" fw={500}>{dockerInfo.containers_total}</Text></div>
               <div><Text size="xs" c="dimmed">Running</Text><Badge color="green">{dockerInfo.containers_running}</Badge></div>
               <div><Text size="xs" c="dimmed">Paused</Text><Badge color="yellow">{dockerInfo.containers_paused}</Badge></div>
