@@ -1,0 +1,26 @@
+# Rust
+backend/target/
+backend/Cargo.lock
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Goose
+.goose/
+
+# Codegraph
+.codegraph/
+
+# Config local (no commitear tokens)
+backend/config.yaml
+*.log
+.env
