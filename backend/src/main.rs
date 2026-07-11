@@ -179,12 +179,14 @@ async fn main() {
     tokio::spawn(auto_update_worker(
         docker.clone(),
         config.clone(),
+        settings.clone(),
         notif_tx.clone(),
         update_history.clone(),
     ));
     tokio::spawn(alerts_worker(
         docker.clone(),
         config.clone(),
+        settings.clone(),
         notif_tx.clone(),
         alerts.clone(),
     ));

@@ -21,6 +21,7 @@ use crate::state::{http_client, AppState};
 async fn update_container_h(
     State(docker): State<Docker>,
     State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
@@ -82,7 +83,7 @@ async fn update_container_h(
                 status: "updated ✅".into(),
                 timestamp: ts,
             });
-            notify_all(&config, &name, "✅ actualizado y reiniciado").await;
+            notify_all(&config, &settings, &name, "✅ actualizado y reiniciado").await;
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.to_string(),
@@ -133,6 +134,7 @@ async fn update_container_h(
 async fn update_all_h(
     State(docker): State<Docker>,
     State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
 ) -> Json<Vec<UpdateProgress>> {
@@ -173,7 +175,7 @@ async fn update_all_h(
                     status: "updated ✅".into(),
                     timestamp: ts,
                 });
-                notify_all(&config, &name, "✅ actualizado").await;
+                notify_all(&config, &settings, &name, "✅ actualizado").await;
                 results.push(UpdateProgress {
                     container: name.clone(),
                     status: "ok".into(),

@@ -7,7 +7,8 @@ use axum::{
 use bollard::{container::ListContainersOptions, Docker};
 use chrono::Local;
 use std::collections::HashMap;
-use tokio::sync::broadcast;
+use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Config;
 use crate::models::*;
@@ -90,6 +91,7 @@ async fn list_stacks_h(State(docker): State<Docker>) -> Json<Vec<StackInfo>> {
 async fn update_stack_h(
     State(docker): State<Docker>,
     State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     Path(project): Path<String>,
@@ -217,6 +219,7 @@ async fn update_stack_h(
                         });
                         notify_all(
                             &config,
+                            &settings,
                             &format!("{}/{}", project, service),
                             "✅ actualizado via stack",
                         )
