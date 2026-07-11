@@ -114,12 +114,46 @@ async fn auth_callback(
             (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
         })?;
 
-    let sub = jwt_claims.sub;
-    let name = jwt_claims
-        .name
-        .or(jwt_claims.preferred_username)
-        .unwrap_or_else(|| sub.clone());
+    let sub = jwt_claims.sub.clone();
     let email = jwt_claims.email.unwrap_or_default();
+    // Try to fetch UserInfo for a readable display name
+    let name = {
+        // Try to fetch UserInfo endpoint for display name
+        let userinfo_resp = client
+            .get(&meta.userinfo_endpoint)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .ok();
+        if let Some(resp) = userinfo_resp {
+            if let Ok(userinfo) = resp.json::<serde_json::Value>().await {
+                if let Some(display) = userinfo["preferred_username"]
+                    .as_str()
+                    .or(userinfo["name"].as_str())
+                    .or(userinfo["nickname"].as_str())
+                    .or(userinfo["email"].as_str())
+                {
+                    display.to_string()
+                } else {
+                    sub.clone()
+                }
+            } else {
+                jwt_claims
+                    .name
+                    .clone()
+                    .or(jwt_claims.preferred_username.clone())
+                    .or(Some(email.clone()))
+                    .unwrap_or(sub.clone())
+            }
+        } else {
+            jwt_claims
+                .name
+                .clone()
+                .or(jwt_claims.preferred_username.clone())
+                .or(Some(email.clone()))
+                .unwrap_or(sub.clone())
+        }
+    };
 
     // Create session token (signed JWT cookie)
     let session_token = encode(
