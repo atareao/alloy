@@ -36,37 +36,6 @@ export interface AppConfig {
   allowed_containers: string[] | null;
 }
 
-export interface ContainerStats {
-  name: string;
-  cpu_percent: number;
-  memory_usage_mb: number;
-  memory_limit_mb: number;
-  network_rx_kb: number;
-  network_tx_kb: number;
-}
-
-export interface VolumeInfo {
-  name: string;
-  driver: string;
-  mountpoint: string;
-  size: number | null;
-}
-
-export interface NetworkInfo {
-  name: string;
-  driver: string;
-  scope: string;
-  subnet: string | null;
-}
-
-export interface PruneResult {
-  containers_pruned: number;
-  images_pruned: number;
-  networks_pruned: number;
-  volumes_pruned: number;
-  space_reclaimed_bytes: number;
-}
-
 export interface DockerInfo {
   version: string;
   os: string;

@@ -1,20 +1,19 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     response::Json,
     routing::{get, post},
     Router,
 };
 use bollard::{
     container::{
-        InspectContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
-        RemoveContainerOptions, RestartContainerOptions, StartContainerOptions,
-        StopContainerOptions,
+        InspectContainerOptions, ListContainersOptions, RemoveContainerOptions,
+        RestartContainerOptions, StartContainerOptions, StopContainerOptions,
     },
     image::CreateImageOptions,
     Docker,
 };
 use futures::{pin_mut, StreamExt};
-use std::collections::HashMap;
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -176,37 +175,6 @@ pub async fn pull_image(docker: &Docker, image: &str) -> bool {
     true
 }
 
-async fn get_container_logs(docker: &Docker, name: &str, tail: usize) -> Vec<String> {
-    let container = match find_container_by_name(docker, name).await {
-        Ok(c) => c,
-        Err(_) => return vec!["Not found".into()],
-    };
-    let id = container.id.unwrap_or_default();
-    let options = LogsOptions::<String> {
-        stdout: true,
-        stderr: true,
-        tail: tail.to_string(),
-        ..Default::default()
-    };
-    let logs = docker.logs(&id, Some(options));
-    pin_mut!(logs);
-    let mut lines = vec![];
-    while let Some(item) = logs.next().await {
-        match item {
-            Ok(LogOutput::StdOut { message })
-            | Ok(LogOutput::StdErr { message })
-            | Ok(LogOutput::Console { message })
-            | Ok(LogOutput::StdIn { message }) => {
-                for line in String::from_utf8_lossy(&message).lines() {
-                    lines.push(line.to_string());
-                }
-            }
-            Err(e) => lines.push(format!("Error: {}", e)),
-        }
-    }
-    lines
-}
-
 async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
@@ -219,14 +187,6 @@ async fn list_containers_h(
         drop(cached);
         Json(fetch_containers(&docker, &config.allowed_containers).await)
     }
-}
-
-async fn container_logs_h(
-    State(docker): State<Docker>,
-    Path(name): Path<String>,
-    Query(q): Query<HashMap<String, usize>>,
-) -> Json<Vec<String>> {
-    Json(get_container_logs(&docker, &name, q.get("tail").copied().unwrap_or(50)).await)
 }
 
 async fn inspect_container_h(
@@ -434,7 +394,6 @@ pub fn routes() -> Router<AppState> {
         .route("/api/containers/{name}/stop", post(stop_container_h))
         .route("/api/containers/{name}/restart", post(restart_container_h))
         .route("/api/containers/{name}/remove", post(remove_container_h))
-        .route("/api/logs/{name}", get(container_logs_h))
         .route("/api/config", get(config_handler))
         .route("/api/history", get(get_history_h).delete(delete_history_h))
         .route("/api/health", get(health_h))

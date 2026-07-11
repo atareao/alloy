@@ -165,7 +165,10 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
           <Select
             label="Container"
             placeholder="Selecciona un container"
-            data={containers.map((c) => ({ value: c.name, label: c.name }))}
+            data={[
+              { value: '*', label: '🌟 Todos los containers' },
+              ...containers.map((c) => ({ value: c.name, label: c.name })),
+            ]}
             value={newContainer}
             onChange={setNewContainer}
             searchable

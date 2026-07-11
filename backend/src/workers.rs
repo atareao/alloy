@@ -1,5 +1,5 @@
 use bollard::{
-    container::{ListContainersOptions, RestartContainerOptions, StatsOptions},
+    container::{ListContainersOptions, RestartContainerOptions},
     system::EventsOptions,
     Docker,
 };
@@ -13,10 +13,9 @@ use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
 
 use crate::config::Config;
 use crate::containers::{fetch_containers, find_container_by_name, pull_image};
+use crate::models::ALL_CONTAINERS;
 use crate::models::*;
-use crate::notifications::notify_all;
-use crate::state::http_client;
-use crate::stats::calc_container_stats;
+use crate::notifications::{notify_all, notify_selected};
 
 pub type CachedContainers = Arc<RwLock<Option<Vec<ContainerInfo>>>>;
 
@@ -36,7 +35,7 @@ pub fn load_json<T: serde::de::DeserializeOwned>(path: &str) -> Vec<T> {
     }
 }
 
-// ── Buffered JSON Writer (P-3) ─────────────────────────────
+// ── Buffered JSON Writer ───────────────────────────────────
 
 struct WriteOp {
     path: String,
@@ -145,7 +144,7 @@ pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String
     }
 }
 
-// ── State Worker: Docker Events API + fallback (P-1 + P-2) ─
+// ── State Worker: Docker Events API + fallback ────────────
 
 pub async fn state_worker(
     docker: Docker,
@@ -260,13 +259,17 @@ pub async fn auto_update_worker(
     }
 }
 
+/// Monitoriza cambios de estado de los contenedores y notifica.
+/// Solo notifica transiciones: running → algo (problema) y algo → running (recuperación).
 pub async fn alerts_worker(
     docker: Docker,
     config: Config,
     notif_tx: broadcast::Sender<NotifEvent>,
     alerts: Arc<Mutex<Vec<AlertConfig>>>,
 ) {
-    let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    let mut previous_states: HashMap<String, String> = HashMap::new();
+    let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(15));
+
     loop {
         tick.tick().await;
         let alerts_list = alerts.lock().await.clone();
@@ -288,164 +291,63 @@ pub async fn alerts_worker(
                 Some((name, c))
             })
             .collect();
+
         for alert in &alerts_list {
             if !alert.enabled {
                 continue;
             }
             let container_name = &alert.container;
             let Some(container) = container_map.get(container_name) else {
+                // Container no existe — puede que esté stopped
+                let prev = previous_states.insert(container_name.clone(), "gone".into());
+                if prev.as_deref() != Some("gone") {
+                    let msg = format!("⚠️ Container '{}' ha desaparecido", container_name);
+                    let _ = notif_tx.send(NotifEvent {
+                        container: container_name.clone(),
+                        status: "alert: gone".into(),
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    });
+                    notify_selected(&config, container_name, &msg, &alert.notify_via).await;
+                }
                 continue;
             };
-            let cid = match container.id.as_deref() {
-                Some(id) => id,
-                None => continue,
-            };
-            match alert.r#type.as_str() {
-                "status" => {
-                    let container_state = container.state.as_deref().unwrap_or("unknown");
-                    if container_state == "exited"
-                        || container_state == "dead"
-                        || container_state == "paused"
-                    {
-                        let msg = format!(
-                            "⚠️ Container '{}' está en estado: {}",
-                            container_name, container_state
-                        );
-                        let _ = notif_tx.send(NotifEvent {
-                            container: container_name.clone(),
-                            status: format!("alert: {}", container_state),
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                        });
-                        if alert.notify_via.contains(&"telegram".to_string())
-                            || alert.notify_via.contains(&"matrix".to_string())
-                        {
-                            notify_all(&config, container_name, &msg).await;
-                        }
-                    }
-                }
-                "cpu" | "memory" => {
-                    let mut stats_stream = docker.stats(cid, None::<StatsOptions>);
-                    if let Some(Ok(stats)) = stats_stream.next().await {
-                        let container_stats = calc_container_stats(container_name, &stats);
-                        let value = if alert.r#type == "cpu" {
-                            container_stats.cpu_percent
-                        } else {
-                            if container_stats.memory_limit_mb > 0.0 {
-                                (container_stats.memory_usage_mb / container_stats.memory_limit_mb)
-                                    * 100.0
-                            } else {
-                                0.0
-                            }
-                        };
-                        if value > alert.threshold {
-                            let msg = format!(
-                                "⚠️ '{}' {} está en {:.1}% (umbral: {}%)",
-                                container_name, alert.r#type, value, alert.threshold
-                            );
-                            let _ = notif_tx.send(NotifEvent {
-                                container: container_name.clone(),
-                                status: format!("alert: {}={:.1}%", alert.r#type, value),
-                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            });
-                            if alert.notify_via.contains(&"telegram".to_string())
-                                || alert.notify_via.contains(&"matrix".to_string())
-                            {
-                                notify_all(&config, container_name, &msg).await;
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
+            let current_state = container.state.as_deref().unwrap_or("unknown").to_string();
+            let prev_state = previous_states.insert(container_name.clone(), current_state.clone());
 
-pub async fn health_checks_worker(
-    _docker: Docker,
-    _config: Config,
-    notif_tx: broadcast::Sender<NotifEvent>,
-    health_checks: Arc<Mutex<Vec<HealthCheck>>>,
-) {
-    let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(30));
-    loop {
-        tick.tick().await;
-        let hcs = health_checks.lock().await.clone();
-        for mut hc in hcs {
-            if !hc.enabled {
-                continue;
-            }
-            let should_run = match &hc.last_result {
-                Some(last) => {
-                    if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(
-                        &last.last_checked,
-                        "%Y-%m-%dT%H:%M:%S",
-                    ) {
-                        let elapsed = (Local::now().naive_local() - parsed).num_seconds() as u64;
-                        elapsed >= hc.interval_secs
-                    } else {
-                        true
-                    }
+            if let Some(prev) = prev_state {
+                // Transición: running → algo malo
+                if prev == "running"
+                    && (current_state == "exited"
+                        || current_state == "dead"
+                        || current_state == "paused"
+                        || current_state == "restarting")
+                {
+                    let msg = format!(
+                        "⚠️ Container '{}' ha cambiado a: {}",
+                        container_name, current_state
+                    );
+                    let _ = notif_tx.send(NotifEvent {
+                        container: container_name.clone(),
+                        status: format!("alert: {}", current_state),
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    });
+                    notify_selected(&config, container_name, &msg, &alert.notify_via).await;
                 }
-                None => true,
-            };
-            if !should_run {
-                continue;
-            }
-            let start = std::time::Instant::now();
-            let (status, latency) = match hc.r#type.as_str() {
-                "http" => {
-                    match http_client()
-                        .get(&hc.target)
-                        .timeout(std::time::Duration::from_secs(5))
-                        .send()
-                        .await
-                    {
-                        Ok(resp) => {
-                            if resp.status().is_success() {
-                                ("healthy".to_string(), start.elapsed().as_millis() as u64)
-                            } else {
-                                ("unhealthy".to_string(), start.elapsed().as_millis() as u64)
-                            }
-                        }
-                        Err(_) => ("unhealthy".to_string(), start.elapsed().as_millis() as u64),
-                    }
+                // Transición: algo malo → running (recuperación)
+                if current_state == "running"
+                    && (prev == "exited"
+                        || prev == "dead"
+                        || prev == "paused"
+                        || prev == "restarting")
+                {
+                    let msg = format!("✅ Container '{}' ha vuelto a running", container_name);
+                    let _ = notif_tx.send(NotifEvent {
+                        container: container_name.clone(),
+                        status: "alert: recovered".into(),
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    });
+                    notify_selected(&config, container_name, &msg, &alert.notify_via).await;
                 }
-                "ping" => {
-                    match tokio::process::Command::new("ping")
-                        .args(["-c", "1", "-W", "2", &hc.target])
-                        .output()
-                        .await
-                    {
-                        Ok(output) => {
-                            if output.status.success() {
-                                ("healthy".to_string(), start.elapsed().as_millis() as u64)
-                            } else {
-                                ("unhealthy".to_string(), start.elapsed().as_millis() as u64)
-                            }
-                        }
-                        Err(_) => ("unhealthy".to_string(), start.elapsed().as_millis() as u64),
-                    }
-                }
-                _ => ("unknown".to_string(), 0),
-            };
-            hc.last_result = Some(HealthCheckResult {
-                target: hc.target.clone(),
-                status: status.clone(),
-                latency_ms: latency,
-                last_checked: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-            });
-            let mut hcs_lock = health_checks.lock().await;
-            if let Some(existing) = hcs_lock.iter_mut().find(|h| h.id == hc.id) {
-                existing.last_result = hc.last_result.clone();
-            }
-            json_writer().save("health_checks.json", &*hcs_lock).await;
-            if status == "unhealthy" {
-                let _ = notif_tx.send(NotifEvent {
-                    container: hc.container.clone().unwrap_or_default(),
-                    status: format!("health-check FAIL: {}", hc.target),
-                    timestamp: Local::now().format("%H:%M:%S").to_string(),
-                });
             }
         }
     }
@@ -475,35 +377,46 @@ pub async fn scheduler_worker(
                 task.action,
                 task.container
             );
+            let targets: Vec<(String, String, String)> = if task.container == ALL_CONTAINERS {
+                docker_list_running(&docker).await
+            } else {
+                match find_container_by_name(&docker, &task.container).await {
+                    Ok(c) => c
+                        .id
+                        .as_deref()
+                        .zip(c.image.as_deref())
+                        .map(|(id, img)| (task.container.clone(), img.to_string(), id.to_string()))
+                        .into_iter()
+                        .collect(),
+                    Err(_) => vec![],
+                }
+            };
+
             match task.action.as_str() {
                 "update" | "restart" => {
-                    if let Ok(container) = find_container_by_name(&docker, &task.container).await {
-                        if let Some(cid) = container.id.as_deref() {
-                            if task.action == "update" {
-                                if let Some(image) = container.image.as_deref() {
-                                    let _ = update_tx.send(UpdateProgress {
-                                        container: task.container.clone(),
-                                        status: format!("[scheduled] pulling {}", image),
-                                        done: false,
-                                        error: None,
-                                    });
-                                    if pull_image(&docker, image).await {
-                                        let _ = docker
-                                            .restart_container(cid, None::<RestartContainerOptions>)
-                                            .await;
-                                    }
-                                }
-                            } else {
+                    for (cname, image, cid) in &targets {
+                        if task.action == "update" {
+                            let _ = update_tx.send(UpdateProgress {
+                                container: cname.clone(),
+                                status: format!("[scheduled] pulling {}", image),
+                                done: false,
+                                error: None,
+                            });
+                            if pull_image(&docker, image).await {
                                 let _ = docker
                                     .restart_container(cid, None::<RestartContainerOptions>)
                                     .await;
                             }
-                            let _ = notif_tx.send(NotifEvent {
-                                container: task.container.clone(),
-                                status: format!("🕐 scheduled {}", task.action),
-                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            });
+                        } else {
+                            let _ = docker
+                                .restart_container(cid, None::<RestartContainerOptions>)
+                                .await;
                         }
+                        let _ = notif_tx.send(NotifEvent {
+                            container: cname.clone(),
+                            status: format!("🕐 scheduled {}", task.action),
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        });
                     }
                 }
                 _ => {
@@ -583,14 +496,7 @@ mod tests {
 
     #[test]
     fn test_match_cron_wrong_minute() {
-        // Create a time with minute that won't match "0"
-        // "0 * * * *" means minute 0 of every hour
-        let dt = Local::now();
-        let minute: u32 = dt.format("%M").to_string().parse().unwrap_or(99);
-        if minute == 0 {
-            // Can't test this case if we're at minute 0
-            return;
-        }
+        let dt = Local.with_ymd_and_hms(2024, 1, 1, 12, 15, 0).unwrap();
         assert!(!match_cron("0 * * * *", &dt));
     }
 

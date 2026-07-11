@@ -2,7 +2,7 @@
   <img src="./frontend/public/favicon.svg" width="64" alt="Alloy logo">
 
   # Alloy
-  *Cabina de Mando Docker — a full-featured Docker management dashboard*
+  *A full-featured Docker management dashboard*
 
   [![Rust](https://img.shields.io/badge/Rust-1.81+-de5842?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
   [![Axum](https://img.shields.io/badge/Axum-0.8-7C3AED?style=flat-square&logo=rust&logoColor=white)](https://github.com/tokio-rs/axum)

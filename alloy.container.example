@@ -1,18 +1,39 @@
-# alloy.container — Quadlet para Cabina de Mando Docker (alloy)
+# alloy.container — Quadlet para Alloy (Docker Dashboard)
 # Copiar a ~/.config/containers/systemd/alloy.container
 # Luego: systemctl --user daemon-reload && systemctl --user start alloy
 #
 # ═══════════════════════════════════════════════════════════
-# IMPORTANTE: Edita este fichero con tus valores reales
+# 🔐 SECRETOS DE PODMAN — OBLIGATORIOS
 # ═══════════════════════════════════════════════════════════
 #
+# Crea los secretos ANTES de arrancar el contenedor:
+#
+#   echo "https://auth.tudominio.com" | \
+#     podman secret create alloy-oidc-issuer -
+#
+#   echo "tu-client-id" | \
+#     podman secret create alloy-oidc-client-id -
+#
+#   echo "tu-client-secret-seguro" | \
+#     podman secret create alloy-oidc-client-secret -
+#
+# Los secretos se montan automáticamente en /run/secrets/<nombre>
+# dentro del contenedor. NUNCA van en este fichero.
+#
+# Para listar secretos existentes:
+#   podman secret ls
+#
+# Para eliminar un secreto:
+#   podman secret rm alloy-oidc-client-id
+#
+# ═══════════════════════════════════════════════════════════
 # Build de la imagen (desde la raíz del proyecto):
 #   cd /data/rust/alloy && just build
 # o manualmente:
 #   podman build --tag=localhost/atareao/alloy:latest .
 
 [Unit]
-Description=Alloy — Cabina de Mando Docker (Docker Dashboard)
+Description=Alloy — Docker Dashboard
 Documentation=https://github.com/atareao/alloy
 After=network-online.target
 
@@ -29,20 +50,26 @@ Image=localhost/atareao/alloy:latest
 Volume=/run/user/1000/podman/podman.sock:/var/run/docker.sock:Z
 
 # Datos persistentes (JSON: updates_history, alerts, health_checks, schedules)
+# La app guarda los JSON en el directorio data/ (relativo al WORKDIR /app)
 Volume=%h/.local/share/alloy/data:/app/data:Z
 
 # Puerto de la interfaz web
 PublishPort=3066:3066
 
 # ═══════════════════════════════════════════════════════════
-# Variables de entorno — CAMBIA estos valores
+# 🔐 Secretos de Podman — OIDC (crear con `podman secret create`)
+# Nunca pongas valores sensibles aquí
+# ═══════════════════════════════════════════════════════════
+Secret=alloy-oidc-issuer
+Secret=alloy-oidc-client-id
+Secret=alloy-oidc-client-secret
+
+# ═══════════════════════════════════════════════════════════
+# Variables de entorno — configuración NO sensible
 # ═══════════════════════════════════════════════════════════
 
-# OIDC — OBLIGATORIO (PocketID o cualquier proveedor OIDC)
-Environment=OIDC_ISSUER_URL=https://auth.ejemplo.com
-Environment=OIDC_CLIENT_ID=cambia-esto
-Environment=OIDC_CLIENT_SECRET=cambia-esto-en-produccion
-Environment=OIDC_REDIRECT_URL=https://alloy.ejemplo.com/api/auth/callback
+# OIDC Redirect URL (no es un secreto, es una URL pública)
+Environment=OIDC_REDIRECT_URL=https://alloy.tudominio.com/api/auth/callback
 
 # DOCKER_HOST apunta al socket DENTRO del contenedor (montado vía Volume)
 Environment=DOCKER_HOST=unix:///var/run/docker.sock
@@ -57,14 +84,29 @@ Environment=DOCKER_HOST=unix:///var/run/docker.sock
 # ═══════════════════════════════════════════════════════════
 # Notificaciones (opcional) — Telegram
 # ═══════════════════════════════════════════════════════════
+# Crea el secreto (opcional):
+#   echo "tu-telegram-token" | podman secret create alloy-telegram-token -
+# Luego descomenta:
+#Secret=alloy-telegram-token
+#Environment=TELEGRAM_CHAT_ID=...
+#
+# Sin secreto, usa variable de entorno directamente:
 #Environment=TELEGRAM_TOKEN=...
 #Environment=TELEGRAM_CHAT_ID=...
 
 # ═══════════════════════════════════════════════════════════
 # Notificaciones (opcional) — Matrix
 # ═══════════════════════════════════════════════════════════
+# Crea el secreto (opcional):
+#   echo "tu-matrix-token" | podman secret create alloy-matrix-token -
+# Luego descomenta:
+#Secret=alloy-matrix-token
 #Environment=MATRIX_HOMESERVER=https://matrix.ejemplo.com
+#Environment=MATRIX_ROOM=!room:ejemplo.com
+#
+# Sin secreto, usa variable de entorno directamente:
 #Environment=MATRIX_TOKEN=...
+#Environment=MATRIX_HOMESERVER=https://matrix.ejemplo.com
 #Environment=MATRIX_ROOM=!room:ejemplo.com
 
 # Grupo del socket Docker (típicamente docker:136, o podman:1000 en rootless)

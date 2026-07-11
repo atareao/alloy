@@ -1,4 +1,4 @@
-# ── Cabina de Mando Docker — Configuración ───────────────────
+# ── Alloy — Docker Dashboard ─────────────────────────────────
 # Solo autenticación OIDC (estilo PocketID)
 
 # Puerto del servidor (default: 3066)
