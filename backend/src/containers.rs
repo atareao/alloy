@@ -346,13 +346,20 @@ async fn remove_container_h(
 }
 
 async fn config_handler(State(config): State<Config>) -> Json<PublicConfig> {
+    let tg_token_set = config.telegram_token.is_some();
+    let mx_token_set = config.matrix_token.is_some();
     Json(PublicConfig {
         oidc_configured: true, // OIDC is the only auth method now
         port: config.port(),
         auto_update_enabled: config.auto_update(),
         auto_update_interval_hours: config.auto_update_interval(),
         telegram_configured: config.telegram_token.is_some(),
+        telegram_token_set: tg_token_set,
+        telegram_chat_id: config.telegram_chat_id.clone(),
         matrix_configured: config.matrix_homeserver.is_some(),
+        matrix_token_set: mx_token_set,
+        matrix_homeserver: config.matrix_homeserver.clone(),
+        matrix_room: config.matrix_room.clone(),
         allowed_containers: config.allowed_containers.clone(),
     })
 }

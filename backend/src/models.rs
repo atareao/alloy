@@ -48,6 +48,11 @@ pub struct PublicConfig {
     pub telegram_configured: bool,
     pub matrix_configured: bool,
     pub allowed_containers: Option<Vec<String>>,
+    pub telegram_token_set: bool,
+    pub telegram_chat_id: Option<String>,
+    pub matrix_homeserver: Option<String>,
+    pub matrix_token_set: bool,
+    pub matrix_room: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,6 +180,35 @@ pub struct CreateSchedule {
     pub enabled: bool,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub auto_update_enabled: Option<bool>,
+    #[serde(default)]
+    pub auto_update_interval_hours: Option<u64>,
+    #[serde(default)]
+    pub telegram_token: Option<String>,
+    #[serde(default)]
+    pub telegram_chat_id: Option<String>,
+    #[serde(default)]
+    pub matrix_homeserver: Option<String>,
+    #[serde(default)]
+    pub matrix_token: Option<String>,
+    #[serde(default)]
+    pub matrix_room: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct UpdateSettingsReq {
+    pub auto_update_enabled: Option<bool>,
+    pub auto_update_interval_hours: Option<u64>,
+    pub telegram_token: Option<String>,
+    pub telegram_chat_id: Option<String>,
+    pub matrix_homeserver: Option<String>,
+    pub matrix_token: Option<String>,
+    pub matrix_room: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct VersionCompare {
     pub local_tag: String,
@@ -215,6 +249,7 @@ use axum::Json;
 pub const FILE_UPDATES_HISTORY: &str = "data/updates_history.json";
 pub const FILE_ALERTS: &str = "data/alerts.json";
 pub const FILE_SCHEDULES: &str = "data/schedules.json";
+pub const FILE_SETTINGS: &str = "data/settings.json";
 
 pub const ALL_CONTAINERS: &str = "*";
 
