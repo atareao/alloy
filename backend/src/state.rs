@@ -130,11 +130,9 @@ pub struct AppState {
     pub jwt_validator: JwtValidator,
     pub update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     pub alerts: Arc<Mutex<Vec<AlertConfig>>>,
-    pub health_checks: Arc<Mutex<Vec<HealthCheck>>>,
     pub schedules: Arc<Mutex<Vec<ScheduleTask>>>,
-    pub terminal_tx: Arc<Mutex<HashMap<String, broadcast::Sender<String>>>>,
+
     pub cached_containers: CachedContainers,
-    pub prev_cpu_stats: CpuStatsCache,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -180,12 +178,6 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<AlertConfig>>> {
     }
 }
 
-impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<HealthCheck>>> {
-    fn from_ref(state: &AppState) -> Self {
-        state.health_checks.clone()
-    }
-}
-
 impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<ScheduleTask>>> {
     fn from_ref(state: &AppState) -> Self {
         state.schedules.clone()
@@ -195,12 +187,6 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<ScheduleTask>>> {
 impl axum::extract::FromRef<AppState> for OidcStates {
     fn from_ref(state: &AppState) -> Self {
         state.oidc_states.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for Arc<Mutex<HashMap<String, broadcast::Sender<String>>>> {
-    fn from_ref(state: &AppState) -> Self {
-        state.terminal_tx.clone()
     }
 }
 
@@ -219,11 +205,5 @@ impl axum::extract::FromRef<AppState> for JwtValidator {
 impl axum::extract::FromRef<AppState> for CachedContainers {
     fn from_ref(state: &AppState) -> Self {
         state.cached_containers.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for CpuStatsCache {
-    fn from_ref(state: &AppState) -> Self {
-        state.prev_cpu_stats.clone()
     }
 }

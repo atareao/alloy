@@ -9,7 +9,8 @@ export default function LoginScreen() {
   return (
     <Container size="xs" py="xl">
       <Title order={2} mb="lg" ta="center">
-        🐳 Cabina de Mando
+        <img src="/favicon.svg" width="32" height="32" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
+        Alloy
       </Title>
       <Paper shadow="sm" p="lg" withBorder>
         <Text size="sm" mb="md" ta="center">

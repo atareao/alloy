@@ -7,8 +7,6 @@ mod models;
 mod notifications;
 mod stacks;
 mod state;
-mod stats;
-mod terminal;
 mod updates;
 mod workers;
 
@@ -22,8 +20,7 @@ use crate::config::Config;
 use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
 use crate::workers::{
-    alerts_worker, auto_update_worker, health_checks_worker, load_json, scheduler_worker,
-    state_worker, CachedContainers,
+    alerts_worker, auto_update_worker, load_json, scheduler_worker, state_worker, CachedContainers,
 };
 
 #[tokio::main]
@@ -40,6 +37,11 @@ async fn main() {
     jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER
         .install_default()
         .expect("failed to install jsonwebtoken CryptoProvider");
+
+    // Ensure data directory exists for persistent JSON files
+    if let Err(e) = tokio::fs::create_dir_all("data").await {
+        tracing::warn!("Could not create data dir: {}", e);
+    }
 
     let config = Config::load();
 
@@ -130,17 +132,6 @@ async fn main() {
         }
         a
     }));
-    let health_checks: Arc<Mutex<Vec<HealthCheck>>> = Arc::new(Mutex::new({
-        let mut h: Vec<HealthCheck> = load_json(FILE_HEALTH_CHECKS);
-        if let Some(cfg_hc) = &config.health_checks {
-            for ch in cfg_hc {
-                if !h.iter().any(|x| x.id == ch.id) {
-                    h.push(ch.clone());
-                }
-            }
-        }
-        h
-    }));
     let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new({
         let mut s: Vec<ScheduleTask> = load_json(FILE_SCHEDULES);
         if let Some(cfg_sched) = &config.schedule {
@@ -166,11 +157,8 @@ async fn main() {
         jwt_validator,
         update_history: update_history.clone(),
         alerts: alerts.clone(),
-        health_checks: health_checks.clone(),
         schedules: schedules.clone(),
-        terminal_tx: Arc::new(Mutex::new(HashMap::new())),
         cached_containers: cached_containers.clone(),
-        prev_cpu_stats: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
 
     // Spawn workers
@@ -192,12 +180,6 @@ async fn main() {
         notif_tx.clone(),
         alerts.clone(),
     ));
-    tokio::spawn(health_checks_worker(
-        docker.clone(),
-        config.clone(),
-        notif_tx.clone(),
-        health_checks.clone(),
-    ));
     tokio::spawn(scheduler_worker(
         docker.clone(),
         config.clone(),
@@ -215,9 +197,7 @@ async fn main() {
         .merge(admin::routes())
         .merge(containers::routes())
         .merge(events::routes())
-        .merge(stats::routes())
         .merge(stacks::routes())
-        .merge(terminal::routes())
         .merge(updates::routes())
         .layer(CorsLayer::permissive())
         .layer(axum::middleware::from_fn(
@@ -236,7 +216,7 @@ async fn main() {
 
     let port = config.port();
     let host = config.host();
-    tracing::info!("🚀 Cabina en http://{}:{}", host, port);
+    tracing::info!("🚀 Alloy en http://{}:{}", host, port);
     let addr = if host == "0.0.0.0" {
         format!("[::]:{}", port)
     } else {

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::path::Path;
 
-use crate::models::{AlertConfig, HealthCheck, ScheduleTask};
+use crate::models::{AlertConfig, ScheduleTask};
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Config {
@@ -39,8 +40,16 @@ pub struct Config {
     pub alerts: Option<Vec<AlertConfig>>,
     #[serde(default)]
     pub schedule: Option<Vec<ScheduleTask>>,
-    #[serde(default)]
-    pub health_checks: Option<Vec<HealthCheck>>,
+}
+
+/// Intenta leer un secreto de Podman montado en `/run/secrets/<name>`.
+/// Si el archivo no existe o no se puede leer, devuelve `None`.
+fn read_secret(name: &str) -> Option<String> {
+    let path = Path::new("/run/secrets").join(name);
+    fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 impl Config {
@@ -55,29 +64,30 @@ impl Config {
         if let Ok(v) = std::env::var("PORT") {
             cfg.port = v.parse().ok();
         }
-        if let Ok(v) = std::env::var("OIDC_ISSUER_URL") {
-            cfg.oidc_issuer_url = Some(v);
-        }
-        if let Ok(v) = std::env::var("OIDC_CLIENT_ID") {
-            cfg.oidc_client_id = Some(v);
-        }
-        if let Ok(v) = std::env::var("OIDC_CLIENT_SECRET") {
-            cfg.oidc_client_secret = Some(v);
-        }
+        // OIDC: prioridad a secretos de Podman, fallback a env vars
+        cfg.oidc_issuer_url = read_secret("alloy-oidc-issuer")
+            .or_else(|| read_secret("oidc_issuer_url"))
+            .or_else(|| std::env::var("OIDC_ISSUER_URL").ok());
+        cfg.oidc_client_id = read_secret("alloy-oidc-client-id")
+            .or_else(|| read_secret("oidc_client_id"))
+            .or_else(|| std::env::var("OIDC_CLIENT_ID").ok());
+        cfg.oidc_client_secret = read_secret("alloy-oidc-client-secret")
+            .or_else(|| read_secret("oidc_client_secret"))
+            .or_else(|| std::env::var("OIDC_CLIENT_SECRET").ok());
         if let Ok(v) = std::env::var("OIDC_REDIRECT_URL") {
             cfg.oidc_redirect_url = Some(v);
         }
-        if let Ok(v) = std::env::var("TELEGRAM_TOKEN") {
-            cfg.telegram_token = Some(v);
-        }
+        // Telegram: prioridad a secretos de Podman, fallback a env vars
+        cfg.telegram_token =
+            read_secret("telegram_token").or_else(|| std::env::var("TELEGRAM_TOKEN").ok());
         if let Ok(v) = std::env::var("TELEGRAM_CHAT_ID") {
             cfg.telegram_chat_id = Some(v);
         }
+        // Matrix: prioridad a secretos de Podman, fallback a env vars
+        cfg.matrix_token =
+            read_secret("matrix_token").or_else(|| std::env::var("MATRIX_TOKEN").ok());
         if let Ok(v) = std::env::var("MATRIX_HOMESERVER") {
             cfg.matrix_homeserver = Some(v);
-        }
-        if let Ok(v) = std::env::var("MATRIX_TOKEN") {
-            cfg.matrix_token = Some(v);
         }
         if let Ok(v) = std::env::var("MATRIX_ROOM") {
             cfg.matrix_room = Some(v);

@@ -20,7 +20,7 @@ describe('LoginScreen', () => {
   it('renders login button', () => {
     render(<Wrapper><LoginScreen /></Wrapper>)
 
-    expect(screen.getByText('🐳 Cabina de Mando')).toBeInTheDocument()
+    expect(screen.getByText('Alloy')).toBeInTheDocument()
     expect(screen.getByText('🔑 Iniciar sesión con OIDC')).toBeInTheDocument()
   })
 
