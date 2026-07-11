@@ -1,73 +1,291 @@
-import { useEffect, useState } from "react";
-import { Stack, Paper, Group, Badge, Text, Loader, Title, SimpleGrid, Divider } from "@mantine/core";
-import type { AppConfig, DockerInfo } from "../types";
+import { useCallback, useEffect, useState } from "react";
+import {
+  Alert, Button, Group, Loader, Paper, Stack, Text, Title, TextInput, Switch,
+} from "@mantine/core";
+import type { AppConfig } from "../types";
 import { apiFetch } from "../api";
 
 export default function ConfigPage() {
   const [config, setConfig] = useState<AppConfig | null>(null);
-  const [dockerInfo, setDockerInfo] = useState<DockerInfo | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  useEffect(() => {
-    Promise.all([
-      apiFetch("/api/config").then((r) => r.json()),
-      apiFetch("/api/docker-info").then((r) => r.json()).catch(() => null),
-    ])
-      .then(([cfg, info]) => { setConfig(cfg); setDockerInfo(info); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
+  // Telegram
+  const [tgToken, setTgToken] = useState("");
+  const [tgChatId, setTgChatId] = useState("");
+  const [tgEnabled, setTgEnabled] = useState(false);
+
+  // Matrix
+  const [mxHomeserver, setMxHomeserver] = useState("");
+  const [mxToken, setMxToken] = useState("");
+  const [mxRoom, setMxRoom] = useState("");
+  const [mxEnabled, setMxEnabled] = useState(false);
+
+  // Auto-update
+  const [auEnabled, setAuEnabled] = useState(false);
+  const [auInterval, setAuInterval] = useState(6);
+
+  const loadConfig = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await apiFetch("/api/config");
+      const data: AppConfig = await res.json();
+      setConfig(data);
+      setTgToken(data.telegram_token_set ? "********" : "");
+      setTgChatId(data.telegram_chat_id || "");
+      setTgEnabled(data.telegram_configured);
+      setMxHomeserver(data.matrix_homeserver || "");
+      setMxToken(data.matrix_token_set ? "********" : "");
+      setMxRoom(data.matrix_room || "");
+      setMxEnabled(data.matrix_configured);
+      setAuEnabled(data.auto_update_enabled);
+      setAuInterval(data.auto_update_interval_hours);
+    } catch {
+      setError("No se pudo cargar la configuración");
+    }
+    setLoading(false);
   }, []);
 
-  if (loading) return (<Group justify="center" py="xl"><Loader /></Group>);
+  useEffect(() => { loadConfig(); }, [loadConfig]);
+
+  const showSuccess = (msg: string) => {
+    setSuccess(msg);
+    setTimeout(() => setSuccess(null), 3000);
+  };
+
+  const saveTelegram = async () => {
+    setSaving("telegram");
+    setError(null);
+    try {
+      const body: Record<string, string | null> = { telegram_chat_id: tgChatId || null };
+      if (tgToken && tgToken !== "********") {
+        body.telegram_token = tgToken;
+      }
+      if (!tgEnabled) {
+        body.telegram_token = "";
+        body.telegram_chat_id = "";
+      }
+      const res = await apiFetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data: AppConfig = await res.json();
+        setConfig(data);
+        setTgToken(data.telegram_token_set ? "********" : "");
+        setTgChatId(data.telegram_chat_id || "");
+        showSuccess(tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado");
+      } else {
+        setError("Error al guardar Telegram");
+      }
+    } catch {
+      setError("Error de conexión al guardar Telegram");
+    }
+    setSaving(null);
+  };
+
+  const saveMatrix = async () => {
+    setSaving("matrix");
+    setError(null);
+    try {
+      const body: Record<string, string | null> = {
+        matrix_homeserver: mxHomeserver || null,
+        matrix_room: mxRoom || null,
+      };
+      if (mxToken && mxToken !== "********") {
+        body.matrix_token = mxToken;
+      }
+      if (!mxEnabled) {
+        body.matrix_homeserver = "";
+        body.matrix_token = "";
+        body.matrix_room = "";
+      }
+      const res = await apiFetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data: AppConfig = await res.json();
+        setConfig(data);
+        setMxHomeserver(data.matrix_homeserver || "");
+        setMxToken(data.matrix_token_set ? "********" : "");
+        setMxRoom(data.matrix_room || "");
+        showSuccess(mxEnabled ? "✅ Matrix configurado" : "❌ Matrix desactivado");
+      } else {
+        setError("Error al guardar Matrix");
+      }
+    } catch {
+      setError("Error de conexión al guardar Matrix");
+    }
+    setSaving(null);
+  };
+
+  const saveAutoUpdate = async () => {
+    setSaving("auto-update");
+    setError(null);
+    try {
+      const res = await apiFetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          auto_update_enabled: auEnabled,
+          auto_update_interval_hours: auInterval,
+        }),
+      });
+      if (res.ok) {
+        const data: AppConfig = await res.json();
+        setConfig(data);
+        setAuEnabled(data.auto_update_enabled);
+        setAuInterval(data.auto_update_interval_hours);
+        showSuccess(auEnabled ? "✅ Auto-update activado" : "❌ Auto-update desactivado");
+      } else {
+        setError("Error al guardar Auto-update");
+      }
+    } catch {
+      setError("Error de conexión al guardar Auto-update");
+    }
+    setSaving(null);
+  };
+
+  if (loading) return <Group justify="center" py="xl"><Loader /></Group>;
 
   return (
     <Stack>
+      {error && (
+        <Alert color="red" onClose={() => setError(null)} withCloseButton>
+          {error}
+        </Alert>
+      )}
+      {success && (
+        <Alert color="green" onClose={() => setSuccess(null)} withCloseButton>
+          {success}
+        </Alert>
+      )}
+
+      {/* ═══ Telegram ═══ */}
       <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">🐳 Información del Daemon</Title>
-        {dockerInfo ? (
+        <Group justify="space-between" mb="md">
+          <Title order={4}>📱 Telegram</Title>
+          <Switch
+            label={tgEnabled ? "Activado" : "Desactivado"}
+            checked={tgEnabled}
+            onChange={(e) => setTgEnabled(e.currentTarget.checked)}
+            color={tgEnabled ? "green" : "gray"}
+          />
+        </Group>
+        {tgEnabled && (
           <Stack>
-            <SimpleGrid cols={{ base: 1, sm: 2 }}>
-              <div><Text size="xs" c="dimmed">Versión</Text><Text size="sm" fw={500}>{dockerInfo.version}</Text></div>
-              <div><Text size="xs" c="dimmed">Sistema Operativo</Text><Text size="sm" fw={500}>{dockerInfo.os}</Text></div>
-              <div><Text size="xs" c="dimmed">Arquitectura</Text><Text size="sm" fw={500}>{dockerInfo.arch}</Text></div>
-              <div><Text size="xs" c="dimmed">Imágenes</Text><Text size="sm" fw={500}>{dockerInfo.images}</Text></div>
-            </SimpleGrid>
-            <Divider />
-            <Text size="sm" fw={500} mb="xs">Containers</Text>
-            <SimpleGrid cols={{ base: 2, sm: 4 }}>
-              <div><Text size="xs" c="dimmed">Total</Text><Text size="sm" fw={500}>{dockerInfo.containers_total}</Text></div>
-              <div><Text size="xs" c="dimmed">Running</Text><Badge color="green">{dockerInfo.containers_running}</Badge></div>
-              <div><Text size="xs" c="dimmed">Paused</Text><Badge color="yellow">{dockerInfo.containers_paused}</Badge></div>
-              <div><Text size="xs" c="dimmed">Stopped</Text><Badge color="gray">{dockerInfo.containers_stopped}</Badge></div>
-            </SimpleGrid>
+            <TextInput
+              label="Token del Bot"
+              description="Token que te proporciona @BotFather"
+              placeholder="123456:ABC-DEF..."
+              type="password"
+              value={tgToken}
+              onChange={(e) => setTgToken(e.currentTarget.value)}
+            />
+            <TextInput
+              label="Chat ID"
+              description="ID del chat o grupo donde recibir notificaciones"
+              placeholder="-1001234567890"
+              value={tgChatId}
+              onChange={(e) => setTgChatId(e.currentTarget.value)}
+            />
           </Stack>
-        ) : (
-          <Text size="sm" c="dimmed">No se pudo obtener información del daemon</Text>
         )}
+        <Group justify="flex-end" mt="md">
+          <Button
+            onClick={saveTelegram}
+            loading={saving === "telegram"}
+            color={tgEnabled ? "blue" : "gray"}
+          >
+            {tgEnabled ? "Guardar Telegram" : "Desactivar Telegram"}
+          </Button>
+        </Group>
       </Paper>
+
+      {/* ═══ Matrix ═══ */}
       <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">🔐 Autenticación</Title>
-        <Text size="sm">JWT configurado: <Badge color="green">✅</Badge></Text>
-        <Text size="xs" c="dimmed" mt="xs">Usa el token para autenticarte en todas las peticiones</Text>
-      </Paper>
-      <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">📡 Conexiones</Title>
-        <Group><Text size="sm">Telegram:</Text><Badge color={config?.telegram_configured ? "green" : "gray"}>{config?.telegram_configured ? "✅ Conectado" : "❌ No configurado"}</Badge></Group>
-        <Group mt="xs"><Text size="sm">Matrix:</Text><Badge color={config?.matrix_configured ? "green" : "gray"}>{config?.matrix_configured ? "✅ Conectado" : "❌ No configurado"}</Badge></Group>
-      </Paper>
-      <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">🤖 Auto-update</Title>
-        <Group><Text size="sm">Estado:</Text><Badge color={config?.auto_update_enabled ? "green" : "gray"}>{config?.auto_update_enabled ? "✅ Activado" : "❌ Desactivado"}</Badge></Group>
-        {config?.auto_update_enabled && <Text size="sm" mt="xs">Intervalo: cada <b>{config?.auto_update_interval_hours}h</b></Text>}
-      </Paper>
-      <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">⚙️ General</Title>
-        <Text size="sm">Puerto: <b>{config?.port}</b></Text>
-        {config?.allowed_containers ? (
-          <Text size="sm" mt="xs">Containers monitorizados: <b>{config.allowed_containers.join(", ")}</b></Text>
-        ) : (
-          <Text size="sm" mt="xs">Containers monitorizados: <b>Todos</b></Text>
+        <Group justify="space-between" mb="md">
+          <Title order={4}>💬 Matrix</Title>
+          <Switch
+            label={mxEnabled ? "Activado" : "Desactivado"}
+            checked={mxEnabled}
+            onChange={(e) => setMxEnabled(e.currentTarget.checked)}
+            color={mxEnabled ? "green" : "gray"}
+          />
+        </Group>
+        {mxEnabled && (
+          <Stack>
+            <TextInput
+              label="Homeserver"
+              description="URL del servidor Matrix (ej: https://matrix.org)"
+              placeholder="https://matrix.example.com"
+              value={mxHomeserver}
+              onChange={(e) => setMxHomeserver(e.currentTarget.value)}
+            />
+            <TextInput
+              label="Access Token"
+              description="Token de acceso de la cuenta de bot"
+              type="password"
+              placeholder="syt_..."
+              value={mxToken}
+              onChange={(e) => setMxToken(e.currentTarget.value)}
+            />
+            <TextInput
+              label="Room ID"
+              description="ID de la sala donde enviar notificaciones"
+              placeholder="!roomid:matrix.org"
+              value={mxRoom}
+              onChange={(e) => setMxRoom(e.currentTarget.value)}
+            />
+          </Stack>
         )}
+        <Group justify="flex-end" mt="md">
+          <Button
+            onClick={saveMatrix}
+            loading={saving === "matrix"}
+            color={mxEnabled ? "blue" : "gray"}
+          >
+            {mxEnabled ? "Guardar Matrix" : "Desactivar Matrix"}
+          </Button>
+        </Group>
+      </Paper>
+
+      {/* ═══ Auto-update ═══ */}
+      <Paper shadow="sm" p="md" withBorder>
+        <Group justify="space-between" mb="md">
+          <Title order={4}>🤖 Auto-update</Title>
+          <Switch
+            label={auEnabled ? "Activado" : "Desactivado"}
+            checked={auEnabled}
+            onChange={(e) => setAuEnabled(e.currentTarget.checked)}
+            color={auEnabled ? "green" : "gray"}
+          />
+        </Group>
+        {auEnabled && (
+          <TextInput
+            label="Intervalo (horas)"
+            description="Cada cuántas horas comprobar y actualizar containers"
+            type="number"
+            min={1}
+            max={168}
+            value={auInterval}
+            onChange={(e) => setAuInterval(Number(e.currentTarget.value))}
+          />
+        )}
+        <Group justify="flex-end" mt="md">
+          <Button
+            onClick={saveAutoUpdate}
+            loading={saving === "auto-update"}
+            color={auEnabled ? "blue" : "gray"}
+          >
+            {auEnabled ? "Guardar Auto-update" : "Desactivar Auto-update"}
+          </Button>
+        </Group>
       </Paper>
     </Stack>
   );
