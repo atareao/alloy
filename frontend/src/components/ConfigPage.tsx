@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Alert, Button, Group, Loader, Paper, Stack, Text, Title, TextInput, Switch,
+  Alert, Button, Group, Loader, Paper, Stack, Title, TextInput, Switch,
 } from "@mantine/core";
 import type { AppConfig } from "../types";
 import { apiFetch } from "../api";
 
 export default function ConfigPage() {
-  const [config, setConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +31,6 @@ export default function ConfigPage() {
     try {
       const res = await apiFetch("/api/config");
       const data: AppConfig = await res.json();
-      setConfig(data);
       setTgToken(data.telegram_token_set ? "********" : "");
       setTgChatId(data.telegram_chat_id || "");
       setTgEnabled(data.telegram_configured);
@@ -74,7 +72,6 @@ export default function ConfigPage() {
       });
       if (res.ok) {
         const data: AppConfig = await res.json();
-        setConfig(data);
         setTgToken(data.telegram_token_set ? "********" : "");
         setTgChatId(data.telegram_chat_id || "");
         showSuccess(tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado");
@@ -110,7 +107,6 @@ export default function ConfigPage() {
       });
       if (res.ok) {
         const data: AppConfig = await res.json();
-        setConfig(data);
         setMxHomeserver(data.matrix_homeserver || "");
         setMxToken(data.matrix_token_set ? "********" : "");
         setMxRoom(data.matrix_room || "");
@@ -138,7 +134,6 @@ export default function ConfigPage() {
       });
       if (res.ok) {
         const data: AppConfig = await res.json();
-        setConfig(data);
         setAuEnabled(data.auto_update_enabled);
         setAuInterval(data.auto_update_interval_hours);
         showSuccess(auEnabled ? "✅ Auto-update activado" : "❌ Auto-update desactivado");
