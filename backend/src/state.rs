@@ -133,6 +133,7 @@ pub struct AppState {
     pub schedules: Arc<Mutex<Vec<ScheduleTask>>>,
 
     pub cached_containers: CachedContainers,
+    pub settings: Arc<Mutex<Settings>>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -205,5 +206,11 @@ impl axum::extract::FromRef<AppState> for JwtValidator {
 impl axum::extract::FromRef<AppState> for CachedContainers {
     fn from_ref(state: &AppState) -> Self {
         state.cached_containers.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for Arc<Mutex<Settings>> {
+    fn from_ref(state: &AppState) -> Self {
+        state.settings.clone()
     }
 }
