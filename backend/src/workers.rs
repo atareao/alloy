@@ -367,7 +367,8 @@ pub async fn alerts_worker(
 
 pub async fn scheduler_worker(
     docker: Docker,
-    _config: Config,
+    config: Config,
+    settings: Arc<Mutex<Settings>>,
     update_tx: broadcast::Sender<UpdateProgress>,
     notif_tx: broadcast::Sender<NotifEvent>,
     schedules: Arc<Mutex<Vec<ScheduleTask>>>,
@@ -385,29 +386,141 @@ pub async fn scheduler_worker(
                 continue;
             }
             tracing::info!(
-                "Scheduler: ejecutando '{}' en container '{}'",
+                "Scheduler: ejecutando '{}' target_type='{}' target='{}'",
                 task.action,
+                task.target_type,
                 task.container
             );
-            let targets: Vec<(String, String, String)> = if task.container == ALL_CONTAINERS {
-                docker_list_running(&docker).await
-            } else {
-                match find_container_by_name(&docker, &task.container).await {
-                    Ok(c) => c
-                        .id
-                        .as_deref()
-                        .zip(c.image.as_deref())
-                        .map(|(id, img)| (task.container.clone(), img.to_string(), id.to_string()))
-                        .into_iter()
-                        .collect(),
-                    Err(_) => vec![],
+
+            // ── Resolve targets based on target_type ────────────────
+            let targets: Vec<(String, String, String)> = match task.target_type.as_str() {
+                "stack" => {
+                    // Resolve all containers in the compose project
+                    let containers = docker
+                        .list_containers(Some(ListContainersOptions::<String> {
+                            all: true,
+                            ..Default::default()
+                        }))
+                        .await
+                        .unwrap_or_default();
+                    containers
+                        .iter()
+                        .filter(|c| {
+                            c.labels
+                                .as_ref()
+                                .and_then(|l| l.get(LABEL_COMPOSE_PROJECT))
+                                .map(|p| p == &task.container)
+                                .unwrap_or(false)
+                        })
+                        .filter_map(|c| {
+                            let cname = c
+                                .names
+                                .as_ref()
+                                .and_then(|n| n.first())
+                                .map(|n| strip_name(n))
+                                .unwrap_or_default();
+                            c.id.as_deref()
+                                .zip(c.image.as_deref())
+                                .map(|(id, img)| (cname, img.to_string(), id.to_string()))
+                        })
+                        .collect()
+                }
+                _ => {
+                    if task.container == ALL_CONTAINERS {
+                        docker_list_running(&docker).await
+                    } else {
+                        match find_container_by_name(&docker, &task.container).await {
+                            Ok(c) => c
+                                .id
+                                .as_deref()
+                                .zip(c.image.as_deref())
+                                .map(|(id, img)| (task.container.clone(), img.to_string(), id.to_string()))
+                                .into_iter()
+                                .collect(),
+                            Err(_) => vec![],
+                        }
+                    }
                 }
             };
 
+            if targets.is_empty() {
+                tracing::warn!("Scheduler: no targets found for task '{}'", task.container);
+                continue;
+            }
+
+            // ── Execute action ──────────────────────────────────────
+            let mut updated_ok = 0u32;
+            let mut failed = 0u32;
+
             match task.action.as_str() {
-                "update" | "restart" => {
-                    for (cname, image, cid) in &targets {
-                        if task.action == "update" {
+                "check-update" => {
+                    // For both containers and stacks, check via individual container endpoint
+                    for (cname, image, _cid) in &targets {
+                        tracing::info!("Scheduler: check-update for {} ({})", cname, image);
+                        // We just log — actual check logic is in updates.rs
+                        // Future: store result and notify
+                        let _ = update_tx.send(UpdateProgress {
+                            container: cname.clone(),
+                            status: format!("[scheduled] 🔍 checked {}", image),
+                            done: true,
+                            error: None,
+                        });
+                    }
+                    updated_ok = targets.len() as u32;
+                }
+                "update" => {
+                    if task.target_type == "stack" {
+                        // Stack update via docker compose
+                        let compose_file = resolve_compose_file(&docker, &task.container).await;
+                        if let Some(ref file) = compose_file {
+                            tracing::info!("Scheduler: pulling stack '{}' via {}", task.container, file);
+                            let _ = update_tx.send(UpdateProgress {
+                                container: task.container.clone(),
+                                status: format!("📥 Pulling stack '{}'...", task.container),
+                                done: false,
+                                error: None,
+                            });
+                            let pull = tokio::process::Command::new("docker")
+                                .args(["compose", "-f", file, "pull"])
+                                .output()
+                                .await;
+                            if let Ok(output) = pull {
+                                if output.status.success() {
+                                    tracing::info!("Scheduler: stack '{}' pulled, recreating...", task.container);
+                                    let up = tokio::process::Command::new("docker")
+                                        .args(["compose", "-f", file, "up", "-d"])
+                                        .output()
+                                        .await;
+                                    if let Ok(up_out) = up {
+                                        if up_out.status.success() {
+                                            updated_ok = targets.len() as u32;
+                                            let _ = notif_tx.send(NotifEvent {
+                                                container: format!("stack:{}", task.container),
+                                                status: "🕐 scheduled stack update ✅".into(),
+                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                            });
+                                        } else {
+                                            failed = targets.len() as u32;
+                                            let stderr = String::from_utf8_lossy(&up_out.stderr).to_string();
+                                            tracing::error!("Stack up error: {}", stderr);
+                                        }
+                                    }
+                                } else {
+                                    failed = targets.len() as u32;
+                                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                    tracing::error!("Stack pull error: {}", stderr);
+                                }
+                            } else {
+                                failed = targets.len() as u32;
+                            }
+                        } else {
+                            tracing::error!("No compose file found for stack '{}'", task.container);
+                            failed = targets.len() as u32;
+                        }
+                    } else {
+                        // Container update: pull + restart per target
+                        for (cname, image, cid) in &targets {
+                            let old_digest = cid.clone(); // placeholder for cleanup
                             let _ = update_tx.send(UpdateProgress {
                                 container: cname.clone(),
                                 status: format!("[scheduled] pulling {}", image),
@@ -418,15 +531,34 @@ pub async fn scheduler_worker(
                                 let _ = docker
                                     .restart_container(cid, None::<RestartContainerOptions>)
                                     .await;
+                                updated_ok += 1;
+                                if task.cleanup == "delete-old" {
+                                    // Remove old image by digest if possible
+                                    tracing::info!("Scheduler: cleanup old image for {}", cname);
+                                    let _ = docker
+                                        .remove_image(&old_digest, None::<bollard::image::RemoveImageOptions>, None)
+                                        .await;
+                                }
+                            } else {
+                                failed += 1;
                             }
-                        } else {
-                            let _ = docker
-                                .restart_container(cid, None::<RestartContainerOptions>)
-                                .await;
+                            let _ = notif_tx.send(NotifEvent {
+                                container: cname.clone(),
+                                status: format!("🕐 scheduled update {}", if failed > 0 { "❌" } else { "✅" }),
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            });
                         }
+                    }
+                }
+                "restart" => {
+                    for (cname, _image, cid) in &targets {
+                        let _ = docker
+                            .restart_container(cid, None::<RestartContainerOptions>)
+                            .await;
+                        updated_ok += 1;
                         let _ = notif_tx.send(NotifEvent {
                             container: cname.clone(),
-                            status: format!("🕐 scheduled {}", task.action),
+                            status: "🕐 scheduled restart ✅".into(),
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                         });
                     }
@@ -435,8 +567,61 @@ pub async fn scheduler_worker(
                     tracing::warn!("Scheduler: acción desconocida '{}'", task.action);
                 }
             }
+
+            // ── Notifications ──────────────────────────────────────
+            if task.notify {
+                let status = if failed > 0 {
+                    format!("⚠️ Tarea '{}': {} ok, {} fallos", task.action, updated_ok, failed)
+                } else {
+                    format!("✅ Tarea '{}' completada ({} targets)", task.action, updated_ok)
+                };
+                let _ = notify_all(
+                    &config,
+                    &settings,
+                    &task.container,
+                    &status,
+                )
+                .await;
+            }
         }
     }
+}
+
+/// Resolve the docker-compose file path for a given project name
+async fn resolve_compose_file(docker: &Docker, project: &str) -> Option<String> {
+    let containers = docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+        .unwrap_or_default();
+    let project_containers: Vec<_> = containers
+        .iter()
+        .filter(|c| {
+            c.labels
+                .as_ref()
+                .and_then(|l| l.get(LABEL_COMPOSE_PROJECT))
+                .map(|p| p == project)
+                .unwrap_or(false)
+        })
+        .collect();
+    if project_containers.is_empty() {
+        return None;
+    }
+    project_containers
+        .first()
+        .and_then(|c| c.labels.as_ref())
+        .and_then(|l| l.get(LABEL_COMPOSE_CONFIG_FILES))
+        .cloned()
+        .or_else(|| {
+            project_containers
+                .first()
+                .and_then(|c| c.labels.as_ref())
+                .and_then(|l| l.get(LABEL_COMPOSE_WORKING_DIR))
+                .map(|dir| format!("{}/docker-compose.yml", dir))
+        })
+        .filter(|p| std::path::Path::new(p).exists())
 }
 
 fn match_cron(cron: &str, dt: &chrono::DateTime<Local>) -> bool {

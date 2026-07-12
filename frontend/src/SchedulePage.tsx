@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useMemo } from 'react'
 import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
@@ -15,6 +15,7 @@ import {
   TextInput,
   Tooltip,
   Divider,
+  SegmentedControl,
 } from '@mantine/core'
 
 // ═══════════════════════════════════════════════════════════════
@@ -36,9 +37,17 @@ function apiFetch(path: string, opts?: RequestInit) {
 interface ScheduleEntry {
   id: number
   container: string
+  target_type: string
   cron: string
   action: string
   enabled: boolean
+  notify: boolean
+  cleanup: string
+}
+
+interface ContainerInfo {
+  name: string
+  compose_project?: string
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -46,7 +55,7 @@ interface ScheduleEntry {
 // ═══════════════════════════════════════════════════════════════
 
 interface SchedulePageProps {
-  containers: { name: string }[]
+  containers: ContainerInfo[]
 }
 
 const CRON_PRESETS = [
@@ -60,11 +69,15 @@ const CRON_PRESETS = [
   { value: '0 */1 * * *', label: 'Cada hora' },
 ]
 
-const ACTION_OPTIONS = [
-  { value: 'update', label: '🔄 Actualizar imagen' },
-  { value: 'restart', label: '🔄 Reiniciar container' },
-  { value: 'prune', label: '🧹 Prune system' },
-  { value: 'check-update', label: '🔍 Verificar actualización' },
+const CONTAINER_ACTIONS = [
+  { value: 'update', label: '🔄 Update + restart' },
+  { value: 'restart', label: '🔄 Reiniciar' },
+  { value: 'check-update', label: '🔍 Check update' },
+]
+
+const STACK_ACTIONS = [
+  { value: 'update', label: '⬆️ Actualizar stack' },
+  { value: 'check-update', label: '🔍 Check updates' },
 ]
 
 export default function SchedulePage({ containers }: SchedulePageProps) {
@@ -75,10 +88,26 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
   const [saving, setSaving] = useState(false)
 
   // New schedule form
-  const [newContainer, setNewContainer] = useState<string | null>(null)
+  const [targetType, setTargetType] = useState<'container' | 'stack'>('container')
+  const [newTarget, setNewTarget] = useState<string | null>(null)
   const [newCron, setNewCron] = useState('0 */6 * * *')
   const [newAction, setNewAction] = useState<string | null>('update')
   const [newEnabled, setNewEnabled] = useState(true)
+  const [newNotify, setNewNotify] = useState(false)
+  const [newCleanup, setNewCleanup] = useState(false)
+
+  // Derive unique stack names from containers
+  const stacks = useMemo(() => {
+    const seen = new Set<string>()
+    const result: string[] = []
+    for (const c of containers) {
+      if (c.compose_project && !seen.has(c.compose_project)) {
+        seen.add(c.compose_project)
+        result.push(c.compose_project)
+      }
+    }
+    return result.sort()
+  }, [containers])
 
   const loadSchedules = useCallback(async () => {
     setLoading(true)
@@ -92,18 +121,22 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
   useEffect(() => { loadSchedules() }, [loadSchedules])
 
   const handleCreate = async () => {
-    if (!newContainer || !newAction) return
+    if (!newTarget || !newAction) return
     setSaving(true)
     try {
+      const body: Record<string, any> = {
+        container: newTarget,
+        target_type: targetType,
+        cron: newCron,
+        action: newAction,
+        enabled: newEnabled,
+        notify: newNotify,
+        cleanup: newCleanup ? 'delete-old' : 'none',
+      }
       const res = await apiFetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          container: newContainer,
-          cron: newCron,
-          action: newAction,
-          enabled: newEnabled,
-        }),
+        body: JSON.stringify(body),
       })
       if (res.ok) {
         await loadSchedules()
@@ -122,10 +155,13 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
   }
 
   const resetForm = () => {
-    setNewContainer(null)
+    setTargetType('container')
+    setNewTarget(null)
     setNewCron('0 */6 * * *')
     setNewAction('update')
     setNewEnabled(true)
+    setNewNotify(false)
+    setNewCleanup(false)
   }
 
   if (loading) return <Group justify="center" py="xl"><Loader /></Group>
@@ -134,15 +170,21 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     switch (action) {
       case 'update': return 'blue'
       case 'restart': return 'yellow'
-      case 'prune': return 'red'
       case 'check-update': return 'violet'
+      case 'prune': return 'red'
       default: return 'gray'
     }
   }
 
   const actionLabel = (action: string) => {
-    const opt = ACTION_OPTIONS.find((o) => o.value === action)
+    const allOpts = [...CONTAINER_ACTIONS, ...STACK_ACTIONS]
+    const opt = allOpts.find((o) => o.value === action)
     return opt ? opt.label : action
+  }
+
+  const targetLabel = (entry: ScheduleEntry) => {
+    const icon = entry.target_type === 'stack' ? '📦' : '📦'
+    return `${icon} ${entry.container}`
   }
 
   // ── Mobile card ─────────────────────────────────────────────
@@ -150,13 +192,21 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     <Paper key={sched.id} shadow="sm" p="sm" withBorder>
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">
-          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>{sched.container}</Text>
+          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>
+            {targetLabel(sched)}
+          </Text>
           <Badge size="sm" color={sched.enabled ? 'green' : 'gray'}>
             {sched.enabled ? 'Activa' : 'Inactiva'}
           </Badge>
         </Group>
         <Divider />
         <Stack gap={2}>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Tipo:</Text>
+            <Badge size="sm" variant="light" color={sched.target_type === 'stack' ? 'grape' : 'blue'}>
+              {sched.target_type === 'stack' ? '📦 Stack' : '📦 Container'}
+            </Badge>
+          </Group>
           <Group gap="xs">
             <Text size="xs" c="dimmed">Acción:</Text>
             <Badge color={actionColor(sched.action)} variant="light" size="sm">
@@ -166,6 +216,10 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
           <Group gap="xs">
             <Text size="xs" c="dimmed">Cron:</Text>
             <Text size="xs" style={{ fontFamily: 'monospace' }}>{sched.cron}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Notificar:</Text>
+            <Text size="xs">{sched.notify ? '✅ Sí' : '❌ No'}</Text>
           </Group>
         </Stack>
         <Button
@@ -201,24 +255,60 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
         size={isMobile ? '100%' : 'md'}
       >
         <Stack>
-          <Select
-            label="Container"
-            placeholder="Selecciona un container"
+          <SegmentedControl
+            value={targetType}
+            onChange={(v) => { setTargetType(v as 'container' | 'stack'); setNewTarget(null); setNewAction('update') }}
             data={[
-              { value: '*', label: '🌟 Todos los containers' },
-              ...containers.map((c) => ({ value: c.name, label: c.name })),
+              { value: 'container', label: '📦 Container' },
+              { value: 'stack', label: '📦 Stack' },
             ]}
-            value={newContainer}
-            onChange={setNewContainer}
-            searchable
-            required
+            fullWidth
           />
+
+          {targetType === 'container' ? (
+            <Select
+              label="Container"
+              placeholder="Selecciona un container"
+              data={[
+                { value: '*', label: '🌟 Todos los containers' },
+                ...containers.map((c) => ({ value: c.name, label: c.name })),
+              ]}
+              value={newTarget}
+              onChange={setNewTarget}
+              searchable
+              required
+            />
+          ) : (
+            <Select
+              label="Stack"
+              placeholder="Selecciona un stack"
+              data={
+                stacks.length > 0
+                  ? stacks.map((s) => ({ value: s, label: s }))
+                  : [{ value: '', label: 'No hay stacks disponibles', disabled: true }]
+              }
+              value={newTarget}
+              onChange={setNewTarget}
+              searchable
+              required
+            />
+          )}
+
           <Select
             label="Acción"
-            data={ACTION_OPTIONS}
+            data={targetType === 'container' ? CONTAINER_ACTIONS : STACK_ACTIONS}
             value={newAction}
             onChange={setNewAction}
           />
+
+          {newAction === 'update' && targetType === 'container' && (
+            <Switch
+              label="🧹 Borrar imagen anterior tras actualizar"
+              checked={newCleanup}
+              onChange={(e) => setNewCleanup(e.currentTarget.checked)}
+            />
+          )}
+
           <Select
             label="Frecuencia (Cron)"
             data={CRON_PRESETS}
@@ -226,6 +316,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
             onChange={(v) => v && setNewCron(v)}
             searchable
           />
+
           <TextInput
             label="Expresión Cron (personalizada)"
             description="Edita directamente la expresión si los presets no se ajustan"
@@ -233,11 +324,19 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
             value={newCron}
             onChange={(e) => setNewCron(e.currentTarget.value)}
           />
+
+          <Switch
+            label="🔔 Notificar vía Telegram/Matrix"
+            checked={newNotify}
+            onChange={(e) => setNewNotify(e.currentTarget.checked)}
+          />
+
           <Switch
             label="Activada"
             checked={newEnabled}
             onChange={(e) => setNewEnabled(e.currentTarget.checked)}
           />
+
           <Group justify="flex-end" mt="md">
             <Button variant="default" onClick={() => { setShowModal(false); resetForm() }}>
               Cancelar
@@ -262,13 +361,15 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
         </Stack>
       ) : (
         <Paper shadow="sm" withBorder>
-          <Table.ScrollContainer minWidth={500}>
+          <Table.ScrollContainer minWidth={600}>
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Container</Table.Th>
+                  <Table.Th>Target</Table.Th>
+                  <Table.Th>Tipo</Table.Th>
                   <Table.Th>Acción</Table.Th>
-                  <Table.Th>Expresión Cron</Table.Th>
+                  <Table.Th>Exp. Cron</Table.Th>
+                  <Table.Th>Notificar</Table.Th>
                   <Table.Th>Estado</Table.Th>
                   <Table.Th>Acción</Table.Th>
                 </Table.Tr>
@@ -278,6 +379,11 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
                   <Table.Tr key={sched.id}>
                     <Table.Td>
                       <Text size="sm" fw={500}>{sched.container}</Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge size="sm" variant="light" color={sched.target_type === 'stack' ? 'grape' : 'blue'}>
+                        {sched.target_type === 'stack' ? 'Stack' : 'Container'}
+                      </Badge>
                     </Table.Td>
                     <Table.Td>
                       <Badge color={actionColor(sched.action)} variant="light">
@@ -290,6 +396,9 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
                           {sched.cron}
                         </Text>
                       </Tooltip>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm">{sched.notify ? '✅' : '—'}</Text>
                     </Table.Td>
                     <Table.Td>
                       <Badge color={sched.enabled ? 'green' : 'gray'}>

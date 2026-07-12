@@ -64,9 +64,12 @@ async fn create_schedule_h(
     let task = ScheduleTask {
         id: Uuid::new_v4().to_string(),
         container: body.container,
+        target_type: body.target_type,
         cron: body.cron,
         action: body.action,
         enabled: body.enabled,
+        notify: body.notify,
+        cleanup: body.cleanup,
     };
     let mut list = schedules.lock().await;
     list.push(task.clone());

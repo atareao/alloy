@@ -174,10 +174,16 @@ pub struct CreateAlert {
 #[derive(Clone, Debug, Deserialize)]
 pub struct CreateSchedule {
     pub container: String,
+    #[serde(default = "default_target_type")]
+    pub target_type: String,
     pub cron: String,
     pub action: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub notify: bool,
+    #[serde(default = "default_cleanup")]
+    pub cleanup: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -225,10 +231,24 @@ pub struct ScheduleTask {
     #[serde(default = "default_schedule_id")]
     pub id: String,
     pub container: String,
+    #[serde(default = "default_target_type")]
+    pub target_type: String,
     pub cron: String,
     pub action: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub notify: bool,
+    #[serde(default = "default_cleanup")]
+    pub cleanup: String,
+}
+
+pub fn default_target_type() -> String {
+    "container".to_string()
+}
+
+pub fn default_cleanup() -> String {
+    "none".to_string()
 }
 
 pub fn default_alert_id() -> String {

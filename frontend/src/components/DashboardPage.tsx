@@ -348,6 +348,99 @@ export default function DashboardPage() {
     }
   };
 
+  // ── Stack-level actions ────────────────────────────────────
+
+  const [stackUpdating, setStackUpdating] = useState<string | null>(null);
+  const [stackInspect, setStackInspect] = useState<string | null>(null);
+  const [stackConfirmDelete, setStackConfirmDelete] = useState<string | null>(null);
+
+  const handleStackCheckUpdates = async (project: string, items: ContainerInfo[]) => {
+    for (const c of items) {
+      try {
+        const res = await apiFetch(`/api/check-update/${encodeURIComponent(c.name)}`, { method: "POST" });
+        if (res.ok) {
+          const data = await res.json();
+          setCheckedUpdates(prev => ({ ...prev, [c.name]: data.has_update === true }));
+        }
+      } catch { /* ignore */ }
+    }
+    setActionNotif({ container: project, action: "check completado ✅" });
+    setTimeout(() => setActionNotif(null), 3000);
+  };
+
+  const handleStackUpdate = async (project: string) => {
+    setStackUpdating(project);
+    try {
+      const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/update`, { method: "POST" });
+      if (res.ok) {
+        setActionNotif({ container: project, action: "stack actualizado ✅" });
+      } else {
+        setActionNotif({ container: project, action: "error al actualizar stack", error: `HTTP ${res.status}` });
+      }
+    } catch (e: any) {
+      setActionNotif({ container: project, action: "error al actualizar stack", error: e.message });
+    }
+    setTimeout(() => setActionNotif(null), 4000);
+    setStackUpdating(null);
+  };
+
+  const handleStackAction = async (project: string, items: ContainerInfo[], action: string) => {
+    for (const c of items) {
+      try {
+        await apiFetch(`/api/containers/${encodeURIComponent(c.name)}/${action}`, { method: "POST" });
+      } catch { /* ignore */ }
+    }
+    const labels: Record<string, string> = { start: "iniciados", stop: "parados", restart: "reiniciados" };
+    setActionNotif({ container: project, action: `todos ${labels[action] || action} ✅` });
+    setTimeout(() => setActionNotif(null), 3000);
+  };
+
+  const handleStackRemove = async (project: string) => {
+    setStackConfirmDelete(null);
+    try {
+      const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/down`, { method: "POST" });
+      if (res.ok) {
+        setActionNotif({ container: project, action: "stack eliminado ✅" });
+      } else {
+        const err = await res.text();
+        setActionNotif({ container: project, action: "error al eliminar stack", error: err });
+      }
+    } catch (e: any) {
+      setActionNotif({ container: project, action: "error al eliminar stack", error: e.message });
+    }
+    setTimeout(() => setActionNotif(null), 4000);
+  };
+
+  // ── Stack menu (shared) ────────────────────────────────────
+  const renderStackMenu = (project: string, items: ContainerInfo[]) => {
+    const hasRunning = items.some(c => c.state === "running");
+    const isBusyStack = stackUpdating === project;
+    return (
+      <Menu shadow="md" width={220}>
+        <Menu.Target>
+          <ActionIcon variant="subtle" size="sm" aria-label="Menú stack">⋮</ActionIcon>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Item leftSection="🔍" onClick={() => handleStackCheckUpdates(project, items)}>Check updates</Menu.Item>
+          <Menu.Item
+            leftSection={isBusyStack ? <Loader size="xs" /> : "⬆️"}
+            onClick={() => handleStackUpdate(project)}
+            disabled={isBusyStack}
+          >
+            {isBusyStack ? 'Actualizando...' : 'Actualizar stack'}
+          </Menu.Item>
+          <Menu.Item leftSection="🔍" onClick={() => setStackInspect(project)}>Inspeccionar</Menu.Item>
+          <Menu.Divider />
+          <Menu.Item leftSection="▶️" onClick={() => handleStackAction(project, items, "start")} disabled={hasRunning}>Iniciar todos</Menu.Item>
+          <Menu.Item leftSection="⏹️" onClick={() => handleStackAction(project, items, "stop")} disabled={!hasRunning}>Parar todos</Menu.Item>
+          <Menu.Item leftSection="🔄" onClick={() => handleStackAction(project, items, "restart")}>Reiniciar todos</Menu.Item>
+          <Menu.Divider />
+          <Menu.Item leftSection="🗑️" color="red" onClick={() => setStackConfirmDelete(project)}>Borrar stack</Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
+    );
+  };
+
   // ── Derived data ───────────────────────────────────────────
 
   if (loading)
@@ -549,9 +642,12 @@ export default function DashboardPage() {
 
   const renderMobileGroup = (project: string, items: ContainerInfo[]) => (
     <Paper shadow="sm" withBorder mb="md" key={project}>
-      <Group px="md" pt="sm" pb="xs">
-        <Title order={4}>📦 {project}</Title>
-        <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
+      <Group px="md" pt="sm" pb="xs" justify="space-between">
+        <Group gap="xs">
+          <Title order={4}>📦 {project}</Title>
+          <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
+        </Group>
+        {renderStackMenu(project, items)}
       </Group>
       <Stack px="md" pb="md" gap="sm">
         {items.map(renderMobileCard)}
@@ -561,26 +657,33 @@ export default function DashboardPage() {
 
   const renderGroup = (project: string, items: ContainerInfo[]) => (
     <Paper shadow="sm" withBorder mb="md" key={project}>
-      <Group px="md" pt="sm" pb="xs">
-        <Title order={4}>📦 {project}</Title>
-        <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
-      </Group>
-      <Table.ScrollContainer minWidth={700}>
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Container</Table.Th>
-              <Table.Th>Imagen</Table.Th>
-              <Table.Th>Stack</Table.Th>
-              <Table.Th>Puertos</Table.Th>
-              <Table.Th>Traefik</Table.Th>
-              <Table.Th>Estado</Table.Th>
-              <Table.Th>Menú</Table.Th>
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>{items.map(renderRow)}</Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+      <Stack gap={0}>
+        <Paper p="sm" style={{ background: 'var(--mantine-color-dark-6)' }}>
+          <Group justify="space-between">
+            <Group gap="xs">
+              <Title order={4}>📦 {project}</Title>
+              <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
+            </Group>
+            {renderStackMenu(project, items)}
+          </Group>
+        </Paper>
+        <Table.ScrollContainer minWidth={700}>
+          <Table striped highlightOnHover>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Container</Table.Th>
+                <Table.Th>Imagen</Table.Th>
+                <Table.Th>Stack</Table.Th>
+                <Table.Th>Puertos</Table.Th>
+                <Table.Th>Traefik</Table.Th>
+                <Table.Th>Estado</Table.Th>
+                <Table.Th>Menú</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>{items.map(renderRow)}</Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      </Stack>
     </Paper>
   );
 
@@ -862,6 +965,69 @@ export default function DashboardPage() {
             <Button onClick={() => setShowSummary(false)}>Cerrar</Button>
           </Group>
         </Stack>
+      </Modal>
+
+      {/* Stack inspect modal */}
+      <Modal opened={stackInspect !== null} onClose={() => setStackInspect(null)} title={`📦 Inspeccionar stack: ${stackInspect || ""}`} size={isMobile ? "100%" : "lg"}>
+        {stackInspect && (() => {
+          const stackContainers = containers.filter(c => c.compose_project === stackInspect);
+          const running = stackContainers.filter(c => c.state === "running").length;
+          return (
+            <Stack gap="md">
+              <Paper p="md" withBorder>
+                <Group gap="lg">
+                  <Stack gap="0" align="center">
+                    <Text size="xl" fw={700}>{stackContainers.length}</Text>
+                    <Text size="xs" c="dimmed">Servicios</Text>
+                  </Stack>
+                  <Stack gap="0" align="center">
+                    <Text size="xl" fw={700} c="green">{running}</Text>
+                    <Text size="xs" c="dimmed">En ejecución</Text>
+                  </Stack>
+                  <Stack gap="0" align="center">
+                    <Text size="xl" fw={700} c="red">{stackContainers.length - running}</Text>
+                    <Text size="xs" c="dimmed">Parados</Text>
+                  </Stack>
+                </Group>
+              </Paper>
+              <Table.ScrollContainer minWidth={400}>
+                <Table striped highlightOnHover>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Servicio</Table.Th>
+                      <Table.Th>Container</Table.Th>
+                      <Table.Th>Imagen</Table.Th>
+                      <Table.Th>Estado</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {stackContainers.map(c => (
+                      <Table.Tr key={c.id}>
+                        <Table.Td><Text size="sm" fw={500}>{c.name}</Text></Table.Td>
+                        <Table.Td><Text size="xs" c="dimmed">{truncate(c.id)}</Text></Table.Td>
+                        <Table.Td><Text size="xs" c="dimmed">{truncate(`${c.image}:${c.image_tag}`)}</Text></Table.Td>
+                        <Table.Td>
+                          <Badge color={c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red"}>
+                            {c.status.includes("healthy") ? "healthy" : c.state}
+                          </Badge>
+                        </Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
+            </Stack>
+          );
+        })()}
+      </Modal>
+
+      {/* Stack confirm delete modal */}
+      <Modal opened={stackConfirmDelete !== null} onClose={() => setStackConfirmDelete(null)} title="🗑️ Confirmar Eliminación de Stack" size="sm">
+        <Text mb="md">¿Seguro que quieres eliminar el stack <b>{stackConfirmDelete}</b>? Se ejecutará <Code>docker compose down</Code>. Esta acción no se puede deshacer.</Text>
+        <Group justify="flex-end">
+          <Button variant="default" onClick={() => setStackConfirmDelete(null)}>Cancelar</Button>
+          <Button color="red" onClick={() => stackConfirmDelete && handleStackRemove(stackConfirmDelete)}>Eliminar stack</Button>
+        </Group>
       </Modal>
     </>
   );
