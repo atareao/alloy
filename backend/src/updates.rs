@@ -55,7 +55,7 @@ async fn update_container_h(
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
-        crate::workers::json_writer()
+        crate::persistence::json_writer()
             .save(FILE_UPDATES_HISTORY, &*hist)
             .await;
         return Err(AppError::Internal("pull failed".into()));
@@ -95,7 +95,7 @@ async fn update_container_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            crate::workers::json_writer()
+            crate::persistence::json_writer()
                 .save(FILE_UPDATES_HISTORY, &*hist)
                 .await;
             Ok(Json(UpdateProgress {
@@ -123,7 +123,7 @@ async fn update_container_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            crate::workers::json_writer()
+            crate::persistence::json_writer()
                 .save(FILE_UPDATES_HISTORY, &*hist)
                 .await;
             Err(AppError::Docker(format!("restart: {}", e)))
@@ -159,7 +159,7 @@ async fn update_all_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            crate::workers::json_writer()
+            crate::persistence::json_writer()
                 .save(FILE_UPDATES_HISTORY, &*hist)
                 .await;
             continue;
@@ -193,7 +193,7 @@ async fn update_all_h(
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
-                crate::workers::json_writer()
+                crate::persistence::json_writer()
                     .save(FILE_UPDATES_HISTORY, &*hist)
                     .await;
             }
@@ -508,7 +508,7 @@ async fn delete_history_h(
 ) -> Json<serde_json::Value> {
     let mut hist = update_history.lock().await;
     hist.clear();
-    crate::workers::json_writer()
+    crate::persistence::json_writer()
         .save(FILE_UPDATES_HISTORY, &*hist)
         .await;
     Json(serde_json::json!({"status": "cleared"}))

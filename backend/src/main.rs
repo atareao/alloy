@@ -5,6 +5,7 @@ mod containers;
 mod events;
 mod models;
 mod notifications;
+mod persistence;
 mod stacks;
 mod state;
 mod updates;
@@ -19,8 +20,9 @@ use crate::auth::auth_middleware;
 use crate::config::Config;
 use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
+use crate::persistence::load_json;
 use crate::workers::{
-    alerts_worker, auto_update_worker, load_json, scheduler_worker, state_worker, CachedContainers,
+    alerts_worker, auto_update_worker, scheduler_worker, state_worker, CachedContainers,
 };
 
 use axum::{

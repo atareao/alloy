@@ -13,7 +13,7 @@ use crate::state::AppState;
 
 macro_rules! save_buffered {
     ($path:expr, $data:expr) => {
-        crate::workers::json_writer().save($path, $data).await
+        crate::persistence::json_writer().save($path, $data).await
     };
 }
 

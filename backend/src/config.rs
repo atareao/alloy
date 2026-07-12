@@ -145,7 +145,7 @@ use tokio::sync::Mutex;
 
 use crate::models::{PublicConfig, Settings, UpdateSettingsReq, FILE_SETTINGS};
 use crate::state::AppState;
-use crate::workers::json_writer;
+use crate::persistence::json_writer;
 
 async fn config_handler(
     State(config): State<Config>,
