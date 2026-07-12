@@ -7,27 +7,43 @@ use crate::state::http_client;
 
 /// Resolve telegram token: settings overlay config
 fn tg_token<'a>(settings: &'a Settings, config: &'a Config) -> Option<&'a str> {
-    settings.telegram_token.as_deref().or(config.telegram_token.as_deref())
+    settings
+        .telegram_token
+        .as_deref()
+        .or(config.telegram_token.as_deref())
 }
 
 fn tg_chat_id<'a>(settings: &'a Settings, config: &'a Config) -> Option<&'a str> {
-    settings.telegram_chat_id.as_deref().or(config.telegram_chat_id.as_deref())
+    settings
+        .telegram_chat_id
+        .as_deref()
+        .or(config.telegram_chat_id.as_deref())
 }
 
 fn mx_homeserver<'a>(settings: &'a Settings, config: &'a Config) -> Option<&'a str> {
-    settings.matrix_homeserver.as_deref().or(config.matrix_homeserver.as_deref())
+    settings
+        .matrix_homeserver
+        .as_deref()
+        .or(config.matrix_homeserver.as_deref())
 }
 
 fn mx_token<'a>(settings: &'a Settings, config: &'a Config) -> Option<&'a str> {
-    settings.matrix_token.as_deref().or(config.matrix_token.as_deref())
+    settings
+        .matrix_token
+        .as_deref()
+        .or(config.matrix_token.as_deref())
 }
 
 fn mx_room<'a>(settings: &'a Settings, config: &'a Config) -> Option<&'a str> {
-    settings.matrix_room.as_deref().or(config.matrix_room.as_deref())
+    settings
+        .matrix_room
+        .as_deref()
+        .or(config.matrix_room.as_deref())
 }
 
 pub async fn notify_telegram(config: &Config, settings: &Settings, container: &str, status: &str) {
-    let (Some(token), Some(chat_id)) = (tg_token(settings, config), tg_chat_id(settings, config)) else {
+    let (Some(token), Some(chat_id)) = (tg_token(settings, config), tg_chat_id(settings, config))
+    else {
         return;
     };
     let body = serde_json::json!({"chat_id": chat_id, "text": format!("🪐 *Alloy*\n*{}*: {}", container, status), "parse_mode": "Markdown"});

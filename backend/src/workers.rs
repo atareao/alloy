@@ -220,7 +220,13 @@ pub async fn auto_update_worker(
     notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
 ) {
-    let enabled = { settings.lock().await.auto_update_enabled.unwrap_or_else(|| config.auto_update()) };
+    let enabled = {
+        settings
+            .lock()
+            .await
+            .auto_update_enabled
+            .unwrap_or_else(|| config.auto_update())
+    };
     if !enabled {
         return;
     }
@@ -310,7 +316,8 @@ pub async fn alerts_worker(
                         status: "alert: gone".into(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via).await;
+                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via)
+                        .await;
                 }
                 continue;
             };
@@ -334,7 +341,8 @@ pub async fn alerts_worker(
                         status: format!("alert: {}", current_state),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via).await;
+                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via)
+                        .await;
                 }
                 // Transición: algo malo → running (recuperación)
                 if current_state == "running"
@@ -349,7 +357,8 @@ pub async fn alerts_worker(
                         status: "alert: recovered".into(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via).await;
+                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via)
+                        .await;
                 }
             }
         }
