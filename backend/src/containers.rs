@@ -351,15 +351,25 @@ async fn config_handler(
 ) -> Json<PublicConfig> {
     let s = settings.lock().await;
     let tg_token = s.telegram_token.as_ref().or(config.telegram_token.as_ref());
-    let tg_chat_id = s.telegram_chat_id.clone().or_else(|| config.telegram_chat_id.clone());
-    let mx_homeserver = s.matrix_homeserver.clone().or_else(|| config.matrix_homeserver.clone());
+    let tg_chat_id = s
+        .telegram_chat_id
+        .clone()
+        .or_else(|| config.telegram_chat_id.clone());
+    let mx_homeserver = s
+        .matrix_homeserver
+        .clone()
+        .or_else(|| config.matrix_homeserver.clone());
     let mx_token = s.matrix_token.as_ref().or(config.matrix_token.as_ref());
     let mx_room = s.matrix_room.clone().or_else(|| config.matrix_room.clone());
     Json(PublicConfig {
         oidc_configured: true,
         port: config.port(),
-        auto_update_enabled: s.auto_update_enabled.unwrap_or_else(|| config.auto_update()),
-        auto_update_interval_hours: s.auto_update_interval_hours.unwrap_or_else(|| config.auto_update_interval()),
+        auto_update_enabled: s
+            .auto_update_enabled
+            .unwrap_or_else(|| config.auto_update()),
+        auto_update_interval_hours: s
+            .auto_update_interval_hours
+            .unwrap_or_else(|| config.auto_update_interval()),
         telegram_configured: tg_token.is_some(),
         telegram_token_set: tg_token.is_some(),
         telegram_chat_id: tg_chat_id,

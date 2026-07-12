@@ -6,7 +6,7 @@ import {
   SimpleGrid,
 } from "@mantine/core";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData } from "../types";
-import { apiFetch } from "../api";
+import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
 
 // ── Types ────────────────────────────────────────────────────
@@ -161,7 +161,7 @@ export default function DashboardPage() {
       if (cancelBatchRef.current) break;
 
       const c = initialContainers[i];
-      const imgLabel = `${c.image}:${c.image_tag}`;
+      const imgLabel = truncate(`${c.image}:${c.image_tag}`);
       setBatchCurrentItem(`🔍 ${c.name} — ${imgLabel}`);
       setBatchProgress(prev => ({ ...prev, current: i + 1 }));
 
@@ -220,7 +220,7 @@ export default function DashboardPage() {
       if (cancelBatchRef.current) break;
 
       const c = initialContainers[i];
-      setBatchCurrentItem(`🔍 ${c.name} — ${c.image}:${c.image_tag}`);
+      setBatchCurrentItem(`🔍 ${c.name} — ${truncate(`${c.image}:${c.image_tag}`)}`);
       setBatchProgress(prev => ({ ...prev, current: i + 1 }));
 
       try {
@@ -262,7 +262,7 @@ export default function DashboardPage() {
         if (cancelBatchRef.current) break;
 
         const c = containersToUpdate[i];
-        setBatchCurrentItem(`⬆️ ${c.name} — ${c.image}:${c.image_tag}`);
+        setBatchCurrentItem(`⬆️ ${c.name} — ${truncate(`${c.image}:${c.image_tag}`)}`);
         setBatchProgress(prev => ({ ...prev, current: i + 1 }));
 
         try {
@@ -424,7 +424,7 @@ export default function DashboardPage() {
           {/* Image + update button */}
           <Group gap="xs" wrap="nowrap">
             <Text size="xs" c="dimmed" truncate style={{ flex: 1 }}>
-              {c.image}:{c.image_tag}
+              {truncate(`${c.image}:${c.image_tag}`)}
             </Text>
             {hasUpdate && (
               <Tooltip label="Actualizar container">
@@ -487,7 +487,7 @@ export default function DashboardPage() {
         <Table.Td><Text size="sm" fw={500}>{c.name}</Text></Table.Td>
         <Table.Td>
           <Group gap="xs" wrap="nowrap">
-            <Text size="sm" c="dimmed">{c.image}:{c.image_tag}</Text>
+            <Text size="sm" c="dimmed">{truncate(`${c.image}:${c.image_tag}`)}</Text>
             {hasUpdate && (
               <Tooltip label="Actualizar container">
                 <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateSingleContainer(c.name)} loading={isSingleUpdating}>⬆</ActionIcon>

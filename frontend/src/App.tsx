@@ -74,7 +74,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           <Stack mb="md">
             <Group justify="space-between">
               <Title order={2}>
-                <img src="/favicon.svg" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
+                <img src="/icon-48x48.png" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
                 Alloy
               </Title>
               <Group gap="xs">
@@ -94,7 +94,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         ) : (
           <Group justify="space-between" mb="lg">
             <Title order={2}>
-              <img src="/favicon.svg" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
+              <img src="/icon-48x48.png" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
               Alloy
             </Title>
             <Group>

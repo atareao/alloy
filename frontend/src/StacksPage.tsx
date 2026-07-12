@@ -13,18 +13,7 @@ import {
   Tooltip,
   Divider,
 } from '@mantine/core'
-
-// ═══════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════
-
-function apiFetch(path: string, opts?: RequestInit) {
-  const token = localStorage.getItem('token')
-  return fetch(path, {
-    ...opts,
-    headers: { ...opts?.headers, 'Authorization': `Bearer ${token}` },
-  })
-}
+import { apiFetch, truncate } from './api'
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -104,7 +93,7 @@ export default function StacksPage() {
           </Group>
           <Group gap="xs">
             <Text size="xs" c="dimmed">Imagen:</Text>
-            <Text size="xs">{svc.image}</Text>
+            <Text size="xs">{truncate(svc.image)}</Text>
           </Group>
         </Stack>
       </Stack>
@@ -176,7 +165,7 @@ export default function StacksPage() {
                     <Text size="xs" c="dimmed">{svc.container_name}</Text>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="xs" c="dimmed">{svc.image}</Text>
+                    <Text size="xs" c="dimmed">{truncate(svc.image)}</Text>
                   </Table.Td>
                   <Table.Td>
                     <Badge color={statusColor(svc.status)}>{svc.status}</Badge>

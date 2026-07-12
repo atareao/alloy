@@ -321,7 +321,9 @@ async fn check_all_h(
                     if image_full.is_empty() {
                         return (name, false);
                     }
-                    let (repo, local_tag) = if let Some(pos) = image_full.rfind(':') {
+                    let (repo, local_tag) = if let Some(pos) = image_full.rfind('@') {
+                        (image_full[..pos].to_string(), "digest".to_string())
+                    } else if let Some(pos) = image_full.rfind(':') {
                         (
                             image_full[..pos].to_string(),
                             image_full[pos + 1..].to_string(),
@@ -370,6 +372,13 @@ async fn check_all_h(
     Json(containers)
 }
 
+/// Fetch the config digest (image ID) of a remote image from Docker Hub.
+///
+/// Returns `(config_digest, tag)` where `config_digest` matches what Docker
+/// stores locally as `ImageID`, so a byte-for-byte comparison is correct.
+///
+/// For multi-arch (manifest list) images this performs a second request to
+/// resolve the platform-specific manifest and extract its `config.digest`.
 async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, String), String> {
     let client = http_client();
     let token_url = format!(
@@ -388,6 +397,8 @@ async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, String), 
     let token = token_body["token"]
         .as_str()
         .ok_or_else(|| "no token".to_string())?;
+
+    // Step 1: fetch the manifest (or manifest list) for the given tag
     let manifest_url = format!("https://registry-1.docker.io/v2/{}/manifests/{}", repo, tag);
     let manifest_resp = client
         .get(&manifest_url)
@@ -396,20 +407,87 @@ async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, String), 
             "Accept",
             "application/vnd.docker.distribution.manifest.v2+json",
         )
+        .header(
+            "Accept",
+            "application/vnd.docker.distribution.manifest.list.v2+json",
+        )
         .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+        .header("Accept", "application/vnd.oci.image.index.v1+json")
         .send()
         .await
         .map_err(|e| format!("manifest request failed: {}", e))?;
     if !manifest_resp.status().is_success() {
         return Err(format!("manifest status: {}", manifest_resp.status()));
     }
-    let digest = manifest_resp
+
+    let content_type = manifest_resp
         .headers()
-        .get("docker-content-digest")
+        .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or_else(|| "no digest header".to_string())?;
-    Ok((digest, tag.to_string()))
+        .unwrap_or("");
+
+    // Step 2: extract the config digest (image ID), resolving manifest lists
+    let config_digest =
+        if content_type.contains("manifest.list") || content_type.contains("image.index") {
+            // Multi-arch image: grab the first linux/amd64 manifest digest
+            let body: serde_json::Value = manifest_resp
+                .json()
+                .await
+                .map_err(|e| format!("manifest list parse failed: {}", e))?;
+            let manifests = body["manifests"]
+                .as_array()
+                .ok_or_else(|| "no manifests in list".to_string())?;
+            let amd64_digest = manifests
+                .iter()
+                .find(|m| {
+                    let plat = &m["platform"];
+                    plat["architecture"].as_str() == Some("amd64")
+                        && plat["os"].as_str() == Some("linux")
+                })
+                .or_else(|| manifests.first())
+                .and_then(|m| m["digest"].as_str())
+                .ok_or_else(|| "no suitable platform manifest".to_string())?;
+
+            // Fetch the platform-specific manifest
+            let plat_url = format!(
+                "https://registry-1.docker.io/v2/{}/manifests/{}",
+                repo, amd64_digest
+            );
+            let plat_resp = client
+                .get(&plat_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header(
+                    "Accept",
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                )
+                .header("Accept", "application/vnd.oci.image.manifest.v1+json")
+                .send()
+                .await
+                .map_err(|e| format!("platform manifest request failed: {}", e))?;
+            if !plat_resp.status().is_success() {
+                return Err(format!("platform manifest status: {}", plat_resp.status()));
+            }
+            let plat_body: serde_json::Value = plat_resp
+                .json()
+                .await
+                .map_err(|e| format!("platform manifest parse failed: {}", e))?;
+            plat_body["config"]["digest"]
+                .as_str()
+                .ok_or_else(|| "no config digest in platform manifest".to_string())?
+                .to_string()
+        } else {
+            // Single-arch manifest: extract config.digest directly
+            let body: serde_json::Value = manifest_resp
+                .json()
+                .await
+                .map_err(|e| format!("manifest parse failed: {}", e))?;
+            body["config"]["digest"]
+                .as_str()
+                .ok_or_else(|| "no config digest".to_string())?
+                .to_string()
+        };
+
+    Ok((config_digest, tag.to_string()))
 }
 
 pub fn routes() -> Router<AppState> {
