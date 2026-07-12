@@ -109,7 +109,7 @@ export default function DashboardPage() {
         const data = await res.json();
         const hasUpdate = data.has_update === true;
         setCheckedUpdates(prev => ({ ...prev, [name]: hasUpdate }));
-        setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: c.has_update || hasUpdate } : c));
+        setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: hasUpdate } : c));
         setActionNotif({
           container: name,
           action: hasUpdate ? "actualización disponible ⬆️" : "está actualizado ✅",
@@ -130,6 +130,8 @@ export default function DashboardPage() {
     setUpdating(name);
     try {
       await apiFetch(`/api/update/${encodeURIComponent(name)}`, { method: "POST" });
+      setCheckedUpdates(prev => { const n = { ...prev }; delete n[name]; return n; });
+      setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: false } : c));
       setActionNotif({ container: name, action: "actualizado ✅" });
       setTimeout(() => setActionNotif(null), 3000);
     } catch {
@@ -187,7 +189,7 @@ export default function DashboardPage() {
     }
 
     setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
-    setContainers(prev => prev.map(c => ({ ...c, has_update: c.has_update || !!updatedUpdates[c.name] })));
+    setContainers(prev => prev.map(c => ({ ...c, has_update: !!updatedUpdates[c.name] })));
     setCheckResults({ total: initialContainers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, errors });
     setBatchProgress({ current: initialContainers.length, total: initialContainers.length });
 
@@ -247,7 +249,7 @@ export default function DashboardPage() {
     const updatedUpdates: Record<string, boolean> = {};
     containersToUpdate.forEach(c => { updatedUpdates[c.name] = true; });
     setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
-    setContainers(prev => prev.map(c => ({ ...c, has_update: c.has_update || !!updatedUpdates[c.name] })));
+    setContainers(prev => prev.map(c => ({ ...c, has_update: !!updatedUpdates[c.name] })));
     setCheckResults({ total: initialContainers.length, updated: checkUpdated, uptodate: checkUptodate, failed: checkFailed, errors: checkErrors });
 
     // ── Phase 2: Update only those that need it ──────────────
@@ -257,6 +259,7 @@ export default function DashboardPage() {
       let updateDone = 0;
       let updateFailed = 0;
       const updateErrors: string[] = [];
+      const succeededNames: string[] = [];
 
       for (let i = 0; i < containersToUpdate.length; i++) {
         if (cancelBatchRef.current) break;
@@ -269,6 +272,7 @@ export default function DashboardPage() {
           const res = await apiFetch(`/api/update/${encodeURIComponent(c.name)}`, { method: "POST" });
           if (res.ok) {
             updateDone++;
+            succeededNames.push(c.name);
           } else {
             updateFailed++;
             updateErrors.push(`${c.name}: HTTP ${res.status}`);
@@ -280,6 +284,16 @@ export default function DashboardPage() {
       }
 
       setUpdateResults({ done: updateDone, failed: updateFailed, errors: updateErrors });
+
+      // ✅ Clear update flags only for successfully updated containers
+      setCheckedUpdates(prev => {
+        const n = { ...prev };
+        succeededNames.forEach(name => { n[name] = false; });
+        return n;
+      });
+      setContainers(prev => prev.map(c =>
+        succeededNames.includes(c.name) ? { ...c, has_update: false } : c
+      ));
     }
 
     setTimeout(() => {
