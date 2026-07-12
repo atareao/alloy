@@ -57,6 +57,29 @@ pub async fn fetch_containers(
         }))
         .await
         .unwrap_or_default();
+
+    // Step 1: Pre-resolve bare digest images (async) before building ContainerInfo
+    let mut resolved_images: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for c in &containers {
+        let image = c.image.as_deref().unwrap_or("");
+        if image.starts_with("sha256:") {
+            if let Some(cid) = &c.id {
+                if let Ok(inspect) = docker
+                    .inspect_container(cid, None::<InspectContainerOptions>)
+                    .await
+                {
+                    let real = inspect
+                        .config
+                        .as_ref()
+                        .and_then(|cfg| cfg.image.as_deref())
+                        .unwrap_or("");
+                    resolved_images.insert(cid.clone(), real.to_string());
+                }
+            }
+        }
+    }
+
+    // Step 2: Build ContainerInfo list (now all image names are resolved)
     containers
         .iter()
         .filter_map(|c| {
@@ -71,20 +94,28 @@ pub async fn fetch_containers(
                     return None;
                 }
             }
-            let image = c.image.as_deref().unwrap_or("unknown");
-            // Parse image name, handling digest references like "nginx@sha256:digest"
-            let (image_name, tag) = if let Some(pos) = image.find('@') {
-                // "repo/image@sha256:digest" → name = "repo/image", no tag shown
-                (image[..pos].to_string(), String::new())
-            } else if image.starts_with("sha256:") {
-                // Bare digest like "sha256:abc123..." → no meaningful name
-                ("unknown".to_string(), String::new())
-            } else if let Some((name, t)) = image.rsplit_once(':') {
-                // Normal format: "repo/image:tag" or "image:tag"
-                (name.to_string(), t.to_string())
+
+            // Determine the effective image reference string
+            let raw_image = c.image.as_deref().unwrap_or("unknown");
+            let effective_image = if raw_image.starts_with("sha256:") {
+                // Resolved via inspect in step 1, or fall back to raw
+                c.id.as_ref()
+                    .and_then(|cid| resolved_images.get(cid))
+                    .map(|s| s.as_str())
+                    .unwrap_or(raw_image)
             } else {
-                (image.to_string(), "latest".into())
+                raw_image
             };
+
+            // Parse image name + tag from effective_image
+            let (image_name, tag) = if let Some(pos) = effective_image.find('@') {
+                (effective_image[..pos].to_string(), String::new())
+            } else if let Some((n, t)) = effective_image.rsplit_once(':') {
+                (n.to_string(), t.to_string())
+            } else {
+                (effective_image.to_string(), "latest".into())
+            };
+
             let ports: Vec<String> = c
                 .ports
                 .as_ref()
@@ -124,27 +155,42 @@ pub async fn fetch_containers(
                 }
                 None
             });
-            let registry_url = if image.contains('/') {
-                if image.starts_with("docker.io/") || !image.contains('.') {
-                    let parts: Vec<&str> = image.splitn(2, '/').collect();
+
+            // Use the ORIGINAL raw_image for registry_url (the digest is fine for links)
+            let registry_image = raw_image;
+            let registry_url = if registry_image.contains('/') {
+                if registry_image.starts_with("docker.io/") || !registry_image.contains('.') {
+                    let parts: Vec<&str> = registry_image.splitn(2, '/').collect();
                     if parts.len() == 2 && parts[0].contains('.') {
                         format!("https://{}", parts[0])
                     } else {
-                        let repo = image.trim_start_matches("docker.io/");
+                        let repo = registry_image.trim_start_matches("docker.io/");
                         if repo.contains('/') {
                             format!("https://hub.docker.com/r/{}", repo)
                         } else {
                             format!("https://hub.docker.com/_/{}/tags", repo)
                         }
                     }
-                } else if image.contains('.') {
-                    format!("https://{}", image.split('/').next().unwrap_or(""))
+                } else if registry_image.contains('.') {
+                    format!("https://{}", registry_image.split('/').next().unwrap_or(""))
                 } else {
-                    format!("https://hub.docker.com/r/{}/tags", image)
+                    format!("https://hub.docker.com/r/{}/tags", registry_image)
+                }
+            } else if registry_image.starts_with("sha256:") {
+                // Bare digest — use the resolved name for registry URL
+                if let Some(repo_name) = image_name.strip_prefix("docker.io/").or(Some(&image_name)) {
+                    if repo_name.contains('/') {
+                        format!("https://hub.docker.com/r/{}", repo_name)
+                    } else {
+                        format!("https://hub.docker.com/_/{}/tags", repo_name)
+                    }
+                } else {
+                    String::new()
                 }
             } else {
-                format!("https://hub.docker.com/_/{}/tags", image)
+                format!("https://hub.docker.com/_/{}/tags", registry_image)
             };
+
             Some(ContainerInfo {
                 id: c.id.as_deref().unwrap_or("").chars().take(12).collect(),
                 name,
