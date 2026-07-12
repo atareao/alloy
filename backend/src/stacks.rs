@@ -359,7 +359,10 @@ async fn down_stack_h(
         })))
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Err(AppError::Internal(format!("docker compose down failed: {}", stderr)))
+        Err(AppError::Internal(format!(
+            "docker compose down failed: {}",
+            stderr
+        )))
     }
 }
 

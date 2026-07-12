@@ -430,13 +430,15 @@ pub async fn scheduler_worker(
                         docker_list_running(&docker).await
                     } else {
                         match find_container_by_name(&docker, &task.container).await {
-                            Ok(c) => c
-                                .id
-                                .as_deref()
-                                .zip(c.image.as_deref())
-                                .map(|(id, img)| (task.container.clone(), img.to_string(), id.to_string()))
-                                .into_iter()
-                                .collect(),
+                            Ok(c) => {
+                                c.id.as_deref()
+                                    .zip(c.image.as_deref())
+                                    .map(|(id, img)| {
+                                        (task.container.clone(), img.to_string(), id.to_string())
+                                    })
+                                    .into_iter()
+                                    .collect()
+                            }
                             Err(_) => vec![],
                         }
                     }
@@ -473,7 +475,11 @@ pub async fn scheduler_worker(
                         // Stack update via docker compose
                         let compose_file = resolve_compose_file(&docker, &task.container).await;
                         if let Some(ref file) = compose_file {
-                            tracing::info!("Scheduler: pulling stack '{}' via {}", task.container, file);
+                            tracing::info!(
+                                "Scheduler: pulling stack '{}' via {}",
+                                task.container,
+                                file
+                            );
                             let _ = update_tx.send(UpdateProgress {
                                 container: task.container.clone(),
                                 status: format!("📥 Pulling stack '{}'...", task.container),
@@ -486,7 +492,10 @@ pub async fn scheduler_worker(
                                 .await;
                             if let Ok(output) = pull {
                                 if output.status.success() {
-                                    tracing::info!("Scheduler: stack '{}' pulled, recreating...", task.container);
+                                    tracing::info!(
+                                        "Scheduler: stack '{}' pulled, recreating...",
+                                        task.container
+                                    );
                                     let up = tokio::process::Command::new("docker")
                                         .args(["compose", "-f", file, "up", "-d"])
                                         .output()
@@ -497,17 +506,21 @@ pub async fn scheduler_worker(
                                             let _ = notif_tx.send(NotifEvent {
                                                 container: format!("stack:{}", task.container),
                                                 status: "🕐 scheduled stack update ✅".into(),
-                                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                                timestamp: Local::now()
+                                                    .format("%H:%M:%S")
+                                                    .to_string(),
                                             });
                                         } else {
                                             failed = targets.len() as u32;
-                                            let stderr = String::from_utf8_lossy(&up_out.stderr).to_string();
+                                            let stderr =
+                                                String::from_utf8_lossy(&up_out.stderr).to_string();
                                             tracing::error!("Stack up error: {}", stderr);
                                         }
                                     }
                                 } else {
                                     failed = targets.len() as u32;
-                                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                    let stderr =
+                                        String::from_utf8_lossy(&output.stderr).to_string();
                                     tracing::error!("Stack pull error: {}", stderr);
                                 }
                             } else {
@@ -520,31 +533,101 @@ pub async fn scheduler_worker(
                     } else {
                         // Container update: pull + restart per target
                         for (cname, image, cid) in &targets {
-                            let old_digest = cid.clone(); // placeholder for cleanup
                             let _ = update_tx.send(UpdateProgress {
                                 container: cname.clone(),
                                 status: format!("[scheduled] pulling {}", image),
                                 done: false,
                                 error: None,
                             });
-                            if pull_image(&docker, image).await {
-                                let _ = docker
-                                    .restart_container(cid, None::<RestartContainerOptions>)
-                                    .await;
-                                updated_ok += 1;
-                                if task.cleanup == "delete-old" {
-                                    // Remove old image by digest if possible
-                                    tracing::info!("Scheduler: cleanup old image for {}", cname);
-                                    let _ = docker
-                                        .remove_image(&old_digest, None::<bollard::image::RemoveImageOptions>, None)
-                                        .await;
+
+                            match task.cleanup.as_str() {
+                                "rollback" => {
+                                    // Step 1: tag backup
+                                    let backup = tag_backup_image(&docker, image).await;
+                                    // Step 2: pull new image
+                                    if pull_image(&docker, image).await {
+                                        // Step 3: restart container
+                                        let _ = docker
+                                            .restart_container(cid, None::<RestartContainerOptions>)
+                                            .await;
+                                        // Step 4: verify health
+                                        if verify_container_healthy(&docker, cname).await {
+                                            updated_ok += 1;
+                                            // Step 5 ✅: remove backup tag
+                                            if let Some((ref backup_full, _, _)) = backup {
+                                                let _ = docker
+                                                    .remove_image(
+                                                        backup_full,
+                                                        None::<bollard::image::RemoveImageOptions>,
+                                                        None,
+                                                    )
+                                                    .await;
+                                            }
+                                        } else {
+                                            failed += 1;
+                                            // Step 6 ❌: rollback to old image
+                                            if let Some((backup_full, base, orig_tag)) = backup {
+                                                rollback_container(
+                                                    &docker,
+                                                    cid,
+                                                    &base,
+                                                    &orig_tag,
+                                                    &backup_full,
+                                                    image,
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                    } else {
+                                        failed += 1;
+                                        // Pull failed: restore backup tag if we created one
+                                        if let Some((backup_full, base, orig_tag)) = backup {
+                                            let restore = bollard::image::TagImageOptions {
+                                                repo: base,
+                                                tag: orig_tag,
+                                            };
+                                            let _ =
+                                                docker.tag_image(&backup_full, Some(restore)).await;
+                                        }
+                                    }
                                 }
-                            } else {
-                                failed += 1;
+                                "delete-old" => {
+                                    if pull_image(&docker, image).await {
+                                        let _ = docker
+                                            .restart_container(cid, None::<RestartContainerOptions>)
+                                            .await;
+                                        updated_ok += 1;
+                                        // Remove old image (by placeholder cid digest)
+                                        let _ = docker
+                                            .remove_image(
+                                                cid,
+                                                None::<bollard::image::RemoveImageOptions>,
+                                                None,
+                                            )
+                                            .await;
+                                    } else {
+                                        failed += 1;
+                                    }
+                                }
+                                _ => {
+                                    // cleanup == "none": just pull + restart
+                                    if pull_image(&docker, image).await {
+                                        let _ = docker
+                                            .restart_container(cid, None::<RestartContainerOptions>)
+                                            .await;
+                                        updated_ok += 1;
+                                    } else {
+                                        failed += 1;
+                                    }
+                                }
                             }
+
                             let _ = notif_tx.send(NotifEvent {
                                 container: cname.clone(),
-                                status: format!("🕐 scheduled update {}", if failed > 0 { "❌" } else { "✅" }),
+                                status: format!(
+                                    "🕐 scheduled update {}",
+                                    if failed > 0 { "❌" } else { "✅" }
+                                ),
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                             });
                         }
@@ -571,20 +654,71 @@ pub async fn scheduler_worker(
             // ── Notifications ──────────────────────────────────────
             if task.notify {
                 let status = if failed > 0 {
-                    format!("⚠️ Tarea '{}': {} ok, {} fallos", task.action, updated_ok, failed)
+                    format!(
+                        "⚠️ Tarea '{}': {} ok, {} fallos",
+                        task.action, updated_ok, failed
+                    )
                 } else {
-                    format!("✅ Tarea '{}' completada ({} targets)", task.action, updated_ok)
+                    format!(
+                        "✅ Tarea '{}' completada ({} targets)",
+                        task.action, updated_ok
+                    )
                 };
-                let _ = notify_all(
-                    &config,
-                    &settings,
-                    &task.container,
-                    &status,
-                )
-                .await;
+                let _ = notify_all(&config, &settings, &task.container, &status).await;
             }
         }
     }
+}
+
+/// Verify a container is running (or healthy) after a restart
+async fn verify_container_healthy(docker: &Docker, name: &str) -> bool {
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    match find_container_by_name(docker, name).await {
+        Ok(c) => c.state.as_deref() == Some("running"),
+        Err(_) => false,
+    }
+}
+
+/// Tag current image as backup for rollback: image:tag → image:rollback-{ts}
+async fn tag_backup_image(docker: &Docker, image: &str) -> Option<(String, String, String)> {
+    let ts = Local::now().format("%Y%m%d%H%M%S").to_string();
+    if let Some((base, original_tag)) = image.rsplit_once(':') {
+        let backup_full = format!("{}:rollback-{}", base, ts);
+        let opts = bollard::image::TagImageOptions {
+            repo: base.to_string(),
+            tag: format!("rollback-{}", ts),
+        };
+        if docker.tag_image(image, Some(opts)).await.is_ok() {
+            return Some((backup_full, base.to_string(), original_tag.to_string()));
+        }
+    }
+    None
+}
+
+/// Rollback: restore backup tag, restart container, remove the new image
+async fn rollback_container(
+    docker: &Docker,
+    cid: &str,
+    base: &str,
+    original_tag: &str,
+    backup_full: &str,
+    new_image: &str,
+) {
+    tracing::warn!("Rollback: restoring backup for {}", new_image);
+    // Restore original tag from backup
+    let restore_opts = bollard::image::TagImageOptions {
+        repo: base.to_string(),
+        tag: original_tag.to_string(),
+    };
+    let _ = docker.tag_image(backup_full, Some(restore_opts)).await;
+    // Restart container with old image
+    let _ = docker
+        .restart_container(cid, None::<RestartContainerOptions>)
+        .await;
+    // Remove the new (bad) image by digest
+    let _ = docker
+        .remove_image(new_image, None::<bollard::image::RemoveImageOptions>, None)
+        .await;
 }
 
 /// Resolve the docker-compose file path for a given project name

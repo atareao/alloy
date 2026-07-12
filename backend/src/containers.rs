@@ -59,7 +59,8 @@ pub async fn fetch_containers(
         .unwrap_or_default();
 
     // Step 1: Pre-resolve bare digest images (async) before building ContainerInfo
-    let mut resolved_images: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut resolved_images: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for c in &containers {
         let image = c.image.as_deref().unwrap_or("");
         if image.starts_with("sha256:") {
@@ -178,7 +179,8 @@ pub async fn fetch_containers(
                 }
             } else if registry_image.starts_with("sha256:") {
                 // Bare digest — use the resolved name for registry URL
-                if let Some(repo_name) = image_name.strip_prefix("docker.io/").or(Some(&image_name)) {
+                if let Some(repo_name) = image_name.strip_prefix("docker.io/").or(Some(&image_name))
+                {
                     if repo_name.contains('/') {
                         format!("https://hub.docker.com/r/{}", repo_name)
                     } else {

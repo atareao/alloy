@@ -94,7 +94,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
   const [newAction, setNewAction] = useState<string | null>('update')
   const [newEnabled, setNewEnabled] = useState(true)
   const [newNotify, setNewNotify] = useState(false)
-  const [newCleanup, setNewCleanup] = useState(false)
+  const [newCleanup, setNewCleanup] = useState<string>('none')
 
   // Derive unique stack names from containers
   const stacks = useMemo(() => {
@@ -131,7 +131,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
         action: newAction,
         enabled: newEnabled,
         notify: newNotify,
-        cleanup: newCleanup ? 'delete-old' : 'none',
+        cleanup: newCleanup,
       }
       const res = await apiFetch('/api/schedule', {
         method: 'POST',
@@ -161,7 +161,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     setNewAction('update')
     setNewEnabled(true)
     setNewNotify(false)
-    setNewCleanup(false)
+    setNewCleanup('none')
   }
 
   if (loading) return <Group justify="center" py="xl"><Loader /></Group>
@@ -220,6 +220,12 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
           <Group gap="xs">
             <Text size="xs" c="dimmed">Notificar:</Text>
             <Text size="xs">{sched.notify ? '✅ Sí' : '❌ No'}</Text>
+          </Group>
+          <Group gap="xs">
+            <Text size="xs" c="dimmed">Limpiar:</Text>
+            <Badge size="sm" variant="light" color={sched.cleanup === 'rollback' ? 'orange' : sched.cleanup === 'delete-old' ? 'yellow' : 'gray'}>
+              {sched.cleanup === 'rollback' ? '🔄 Rollback' : sched.cleanup === 'delete-old' ? '🧹 Borrar' : '—'}
+            </Badge>
           </Group>
         </Stack>
         <Button
@@ -301,11 +307,17 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
             onChange={setNewAction}
           />
 
-          {newAction === 'update' && targetType === 'container' && (
-            <Switch
-              label="🧹 Borrar imagen anterior tras actualizar"
-              checked={newCleanup}
-              onChange={(e) => setNewCleanup(e.currentTarget.checked)}
+          {newAction === 'update' && (
+            <Select
+              label="🧹 Limpieza / Rollback"
+              description="Qué hacer con la imagen anterior tras actualizar"
+              data={[
+                { value: 'none', label: 'Solo actualizar' },
+                { value: 'delete-old', label: '+ Borrar imagen anterior' },
+                { value: 'rollback', label: '+ Rollback si falla' },
+              ]}
+              value={newCleanup}
+              onChange={(v) => v && setNewCleanup(v)}
             />
           )}
 
@@ -369,6 +381,7 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
                   <Table.Th>Tipo</Table.Th>
                   <Table.Th>Acción</Table.Th>
                   <Table.Th>Exp. Cron</Table.Th>
+                  <Table.Th>Limpiar</Table.Th>
                   <Table.Th>Notificar</Table.Th>
                   <Table.Th>Estado</Table.Th>
                   <Table.Th>Acción</Table.Th>
@@ -396,6 +409,11 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
                           {sched.cron}
                         </Text>
                       </Tooltip>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge size="sm" variant="light" color={sched.cleanup === 'rollback' ? 'orange' : sched.cleanup === 'delete-old' ? 'yellow' : 'gray'}>
+                        {sched.cleanup === 'rollback' ? '🔄 Rollback' : sched.cleanup === 'delete-old' ? '🧹' : '—'}
+                      </Badge>
                     </Table.Td>
                     <Table.Td>
                       <Text size="sm">{sched.notify ? '✅' : '—'}</Text>
