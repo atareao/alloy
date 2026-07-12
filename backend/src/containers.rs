@@ -72,9 +72,18 @@ pub async fn fetch_containers(
                 }
             }
             let image = c.image.as_deref().unwrap_or("unknown");
-            let (image_name, tag) = match image.rsplitn(2, ':').collect::<Vec<_>>().as_slice() {
-                [i, t] => (i.to_string(), t.to_string()),
-                _ => (image.to_string(), "latest".into()),
+            // Parse image name, handling digest references like "nginx@sha256:digest"
+            let (image_name, tag) = if let Some(pos) = image.find('@') {
+                // "repo/image@sha256:digest" → name = "repo/image", no tag shown
+                (image[..pos].to_string(), String::new())
+            } else if image.starts_with("sha256:") {
+                // Bare digest like "sha256:abc123..." → no meaningful name
+                ("unknown".to_string(), String::new())
+            } else if let Some((name, t)) = image.rsplit_once(':') {
+                // Normal format: "repo/image:tag" or "image:tag"
+                (name.to_string(), t.to_string())
+            } else {
+                (image.to_string(), "latest".into())
             };
             let ports: Vec<String> = c
                 .ports
