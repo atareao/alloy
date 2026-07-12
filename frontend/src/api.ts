@@ -7,6 +7,11 @@ export function apiFetch(path: string, opts?: RequestInit) {
   });
 }
 
+export function truncate(str: string, max: number = 100): string {
+  if (str.length <= max) return str;
+  return str.slice(0, max) + '…';
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
