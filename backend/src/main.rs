@@ -23,6 +23,21 @@ use crate::workers::{
     alerts_worker, auto_update_worker, load_json, scheduler_worker, state_worker, CachedContainers,
 };
 
+use axum::{
+    extract::State,
+    response::Json,
+    routing::get,
+};
+use bollard::Docker;
+
+async fn health_h(State(docker): State<Docker>) -> Json<serde_json::Value> {
+    let docker_ok = docker.ping().await.is_ok();
+    Json(serde_json::json!({
+        "status": if docker_ok { "ok" } else { "degraded" },
+        "docker": docker_ok,
+    }))
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -204,6 +219,7 @@ async fn main() {
     let secret_clone = config.oidc_client_secret().to_string();
 
     let app = axum::Router::new()
+        .route("/api/health", get(health_h))
         .merge(auth::routes())
         .merge(admin::routes())
         .merge(containers::routes())

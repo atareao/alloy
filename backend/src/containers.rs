@@ -512,14 +512,6 @@ async fn delete_history_h(
     Json(serde_json::json!({"status": "cleared"}))
 }
 
-async fn health_h(State(docker): State<Docker>) -> Json<serde_json::Value> {
-    let docker_ok = docker.ping().await.is_ok();
-    Json(serde_json::json!({
-        "status": if docker_ok { "ok" } else { "degraded" },
-        "docker": docker_ok,
-    }))
-}
-
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/containers", get(list_containers_h))
@@ -530,5 +522,4 @@ pub fn routes() -> Router<AppState> {
         .route("/api/containers/{name}/remove", post(remove_container_h))
         .route("/api/config", get(config_handler).put(update_config_h))
         .route("/api/history", get(get_history_h).delete(delete_history_h))
-        .route("/api/health", get(health_h))
 }
