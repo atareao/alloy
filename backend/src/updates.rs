@@ -490,10 +490,35 @@ async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, String), 
     Ok((config_digest, tag.to_string()))
 }
 
+// ── History handlers (moved from containers.rs) ────────────
+use axum::routing::get;
+
+async fn get_history_h(
+    State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+) -> Json<Vec<UpdateHistoryEntry>> {
+    let hist = update_history.lock().await;
+    let mut sorted = hist.clone();
+    sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    sorted.truncate(100);
+    Json(sorted)
+}
+
+async fn delete_history_h(
+    State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+) -> Json<serde_json::Value> {
+    let mut hist = update_history.lock().await;
+    hist.clear();
+    crate::workers::json_writer()
+        .save(FILE_UPDATES_HISTORY, &*hist)
+        .await;
+    Json(serde_json::json!({"status": "cleared"}))
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/update/{name}", post(update_container_h))
         .route("/api/update-all", post(update_all_h))
         .route("/api/check-update/{name}", post(check_update_h))
         .route("/api/check-all", post(check_all_h))
+        .route("/api/history", get(get_history_h).delete(delete_history_h))
 }

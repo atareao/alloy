@@ -133,6 +133,94 @@ impl Config {
     }
 }
 
+// ── API handlers ─────────────────────────────────────────────
+use axum::{
+    extract::State,
+    response::Json,
+    routing::get,
+    Router,
+};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+use crate::models::{PublicConfig, Settings, UpdateSettingsReq, FILE_SETTINGS};
+use crate::state::AppState;
+use crate::workers::json_writer;
+
+async fn config_handler(
+    State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
+) -> Json<PublicConfig> {
+    let s = settings.lock().await;
+    let tg_token = s.telegram_token.as_ref().or(config.telegram_token.as_ref());
+    let tg_chat_id = s
+        .telegram_chat_id
+        .clone()
+        .or_else(|| config.telegram_chat_id.clone());
+    let mx_homeserver = s
+        .matrix_homeserver
+        .clone()
+        .or_else(|| config.matrix_homeserver.clone());
+    let mx_token = s.matrix_token.as_ref().or(config.matrix_token.as_ref());
+    let mx_room = s.matrix_room.clone().or_else(|| config.matrix_room.clone());
+    Json(PublicConfig {
+        oidc_configured: true,
+        port: config.port(),
+        auto_update_enabled: s
+            .auto_update_enabled
+            .unwrap_or_else(|| config.auto_update()),
+        auto_update_interval_hours: s
+            .auto_update_interval_hours
+            .unwrap_or_else(|| config.auto_update_interval()),
+        telegram_configured: tg_token.is_some(),
+        telegram_token_set: tg_token.is_some(),
+        telegram_chat_id: tg_chat_id,
+        matrix_configured: mx_homeserver.is_some(),
+        matrix_token_set: mx_token.is_some(),
+        matrix_homeserver: mx_homeserver,
+        matrix_room: mx_room,
+        allowed_containers: config.allowed_containers.clone(),
+    })
+}
+
+async fn update_config_h(
+    State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
+    Json(body): Json<UpdateSettingsReq>,
+) -> Json<PublicConfig> {
+    {
+        let mut s = settings.lock().await;
+        if let Some(v) = body.auto_update_enabled {
+            s.auto_update_enabled = Some(v);
+        }
+        if let Some(v) = body.auto_update_interval_hours {
+            s.auto_update_interval_hours = Some(v);
+        }
+        if let Some(v) = body.telegram_token {
+            if v.is_empty() { s.telegram_token = None; } else { s.telegram_token = Some(v); }
+        }
+        if let Some(v) = body.telegram_chat_id {
+            if v.is_empty() { s.telegram_chat_id = None; } else { s.telegram_chat_id = Some(v); }
+        }
+        if let Some(v) = body.matrix_homeserver {
+            if v.is_empty() { s.matrix_homeserver = None; } else { s.matrix_homeserver = Some(v); }
+        }
+        if let Some(v) = body.matrix_token {
+            if v.is_empty() { s.matrix_token = None; } else { s.matrix_token = Some(v); }
+        }
+        if let Some(v) = body.matrix_room {
+            if v.is_empty() { s.matrix_room = None; } else { s.matrix_room = Some(v); }
+        }
+        json_writer().save(FILE_SETTINGS, &*s).await;
+    }
+    config_handler(State(config), State(settings)).await
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new()
+        .route("/api/config", get(config_handler).put(update_config_h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

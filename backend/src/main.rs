@@ -222,6 +222,7 @@ async fn main() {
         .route("/api/health", get(health_h))
         .merge(auth::routes())
         .merge(admin::routes())
+        .merge(config::routes())
         .merge(containers::routes())
         .merge(events::routes())
         .merge(stacks::routes())
