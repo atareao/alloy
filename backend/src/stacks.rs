@@ -299,8 +299,76 @@ async fn update_stack_h(
     }))
 }
 
+async fn down_stack_h(
+    State(docker): State<Docker>,
+    Path(project): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let containers = docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+        .map_err(|e| AppError::Docker(e.to_string()))?;
+    let project_containers: Vec<_> = containers
+        .iter()
+        .filter(|c| {
+            c.labels
+                .as_ref()
+                .and_then(|l| l.get(LABEL_COMPOSE_PROJECT))
+                .map(|p| p == project.as_str())
+                .unwrap_or(false)
+        })
+        .collect();
+    if project_containers.is_empty() {
+        return Err(AppError::NotFound(format!("Stack '{}' not found", project)));
+    }
+    let compose_file = project_containers
+        .first()
+        .and_then(|c| c.labels.as_ref())
+        .and_then(|l| l.get(LABEL_COMPOSE_CONFIG_FILES))
+        .cloned()
+        .or_else(|| {
+            project_containers
+                .first()
+                .and_then(|c| c.labels.as_ref())
+                .and_then(|l| l.get(LABEL_COMPOSE_WORKING_DIR))
+                .map(|dir| format!("{}/docker-compose.yml", dir))
+        })
+        .filter(|p| std::path::Path::new(p).exists())
+        .or_else(|| get_compose_project_path(&project));
+    let compose_file = match compose_file {
+        Some(f) => f,
+        None => {
+            return Err(AppError::NotFound(format!(
+                "No compose file for '{}'",
+                project
+            )));
+        }
+    };
+    let output = tokio::process::Command::new("docker")
+        .args(["compose", "-f", &compose_file, "down"])
+        .output()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    if output.status.success() {
+        Ok(Json(serde_json::json!({
+            "project": project,
+            "status": "removed",
+            "stdout": String::from_utf8_lossy(&output.stdout).to_string()
+        })))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        Err(AppError::Internal(format!(
+            "docker compose down failed: {}",
+            stderr
+        )))
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/stacks", get(list_stacks_h))
         .route("/api/stacks/{project}/update", post(update_stack_h))
+        .route("/api/stacks/{project}/down", post(down_stack_h))
 }

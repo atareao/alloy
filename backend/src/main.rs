@@ -193,6 +193,7 @@ async fn main() {
     tokio::spawn(scheduler_worker(
         docker.clone(),
         config.clone(),
+        settings.clone(),
         update_tx.clone(),
         notif_tx.clone(),
         schedules.clone(),
