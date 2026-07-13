@@ -139,7 +139,7 @@ async fn update_all_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
 ) -> Json<Vec<UpdateProgress>> {
     let mut results = vec![];
-    for (name, image, cid) in crate::workers::docker_list_running(&docker).await {
+    for (name, image, cid, _) in crate::workers::docker_list_running(&docker).await {
         let start_time = std::time::Instant::now();
         if !pull_image(&docker, &image).await {
             results.push(UpdateProgress {
@@ -379,7 +379,7 @@ async fn check_all_h(
 ///
 /// For multi-arch (manifest list) images this performs a second request to
 /// resolve the platform-specific manifest and extract its `config.digest`.
-async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, String), String> {
+pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, String), String> {
     let client = http_client();
     let token_url = format!(
         "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",

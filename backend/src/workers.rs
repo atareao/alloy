@@ -20,7 +20,7 @@ use crate::notifications::{notify_all, notify_selected};
 
 pub type CachedContainers = Arc<RwLock<Option<Vec<ContainerInfo>>>>;
 
-pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String)> {
+pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String, Option<String>)> {
     match docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: false,
@@ -38,7 +38,8 @@ pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String
                     .map(|n| strip_name(n))?;
                 let image = c.image.as_deref()?.to_string();
                 let id = c.id.as_deref()?.to_string();
-                Some((name, image, id))
+                let image_id = c.image_id.as_deref().map(|s| s.to_string());
+                Some((name, image, id, image_id))
             })
             .collect(),
         Err(_) => vec![],
@@ -135,7 +136,47 @@ pub async fn auto_update_worker(
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(hours * 3600));
     loop {
         interval.tick().await;
-        for (name, image, cid) in docker_list_running(&docker).await {
+        for (name, image, cid, image_id) in docker_list_running(&docker).await {
+            // 1. Check if remote has a different digest before pulling
+            let (repo, local_tag) = if let Some(pos) = image.rfind('@') {
+                (image[..pos].to_string(), "digest".to_string())
+            } else if let Some(pos) = image.rfind(':') {
+                (image[..pos].to_string(), image[pos + 1..].to_string())
+            } else {
+                (image.clone(), "latest".to_string())
+            };
+
+            let should_update = match crate::updates::check_remote_digest(&repo, &local_tag).await {
+                Ok((remote_digest, _)) => {
+                    let has_update = image_id.as_ref().is_none_or(|local_digest| {
+                        let local_short = local_digest
+                            .split(':')
+                            .next_back()
+                            .unwrap_or("")
+                            .chars()
+                            .take(12)
+                            .collect::<String>();
+                        let remote_short = remote_digest
+                            .split(':')
+                            .next_back()
+                            .unwrap_or("")
+                            .chars()
+                            .take(12)
+                            .collect::<String>();
+                        local_short != remote_short
+                    });
+                    has_update
+                }
+                Err(_) => {
+                    // If we can't check, pull anyway to be safe
+                    true
+                }
+            };
+
+            if !should_update {
+                continue;
+            }
+
             let start_time = std::time::Instant::now();
             if !pull_image(&docker, &image).await {
                 continue;
@@ -165,6 +206,10 @@ pub async fn auto_update_worker(
                 json_writer().save(FILE_UPDATES_HISTORY, &*hist).await;
             }
         }
+        // Clean up dangling images after each cycle to prevent disk accumulation
+        let _ = docker
+            .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
+            .await;
     }
 }
 
@@ -328,7 +373,11 @@ pub async fn scheduler_worker(
                 }
                 _ => {
                     if task.container == ALL_CONTAINERS {
-                        docker_list_running(&docker).await
+                        docker_list_running(&docker)
+                            .await
+                            .into_iter()
+                            .map(|(name, image, cid, _)| (name, image, cid))
+                            .collect()
                     } else {
                         match find_container_by_name(&docker, &task.container).await {
                             Ok(c) => {
