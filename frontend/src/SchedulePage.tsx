@@ -17,18 +17,7 @@ import {
   Divider,
   SegmentedControl,
 } from '@mantine/core'
-
-// ═══════════════════════════════════════════════════════════════
-// Helpers
-// ═══════════════════════════════════════════════════════════════
-
-function apiFetch(path: string, opts?: RequestInit) {
-  const token = localStorage.getItem('token')
-  return fetch(path, {
-    ...opts,
-    headers: { ...opts?.headers, 'Authorization': `Bearer ${token}` },
-  })
-}
+import { apiFetch } from './api'
 
 // ═══════════════════════════════════════════════════════════════
 // Types

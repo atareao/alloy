@@ -62,8 +62,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const evtSource = new EventSource(`/api/events?token=${token}`);
+    const evtSource = new EventSource("/api/events", { withCredentials: true });
     evtSource.addEventListener("containers", (e) => {
       setContainers(JSON.parse(e.data).containers);
       setLoading(false);
@@ -73,8 +72,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const evtSource = new EventSource(`/api/updates?token=${token}`);
+    const evtSource = new EventSource("/api/updates", { withCredentials: true });
     evtSource.addEventListener("update-progress", (e) => {
       const data: UpdateProgress = JSON.parse(e.data);
       setProgress((prev) => {
@@ -91,8 +89,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const evtSource = new EventSource(`/api/notifications?token=${token}`);
+    const evtSource = new EventSource("/api/notifications", { withCredentials: true });
     evtSource.addEventListener("notification", (e) => {
       setNotifications((prev) => [...prev.slice(-4), JSON.parse(e.data)]);
     });

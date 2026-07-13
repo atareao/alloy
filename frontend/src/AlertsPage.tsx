@@ -14,18 +14,11 @@ import {
   Text,
   Divider,
 } from '@mantine/core'
+import { apiFetch } from './api'
 
 // ═══════════════════════════════════════════════════════════════
-// Helpers
+// Types
 // ═══════════════════════════════════════════════════════════════
-
-function apiFetch(path: string, opts?: RequestInit) {
-  const token = localStorage.getItem('token')
-  return fetch(path, {
-    ...opts,
-    headers: { ...opts?.headers, 'Authorization': `Bearer ${token}` },
-  })
-}
 
 interface AlertRule {
   id: string
