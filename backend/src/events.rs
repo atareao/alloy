@@ -9,7 +9,8 @@ use std::convert::Infallible;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::models::{NotifEvent, StateEvent, UpdateProgress};
+#[allow(unused_imports)]
+use crate::models::{ContainerInfo, NotifEvent, StateEvent, UpdateProgress};
 use crate::state::AppState;
 
 #[allow(clippy::type_complexity)]
