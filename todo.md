@@ -26,14 +26,23 @@ Estado actual del proyecto y próximos pasos.
 - [x] **Fase 1 limpieza**: eliminar terminal.rs, mover health_h → main.rs
 - [x] **Fase 2 limpieza**: mover config/history handlers a config.rs / updates.rs
 - [x] **Fase 3 limpieza**: extraer persistence.rs de workers.rs
+- [x] **Revisar estado frontend (React/Vite)**
+  - [x] Unificar autenticación: eliminar apiFetch JWT legacy de 3 páginas
+  - [x] SSE con withCredentials en vez de ?token=
+  - [x] Compilación y tests OK
+- [x] **Revisar Dockerfile multi-stage**
+- [x] **Verificar Quadlet de ejemplo**
 
 ## 📋 Pendientes
-- [ ] Validar flujo OIDC completo
-- [ ] Revisar estado frontend (React/Vite)
-- [ ] Revisar Dockerfile multi-stage
-- [ ] Verificar Quadlet de ejemplo
 
 ## 🔮 Ideas / Futuro
+- Tests de integración completos frontend-backend
+- Historial con base de datos SQLite (en lugar de JSON)
+- Filtros en el dashboard: por nombre, container, imagen, estado y pendiente de actualizar
+- Gestión de imágenes: listado, limpieza dangling, historial de pulls
+- Gestión de volúmenes: listado, tamaño, limpieza
+- Logs en vivo desde el dashboard
+- Migas de pan (breadcrumbs) en la navegación
 - Tests e2e con OIDC mock
 - Tests unitarios frontend
 
