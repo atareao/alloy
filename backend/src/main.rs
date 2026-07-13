@@ -19,17 +19,13 @@ use tower_http::cors::CorsLayer;
 use crate::auth::auth_middleware;
 use crate::config::Config;
 use crate::models::*;
-use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
 use crate::persistence::load_json;
+use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
 use crate::workers::{
     alerts_worker, auto_update_worker, scheduler_worker, state_worker, CachedContainers,
 };
 
-use axum::{
-    extract::State,
-    response::Json,
-    routing::get,
-};
+use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
 
 async fn health_h(State(docker): State<Docker>) -> Json<serde_json::Value> {

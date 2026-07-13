@@ -134,18 +134,13 @@ impl Config {
 }
 
 // ── API handlers ─────────────────────────────────────────────
-use axum::{
-    extract::State,
-    response::Json,
-    routing::get,
-    Router,
-};
+use axum::{extract::State, response::Json, routing::get, Router};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::models::{PublicConfig, Settings, UpdateSettingsReq, FILE_SETTINGS};
-use crate::state::AppState;
 use crate::persistence::json_writer;
+use crate::state::AppState;
 
 async fn config_handler(
     State(config): State<Config>,
@@ -197,19 +192,39 @@ async fn update_config_h(
             s.auto_update_interval_hours = Some(v);
         }
         if let Some(v) = body.telegram_token {
-            if v.is_empty() { s.telegram_token = None; } else { s.telegram_token = Some(v); }
+            if v.is_empty() {
+                s.telegram_token = None;
+            } else {
+                s.telegram_token = Some(v);
+            }
         }
         if let Some(v) = body.telegram_chat_id {
-            if v.is_empty() { s.telegram_chat_id = None; } else { s.telegram_chat_id = Some(v); }
+            if v.is_empty() {
+                s.telegram_chat_id = None;
+            } else {
+                s.telegram_chat_id = Some(v);
+            }
         }
         if let Some(v) = body.matrix_homeserver {
-            if v.is_empty() { s.matrix_homeserver = None; } else { s.matrix_homeserver = Some(v); }
+            if v.is_empty() {
+                s.matrix_homeserver = None;
+            } else {
+                s.matrix_homeserver = Some(v);
+            }
         }
         if let Some(v) = body.matrix_token {
-            if v.is_empty() { s.matrix_token = None; } else { s.matrix_token = Some(v); }
+            if v.is_empty() {
+                s.matrix_token = None;
+            } else {
+                s.matrix_token = Some(v);
+            }
         }
         if let Some(v) = body.matrix_room {
-            if v.is_empty() { s.matrix_room = None; } else { s.matrix_room = Some(v); }
+            if v.is_empty() {
+                s.matrix_room = None;
+            } else {
+                s.matrix_room = Some(v);
+            }
         }
         json_writer().save(FILE_SETTINGS, &*s).await;
     }
@@ -217,8 +232,7 @@ async fn update_config_h(
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/api/config", get(config_handler).put(update_config_h))
+    Router::new().route("/api/config", get(config_handler).put(update_config_h))
 }
 
 #[cfg(test)]
