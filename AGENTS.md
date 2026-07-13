@@ -322,7 +322,7 @@ just gf-graph              # Mostrar árbol de ramas (últimos 30 commits)
 
 ## Estado Actual (julio 2026)
 
-- **Versión**: 0.6.0
+- **Versión**: 0.7.0
 - **Backend**: 13 módulos, ~4.235 líneas
 - **Frontend**: 5 tabs (Dashboard, History, Alerts, Schedule, Config)
 - **Auth**: Solo OIDC (PocketID), sin JWT simple
