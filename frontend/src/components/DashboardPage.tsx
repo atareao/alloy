@@ -553,12 +553,6 @@ export default function DashboardPage() {
 
           {/* Details grid */}
           <SimpleGrid cols={2} spacing="xs">
-            {c.compose_project && (
-              <Stack gap={0}>
-                <Text size="xs" c="dimmed">Stack</Text>
-                <Badge size="sm" variant="light" color="grape">{c.compose_project}</Badge>
-              </Stack>
-            )}
             {c.ports.length > 0 && (
               <Stack gap={0}>
                 <Text size="xs" c="dimmed">Puertos</Text>
@@ -609,9 +603,6 @@ export default function DashboardPage() {
               <Text size="xs" c="dimmed">{p.status}</Text>
             </Group>
           )}
-        </Table.Td>
-        <Table.Td>
-          {c.compose_project ? <Badge size="sm" variant="light" color="grape">{c.compose_project}</Badge> : <Text size="xs" c="dimmed">-</Text>}
         </Table.Td>
         <Table.Td>
           {c.ports.length > 0 ? (
@@ -670,7 +661,6 @@ export default function DashboardPage() {
               <Table.Tr>
                 <Table.Th>Container</Table.Th>
                 <Table.Th>Imagen</Table.Th>
-                <Table.Th>Stack</Table.Th>
                 <Table.Th>Puertos</Table.Th>
                 <Table.Th>Traefik</Table.Th>
                 <Table.Th>Estado</Table.Th>
@@ -800,7 +790,6 @@ export default function DashboardPage() {
                     <Table.Tr>
                       <Table.Th>Container</Table.Th>
                       <Table.Th>Imagen</Table.Th>
-                      <Table.Th>Stack</Table.Th>
                       <Table.Th>Puertos</Table.Th>
                       <Table.Th>Traefik</Table.Th>
                       <Table.Th>Estado</Table.Th>
