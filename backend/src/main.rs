@@ -3,6 +3,7 @@ mod auth;
 mod config;
 mod containers;
 mod events;
+mod images;
 mod models;
 mod notifications;
 mod persistence;
@@ -224,6 +225,7 @@ async fn main() {
         .merge(containers::routes())
         .merge(events::routes())
         .merge(stacks::routes())
+        .merge(images::routes())
         .merge(updates::routes())
         .layer(CorsLayer::permissive())
         .layer(axum::middleware::from_fn(

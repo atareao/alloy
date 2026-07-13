@@ -522,3 +522,268 @@ pub fn routes() -> Router<AppState> {
         .route("/api/check-all", post(check_all_h))
         .route("/api/history", get(get_history_h).delete(delete_history_h))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Helpers: replican la lógica inline de los handlers ──
+
+    /// Extrae (repo, tag) de un string de imagen, igual que en
+    /// check_update_h y check_all_h.
+    fn parse_image_ref(image_full: &str) -> (String, String) {
+        if let Some(pos) = image_full.rfind('@') {
+            (image_full[..pos].to_string(), "digest".to_string())
+        } else if let Some(pos) = image_full.rfind(':') {
+            (
+                image_full[..pos].to_string(),
+                image_full[pos + 1..].to_string(),
+            )
+        } else {
+            (image_full.to_string(), "latest".to_string())
+        }
+    }
+
+    /// Extrae los primeros 12 caracteres del digest después de ':',
+    /// igual que en check_update_h.
+    fn short_digest(digest: &str) -> String {
+        digest
+            .split(':')
+            .next_back()
+            .unwrap_or("")
+            .chars()
+            .take(12)
+            .collect::<String>()
+    }
+
+    // ── Image parsing ────────────────────────────────────────
+
+    #[test]
+    fn test_parse_image_with_tag() {
+        let (repo, tag) = parse_image_ref("nginx:latest");
+        assert_eq!(repo, "nginx");
+        assert_eq!(tag, "latest");
+    }
+
+    #[test]
+    fn test_parse_image_with_version_tag() {
+        let (repo, tag) = parse_image_ref("library/postgres:15-alpine");
+        assert_eq!(repo, "library/postgres");
+        assert_eq!(tag, "15-alpine");
+    }
+
+    #[test]
+    fn test_parse_image_with_digest() {
+        let (repo, tag) =
+            parse_image_ref("nginx@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        assert_eq!(repo, "nginx");
+        assert_eq!(tag, "digest");
+    }
+
+    #[test]
+    fn test_parse_image_registry_with_port() {
+        let (repo, tag) = parse_image_ref("registry.example.com:5000/myimage:v2");
+        // rfind(':') encuentra ":v2" para imagen con tag después del registry:port
+        assert_eq!(repo, "registry.example.com:5000/myimage");
+        assert_eq!(tag, "v2");
+    }
+
+    #[test]
+    fn test_parse_image_without_tag_defaults_latest() {
+        let (repo, tag) = parse_image_ref("alpine");
+        assert_eq!(repo, "alpine");
+        assert_eq!(tag, "latest");
+    }
+
+    #[test]
+    fn test_parse_image_registry_path_with_tag() {
+        let (repo, tag) = parse_image_ref("docker.io/library/redis:7.2");
+        assert_eq!(repo, "docker.io/library/redis");
+        assert_eq!(tag, "7.2");
+    }
+
+    #[test]
+    fn test_parse_image_registry_path_with_digest() {
+        let (repo, tag) = parse_image_ref(
+            "docker.io/library/redis@sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
+        );
+        assert_eq!(repo, "docker.io/library/redis");
+        assert_eq!(tag, "digest");
+    }
+
+    #[test]
+    fn test_parse_image_empty() {
+        let (repo, tag) = parse_image_ref("");
+        assert_eq!(repo, "");
+        assert_eq!(tag, "latest");
+    }
+
+    // ── Short digest ─────────────────────────────────────────
+
+    #[test]
+    fn test_short_digest_full() {
+        let short = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        assert_eq!(short.len(), 12);
+        assert_eq!(short, "abc123def456");
+    }
+
+    #[test]
+    fn test_short_digest_no_colon() {
+        let short = short_digest("plainstring");
+        assert_eq!(short, "plainstring");
+    }
+
+    #[test]
+    fn test_short_digest_exactly_12() {
+        let short = short_digest("sha256:abcdef123456");
+        assert_eq!(short, "abcdef123456");
+    }
+
+    #[test]
+    fn test_short_digest_less_than_12() {
+        let short = short_digest("sha256:abc");
+        assert_eq!(short, "abc");
+    }
+
+    #[test]
+    fn test_short_digest_empty() {
+        let short = short_digest("");
+        assert_eq!(short, "");
+    }
+
+    // ── Version comparison ───────────────────────────────────
+
+    #[test]
+    fn test_short_digest_different() {
+        let local = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let remote = short_digest("sha256:xyz789ghi012xyz789ghi012xyz789ghi012xyz789ghi012xyz789ghi012xyz7");
+        assert_ne!(local, remote);
+    }
+
+    #[test]
+    fn test_short_digest_same() {
+        let d1 = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let d2 = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        assert_eq!(d1, d2);
+    }
+
+    // ── History handlers ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_history_empty() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
+        assert!(result.0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_history_sorted_by_timestamp() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
+            UpdateHistoryEntry {
+                container: "old".into(),
+                image: "nginx".into(),
+                old_digest: "a".into(),
+                new_digest: "b".into(),
+                timestamp: "2024-01-01T00:00:00".into(),
+                status: "success".into(),
+                duration_ms: 100,
+            },
+            UpdateHistoryEntry {
+                container: "new".into(),
+                image: "redis".into(),
+                old_digest: "c".into(),
+                new_digest: "d".into(),
+                timestamp: "2024-06-01T00:00:00".into(),
+                status: "success".into(),
+                duration_ms: 200,
+            },
+        ]));
+        let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
+        assert_eq!(result.0.len(), 2);
+        // Most recent first
+        assert_eq!(result.0[0].container, "new");
+        assert_eq!(result.0[1].container, "old");
+    }
+
+    #[tokio::test]
+    async fn test_get_history_truncated_to_100() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let mut data = hist.lock().await;
+            for i in 0..150 {
+                data.push(UpdateHistoryEntry {
+                    container: format!("c{}", i),
+                    image: "img".into(),
+                    old_digest: String::new(),
+                    new_digest: String::new(),
+                    timestamp: format!("2024-{:02}-01T00:00:00", (i % 12) + 1),
+                    status: "success".into(),
+                    duration_ms: i as u64,
+                });
+            }
+        }
+        let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
+        assert_eq!(result.0.len(), 100);
+    }
+
+    #[tokio::test]
+    async fn test_get_history_with_errors() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
+            UpdateHistoryEntry {
+                container: "web".into(),
+                image: "nginx".into(),
+                old_digest: "old".into(),
+                new_digest: "new".into(),
+                timestamp: "2024-01-01T00:00:00".into(),
+                status: "error".into(),
+                duration_ms: 50,
+            },
+        ]));
+        let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
+        assert_eq!(result.0.len(), 1);
+        assert_eq!(result.0[0].status, "error");
+    }
+
+    #[tokio::test]
+    async fn test_get_history_duration_ms() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
+            UpdateHistoryEntry {
+                container: "web".into(),
+                image: "nginx".into(),
+                old_digest: "a".into(),
+                new_digest: "b".into(),
+                timestamp: "2024-01-01T00:00:00".into(),
+                status: "success".into(),
+                duration_ms: 12345,
+            },
+        ]));
+        let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
+        assert_eq!(result.0[0].duration_ms, 12345);
+    }
+
+    #[tokio::test]
+    async fn test_delete_history_clears() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
+            UpdateHistoryEntry {
+                container: "web".into(),
+                image: "nginx".into(),
+                old_digest: "a".into(),
+                new_digest: "b".into(),
+                timestamp: "now".into(),
+                status: "success".into(),
+                duration_ms: 100,
+            },
+        ]));
+        let _ = delete_history_h(State(hist.clone())).await;
+        let stored = hist.lock().await;
+        assert!(stored.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_history_on_empty() {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let result: Json<serde_json::Value> = delete_history_h(State(hist.clone())).await;
+        assert_eq!(result.0["status"], "cleared");
+        assert!(hist.lock().await.is_empty());
+    }
+}
