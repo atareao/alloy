@@ -71,17 +71,17 @@ gf-publish version:
     # Merge a main
     git checkout main
     git pull origin main
-    git merge --no-ff release/$argv[1] -m "release: v$argv[1]"
-    git tag -a "v$argv[1]" -m "Version $argv[1]"
+    git merge --no-ff release/{{version}} -m "release: v{{version}}"
+    git tag -a "v{{version}}" -m "Version {{version}}"
     # Merge a develop
     git checkout develop
     git pull origin develop
-    git merge --no-ff release/$argv[1] -m "release: merge v$argv[1] into develop"
+    git merge --no-ff release/{{version}} -m "release: merge v{{version}} into develop"
     # Push both
     git push origin main --tags
     git push origin develop
-    git branch -d release/$argv[1]
-    echo "✅ Release v$argv[1] published to main and merged back to develop"
+    git branch -d release/{{version}}
+    echo "✅ Release v{{version}} published to main and merged back to develop"
 
 # Iniciar un hotfix (crea rama desde main)
 gf-hotfix desc:
@@ -95,17 +95,17 @@ gf-hotfix-publish desc version:
     # Merge a main
     git checkout main
     git pull origin main
-    git merge --no-ff hotfix/$argv[1] -m "hotfix: $argv[1]"
-    git tag -a "$argv[2]" -m "Hotfix $argv[2]"
+    git merge --no-ff hotfix/{{desc}} -m "hotfix: {{desc}}"
+    git tag -a "{{version}}" -m "Hotfix {{version}}"
     # Merge a develop
     git checkout develop
     git pull origin develop
-    git merge --no-ff hotfix/$argv[1] -m "hotfix: merge $argv[1] into develop"
+    git merge --no-ff hotfix/{{desc}} -m "hotfix: merge {{desc}} into develop"
     # Push both
     git push origin main --tags
     git push origin develop
-    git branch -d hotfix/$argv[1]
-    echo "✅ Hotfix $argv[1] published"
+    git branch -d hotfix/{{desc}}
+    echo "✅ Hotfix {{desc}} published"
 
 # Mostar el árbol de ramas
 gf-graph:
