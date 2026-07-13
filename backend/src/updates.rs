@@ -574,8 +574,9 @@ mod tests {
 
     #[test]
     fn test_parse_image_with_digest() {
-        let (repo, tag) =
-            parse_image_ref("nginx@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let (repo, tag) = parse_image_ref(
+            "nginx@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+        );
         assert_eq!(repo, "nginx");
         assert_eq!(tag, "digest");
     }
@@ -622,7 +623,8 @@ mod tests {
 
     #[test]
     fn test_short_digest_full() {
-        let short = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let short =
+            short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
         assert_eq!(short.len(), 12);
         assert_eq!(short, "abc123def456");
     }
@@ -655,15 +657,19 @@ mod tests {
 
     #[test]
     fn test_short_digest_different() {
-        let local = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
-        let remote = short_digest("sha256:xyz789ghi012xyz789ghi012xyz789ghi012xyz789ghi012xyz789ghi012xyz7");
+        let local =
+            short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let remote =
+            short_digest("sha256:xyz789ghi012xyz789ghi012xyz789ghi012xyz789ghi012xyz789ghi012xyz7");
         assert_ne!(local, remote);
     }
 
     #[test]
     fn test_short_digest_same() {
-        let d1 = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
-        let d2 = short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let d1 =
+            short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
+        let d2 =
+            short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
         assert_eq!(d1, d2);
     }
 
@@ -728,8 +734,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_history_with_errors() {
-        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
-            UpdateHistoryEntry {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> =
+            Arc::new(Mutex::new(vec![UpdateHistoryEntry {
                 container: "web".into(),
                 image: "nginx".into(),
                 old_digest: "old".into(),
@@ -737,8 +743,7 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00".into(),
                 status: "error".into(),
                 duration_ms: 50,
-            },
-        ]));
+            }]));
         let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
         assert_eq!(result.0.len(), 1);
         assert_eq!(result.0[0].status, "error");
@@ -746,8 +751,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_history_duration_ms() {
-        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
-            UpdateHistoryEntry {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> =
+            Arc::new(Mutex::new(vec![UpdateHistoryEntry {
                 container: "web".into(),
                 image: "nginx".into(),
                 old_digest: "a".into(),
@@ -755,16 +760,15 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00".into(),
                 status: "success".into(),
                 duration_ms: 12345,
-            },
-        ]));
+            }]));
         let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
         assert_eq!(result.0[0].duration_ms, 12345);
     }
 
     #[tokio::test]
     async fn test_delete_history_clears() {
-        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(vec![
-            UpdateHistoryEntry {
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> =
+            Arc::new(Mutex::new(vec![UpdateHistoryEntry {
                 container: "web".into(),
                 image: "nginx".into(),
                 old_digest: "a".into(),
@@ -772,8 +776,7 @@ mod tests {
                 timestamp: "now".into(),
                 status: "success".into(),
                 duration_ms: 100,
-            },
-        ]));
+            }]));
         let _ = delete_history_h(State(hist.clone())).await;
         let stored = hist.lock().await;
         assert!(stored.is_empty());

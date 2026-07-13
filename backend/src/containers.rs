@@ -416,9 +416,8 @@ mod tests {
     /// Crea un cliente Bollard conectado al socket de Podman.
     /// Usa DOCKER_HOST si está configurado, o el socket rootless por defecto.
     async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST").unwrap_or_else(|_| {
-            "unix:///run/user/1000/podman/podman.sock".to_string()
-        });
+        let socket = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
         Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
             .expect("Failed to connect to Podman socket. Is Podman running?")
     }
@@ -458,8 +457,10 @@ mod tests {
         assert!(!c.image.is_empty(), "Container should have an image");
         assert!(!c.image_tag.is_empty(), "Container should have a tag");
         assert_eq!(c.state, "running");
-        assert!(!c.ports.is_empty() || c.traefik_url.is_some() || !c.registry_url.is_empty(),
-            "Container should have ports, traefik URL or registry URL");
+        assert!(
+            !c.ports.is_empty() || c.traefik_url.is_some() || !c.registry_url.is_empty(),
+            "Container should have ports, traefik URL or registry URL"
+        );
     }
 
     #[tokio::test]
@@ -474,11 +475,23 @@ mod tests {
             // Every container must have these basic fields
             assert!(!c.id.is_empty(), "ID should not be empty for {}", c.name);
             assert!(!c.name.is_empty(), "Name should not be empty");
-            assert!(!c.image.is_empty(), "Image should not be empty for {}", c.name);
+            assert!(
+                !c.image.is_empty(),
+                "Image should not be empty for {}",
+                c.name
+            );
             // State must be one of the Docker states
             assert!(
-                ["running", "exited", "paused", "created", "restarting", "removing", "dead"]
-                    .contains(&c.state.as_str()),
+                [
+                    "running",
+                    "exited",
+                    "paused",
+                    "created",
+                    "restarting",
+                    "removing",
+                    "dead"
+                ]
+                .contains(&c.state.as_str()),
                 "Invalid state '{}' for container {}",
                 c.state,
                 c.name
@@ -515,7 +528,10 @@ mod tests {
         let docker = podman_client().await;
         let allowed = Some(Vec::new());
         let containers = fetch_containers(&docker, &allowed).await;
-        assert!(containers.is_empty(), "Empty allowed list should return nothing");
+        assert!(
+            containers.is_empty(),
+            "Empty allowed list should return nothing"
+        );
     }
 
     // ── find_container_by_name ───────────────────────────────

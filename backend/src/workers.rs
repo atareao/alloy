@@ -763,9 +763,8 @@ mod tests {
     }
 
     async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST").unwrap_or_else(|_| {
-            "unix:///run/user/1000/podman/podman.sock".to_string()
-        });
+        let socket = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
         Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
             .expect("Failed to connect to Podman socket")
     }
@@ -778,7 +777,10 @@ mod tests {
         }
         let docker = podman_client().await;
         let running = docker_list_running(&docker).await;
-        assert!(!running.is_empty(), "Should have at least one running container");
+        assert!(
+            !running.is_empty(),
+            "Should have at least one running container"
+        );
     }
 
     #[tokio::test]
@@ -790,12 +792,18 @@ mod tests {
         let docker = podman_client().await;
         let running = docker_list_running(&docker).await;
         let alloy = running.iter().find(|(name, _, _, _)| name == "alloy");
-        assert!(alloy.is_some(), "Container 'alloy' should be in running list");
+        assert!(
+            alloy.is_some(),
+            "Container 'alloy' should be in running list"
+        );
         let (name, image, id, image_id) = alloy.unwrap();
         assert!(!image.is_empty());
         assert!(!id.is_empty());
         // image_id can be None for some containers
-        println!("alloy: name={}, image={}, id={}, image_id={:?}", name, image, id, image_id);
+        println!(
+            "alloy: name={}, image={}, id={}, image_id={:?}",
+            name, image, id, image_id
+        );
     }
 
     #[tokio::test]
@@ -807,7 +815,10 @@ mod tests {
         let docker = podman_client().await;
         let running = docker_list_running(&docker).await;
         let oxinbox = running.iter().find(|(name, _, _, _)| name == "oxinbox");
-        assert!(oxinbox.is_some(), "Container 'oxinbox' should be in running list");
+        assert!(
+            oxinbox.is_some(),
+            "Container 'oxinbox' should be in running list"
+        );
     }
 
     #[tokio::test]
@@ -839,7 +850,10 @@ mod tests {
         }
         let docker = podman_client().await;
         let result = resolve_compose_file(&docker, "nonexistent-project-xyz").await;
-        assert!(result.is_none(), "Should return None for nonexistent project");
+        assert!(
+            result.is_none(),
+            "Should return None for nonexistent project"
+        );
     }
 
     // ── match_cron edge cases ───────────────────────────────

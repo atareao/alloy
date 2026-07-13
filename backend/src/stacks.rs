@@ -383,9 +383,8 @@ mod tests {
     }
 
     async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST").unwrap_or_else(|_| {
-            "unix:///run/user/1000/podman/podman.sock".to_string()
-        });
+        let socket = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
         Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
             .expect("Failed to connect to Podman socket")
     }
@@ -433,8 +432,7 @@ mod tests {
                 assert!(!svc.service.is_empty());
                 assert!(!svc.container_name.is_empty());
                 assert!(!svc.image.is_empty());
-                assert!(["running", "exited", "paused", "created"]
-                    .contains(&svc.state.as_str()));
+                assert!(["running", "exited", "paused", "created"].contains(&svc.state.as_str()));
             }
         }
     }

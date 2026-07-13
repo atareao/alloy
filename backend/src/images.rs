@@ -24,10 +24,7 @@ async fn list_images_h(State(docker): State<Docker>) -> Json<Vec<ImageInfo>> {
                 .unwrap_or_else(|| "<none>:<none>".into());
 
             let (repo, tag) = if let Some(pos) = repo_tag.rfind(':') {
-                (
-                    repo_tag[..pos].to_string(),
-                    repo_tag[pos + 1..].to_string(),
-                )
+                (repo_tag[..pos].to_string(), repo_tag[pos + 1..].to_string())
             } else {
                 (repo_tag.clone(), "latest".into())
             };
@@ -44,7 +41,9 @@ async fn list_images_h(State(docker): State<Docker>) -> Json<Vec<ImageInfo>> {
                 repo,
                 tag,
                 size_mb: ((i.size as f64) / 1_048_576.0 * 100.0).round() / 100.0,
-                virtual_size_mb: i.virtual_size.map_or(0.0, |vs| ((vs as f64) / 1_048_576.0 * 100.0).round() / 100.0),
+                virtual_size_mb: i.virtual_size.map_or(0.0, |vs| {
+                    ((vs as f64) / 1_048_576.0 * 100.0).round() / 100.0
+                }),
                 created: i.created,
                 containers: i.containers,
                 repo_tags: i.repo_tags.clone(),
@@ -71,9 +70,8 @@ mod tests {
     }
 
     async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST").unwrap_or_else(|_| {
-            "unix:///run/user/1000/podman/podman.sock".to_string()
-        });
+        let socket = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
         Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
             .expect("Failed to connect to Podman socket")
     }
@@ -103,7 +101,11 @@ mod tests {
             assert!(!img.repo.is_empty(), "Repo should not be empty");
             assert!(!img.tag.is_empty(), "Tag should not be empty");
             assert!(img.size_mb >= 0.0, "Size >= 0 for {}", img.repo);
-            assert!(img.virtual_size_mb >= 0.0, "Virtual size >= 0 for {}", img.repo);
+            assert!(
+                img.virtual_size_mb >= 0.0,
+                "Virtual size >= 0 for {}",
+                img.repo
+            );
             assert!(img.created > 0, "Created > 0 for {}", img.repo);
         }
     }
@@ -129,7 +131,13 @@ mod tests {
         let docker = podman_client().await;
         let result: Json<Vec<ImageInfo>> = list_images_h(State(docker)).await;
         for img in &result.0 {
-            if img.repo != "<none>" { assert!(!img.repo_tags.is_empty(), "repo_tags empty for {}", img.repo); }
+            if img.repo != "<none>" {
+                assert!(
+                    !img.repo_tags.is_empty(),
+                    "repo_tags empty for {}",
+                    img.repo
+                );
+            }
         }
     }
 

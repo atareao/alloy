@@ -151,8 +151,7 @@ mod tests {
             enabled: true,
             notify_via: Vec::new(),
         };
-        let created: Json<AlertConfig> =
-            create_alert_h(State(alerts.clone()), Json(body)).await;
+        let created: Json<AlertConfig> = create_alert_h(State(alerts.clone()), Json(body)).await;
         let id = created.0.id.clone();
 
         // Delete it

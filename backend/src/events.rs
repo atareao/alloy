@@ -9,7 +9,7 @@ use std::convert::Infallible;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::models::{ContainerInfo, NotifEvent, StateEvent, UpdateProgress};
+use crate::models::{NotifEvent, StateEvent, UpdateProgress};
 use crate::state::AppState;
 
 #[allow(clippy::type_complexity)]
@@ -140,7 +140,10 @@ mod tests {
         assert_eq!(received.containers[0].name, "nginx");
         assert_eq!(received.containers[1].name, "redis");
         assert!(received.containers[0].has_update);
-        assert_eq!(received.containers[1].compose_project.as_deref(), Some("myapp"));
+        assert_eq!(
+            received.containers[1].compose_project.as_deref(),
+            Some("myapp")
+        );
     }
 
     #[tokio::test]

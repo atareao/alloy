@@ -271,10 +271,7 @@ mod tests {
     fn test_mx_homeserver_settings_overrides_config() {
         let s = settings_with_mx("https://settings.test", "tok", "!room:s");
         let c = config_with_mx("https://config.test", "tok", "!room:c");
-        assert_eq!(
-            mx_homeserver(&s, &c),
-            Some("https://settings.test")
-        );
+        assert_eq!(mx_homeserver(&s, &c), Some("https://settings.test"));
     }
 
     // ── mx_token ────────────────────────────────────────────
