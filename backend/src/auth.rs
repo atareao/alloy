@@ -477,4 +477,251 @@ mod tests {
         );
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_session_claims_sub_name_email() {
+        let claims = SessionClaims {
+            sub: "abc-123".into(),
+            name: "John Doe".into(),
+            email: "john@example.com".into(),
+            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+        };
+        let secret = "my_secret";
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let decoded = jsonwebtoken::decode::<SessionClaims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .expect("should verify");
+
+        assert_eq!(decoded.claims.sub, "abc-123");
+        assert_eq!(decoded.claims.name, "John Doe");
+        assert_eq!(decoded.claims.email, "john@example.com");
+        assert!(decoded.claims.exp > (Utc::now().timestamp() as usize));
+    }
+
+    #[test]
+    fn test_session_token_empty_secret() {
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+        };
+        let result = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret("".as_ref()),
+        );
+        // Empty secret still produces a token (just not secure)
+        assert!(result.is_ok());
+        let token = result.unwrap();
+        assert!(!token.is_empty());
+    }
+
+    #[test]
+    fn test_auth_me_extract_from_cookie_header() {
+        let secret = "test_secret_for_me_handler";
+        let claims = SessionClaims {
+            sub: "user-42".into(),
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        // Simulate the extract closure from auth_me handler
+        let extract = |t: &str| -> Option<serde_json::Value> {
+            jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .ok()
+            .map(|d| {
+                json!({
+                    "authenticated": true,
+                    "user": { "sub": d.claims.sub, "name": d.claims.name, "email": d.claims.email }
+                })
+            })
+        };
+
+        let result = extract(&token);
+        assert!(result.is_some());
+        let resp = result.unwrap();
+        assert_eq!(resp["authenticated"], true);
+        assert_eq!(resp["user"]["sub"], "user-42");
+        assert_eq!(resp["user"]["name"], "Alice");
+        assert_eq!(resp["user"]["email"], "alice@example.com");
+    }
+
+    #[test]
+    fn test_auth_me_extract_invalid_token_returns_none() {
+        let secret = "secret";
+        let extract = |t: &str| -> Option<serde_json::Value> {
+            jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .ok()
+            .map(|d| {
+                json!({
+                    "authenticated": true,
+                    "user": { "sub": d.claims.sub, "name": d.claims.name, "email": d.claims.email }
+                })
+            })
+        };
+
+        assert!(extract("invalid.token.here").is_none());
+        assert!(extract("").is_none());
+        assert!(extract("not-a-jwt").is_none());
+    }
+
+    #[test]
+    fn test_auth_me_extract_expired_token() {
+        let secret = "expired_secret_test";
+        let claims = SessionClaims {
+            sub: "expired_user".into(),
+            name: "Expired".into(),
+            email: "expired@test.com".into(),
+            exp: (Utc::now() - Duration::hours(1)).timestamp() as usize,
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let extract = |t: &str| -> Option<serde_json::Value> {
+            jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .ok()
+            .map(|d| {
+                json!({
+                    "authenticated": true,
+                    "user": { "sub": d.claims.sub, "name": d.claims.name, "email": d.claims.email }
+                })
+            })
+        };
+
+        assert!(extract(&token).is_none());
+    }
+
+    #[test]
+    fn test_auth_me_different_secret_returns_none() {
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "Name".into(),
+            email: "e@e.com".into(),
+            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret("signing_secret".as_ref()),
+        )
+        .expect("should create token");
+
+        let extract = |t: &str| -> Option<serde_json::Value> {
+            jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret("different_secret".as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .ok()
+            .map(|d| {
+                json!({
+                    "authenticated": true,
+                    "user": { "sub": d.claims.sub, "name": d.claims.name, "email": d.claims.email }
+                })
+            })
+        };
+
+        assert!(extract(&token).is_none());
+    }
+
+    #[test]
+    fn test_cookie_value_extraction() {
+        let cookie_str = "session=eyJhbGciOiJIUzI1NiJ9.test-token; path=/; HttpOnly";
+        let found = cookie_str
+            .split("; ")
+            .find_map(|part| part.strip_prefix("session="));
+        assert_eq!(found, Some("eyJhbGciOiJIUzI1NiJ9.test-token"));
+    }
+
+    #[test]
+    fn test_cookie_value_missing() {
+        let cookie_str = "other=value; path=/";
+        let found = cookie_str
+            .split("; ")
+            .find_map(|part| part.strip_prefix("session="));
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_cookie_value_empty() {
+        let cookie_str = "session=; path=/";
+        let found = cookie_str
+            .split("; ")
+            .find_map(|part| part.strip_prefix("session="));
+        assert_eq!(found, Some(""));
+    }
+
+    #[test]
+    fn test_logout_clears_cookie() {
+        // Simulate what auth_logout does
+        let cookie = Cookie::build(("session", ""))
+            .path("/")
+            .http_only(true)
+            .build();
+        let cookie_str = cookie.to_string();
+        assert!(cookie_str.contains("session="));
+        // A cleared cookie should have empty value
+        assert!(cookie_str.contains("session=;") || cookie_str.contains("session=\"\""));
+    }
+
+    #[test]
+    fn test_session_token_roundtrip_with_special_chars() {
+        let claims = SessionClaims {
+            sub: "user|with|pipes".into(),
+            name: "José María".into(),
+            email: "test+alias@example.com".into(),
+            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+        };
+        let secret = "s3cr3t_k3y!@#$%";
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let decoded = jsonwebtoken::decode::<SessionClaims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .expect("should verify");
+
+        assert_eq!(decoded.claims.sub, "user|with|pipes");
+        assert_eq!(decoded.claims.name, "José María");
+        assert_eq!(decoded.claims.email, "test+alias@example.com");
+    }
 }

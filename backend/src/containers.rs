@@ -408,3 +408,245 @@ pub fn routes() -> Router<AppState> {
         .route("/api/containers/{name}/restart", post(restart_container_h))
         .route("/api/containers/{name}/remove", post(remove_container_h))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Crea un cliente Bollard conectado al socket de Podman.
+    /// Usa DOCKER_HOST si está configurado, o el socket rootless por defecto.
+    async fn podman_client() -> Docker {
+        let socket = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
+        Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
+            .expect("Failed to connect to Podman socket. Is Podman running?")
+    }
+
+    fn is_podman_available() -> bool {
+        std::env::var("DOCKER_HOST").is_ok()
+            || std::path::Path::new("/run/user/1000/podman/podman.sock").exists()
+    }
+
+    // ── fetch_containers ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_integration_fetch_containers_returns_list() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let result = fetch_containers(&docker, &None).await;
+        assert!(!result.is_empty(), "Should have at least one container");
+    }
+
+    #[tokio::test]
+    async fn test_integration_fetch_containers_structure() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let containers = fetch_containers(&docker, &None).await;
+        let c = containers
+            .iter()
+            .find(|c| c.name == "alloy")
+            .expect("Container 'alloy' should be running");
+
+        assert!(!c.id.is_empty(), "Container should have an ID");
+        assert!(!c.image.is_empty(), "Container should have an image");
+        assert!(!c.image_tag.is_empty(), "Container should have a tag");
+        assert_eq!(c.state, "running");
+        assert!(
+            !c.ports.is_empty() || c.traefik_url.is_some() || !c.registry_url.is_empty(),
+            "Container should have ports, traefik URL or registry URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_integration_fetch_containers_fields() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let containers = fetch_containers(&docker, &None).await;
+        for c in &containers {
+            // Every container must have these basic fields
+            assert!(!c.id.is_empty(), "ID should not be empty for {}", c.name);
+            assert!(!c.name.is_empty(), "Name should not be empty");
+            assert!(
+                !c.image.is_empty(),
+                "Image should not be empty for {}",
+                c.name
+            );
+            // State must be one of the Docker states
+            assert!(
+                [
+                    "running",
+                    "exited",
+                    "paused",
+                    "created",
+                    "restarting",
+                    "removing",
+                    "dead"
+                ]
+                .contains(&c.state.as_str()),
+                "Invalid state '{}' for container {}",
+                c.state,
+                c.name
+            );
+            // size_mb should be a valid number
+            assert!(c.size_mb >= 0.0, "Size should be >= 0 for {}", c.name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_fetch_containers_with_allowed_filter() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let allowed = Some(vec!["alloy".into(), "oxinbox".into()]);
+        let containers = fetch_containers(&docker, &allowed).await;
+        for c in &containers {
+            assert!(
+                c.name == "alloy" || c.name == "oxinbox",
+                "Filtered container '{}' should not appear",
+                c.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_fetch_containers_with_empty_allowed() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let allowed = Some(Vec::new());
+        let containers = fetch_containers(&docker, &allowed).await;
+        assert!(
+            containers.is_empty(),
+            "Empty allowed list should return nothing"
+        );
+    }
+
+    // ── find_container_by_name ───────────────────────────────
+
+    #[tokio::test]
+    async fn test_integration_find_container_by_name_found() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let container = find_container_by_name(&docker, "alloy")
+            .await
+            .expect("Container 'alloy' should be found");
+        let name = container
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|n| strip_name(n));
+        assert_eq!(name.as_deref(), Some("alloy"));
+    }
+
+    #[tokio::test]
+    async fn test_integration_find_container_by_name_not_found() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let result = find_container_by_name(&docker, "this-container-does-not-exist-xyz").await;
+        assert!(result.is_err());
+        match result {
+            Err(AppError::NotFound(_)) => {} // expected
+            _ => panic!("Expected NotFound error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_find_container_by_name_oxinbox() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let container = find_container_by_name(&docker, "oxinbox")
+            .await
+            .expect("Container 'oxinbox' should be found");
+        let name = container
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|n| strip_name(n));
+        assert_eq!(name.as_deref(), Some("oxinbox"));
+    }
+
+    #[tokio::test]
+    async fn test_integration_find_container_by_name_postgres() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let container = find_container_by_name(&docker, "preemer-db")
+            .await
+            .expect("Container 'preemer-db' should be found");
+        let name = container
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|n| strip_name(n));
+        assert_eq!(name.as_deref(), Some("preemer-db"));
+    }
+
+    // ── Port parsing ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_integration_fetch_containers_ports() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman socket not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let containers = fetch_containers(&docker, &None).await;
+
+        // Check that containers with ports have valid port strings
+        for c in &containers {
+            for port in &c.ports {
+                // Each port should follow the format "ip:public:private" or be empty
+                if !port.is_empty() {
+                    let parts: Vec<&str> = port.split(':').collect();
+                    assert!(parts.len() >= 2, "Invalid port format: {}", port);
+                }
+            }
+        }
+    }
+
+    // ── strip_name ───────────────────────────────────────────
+
+    #[test]
+    fn test_strip_name_slash() {
+        assert_eq!(strip_name("/test_container"), "test_container");
+    }
+
+    #[test]
+    fn test_strip_name_multi_slash() {
+        assert_eq!(strip_name("///test"), "test");
+    }
+
+    #[test]
+    fn test_strip_name_no_slash() {
+        assert_eq!(strip_name("plain_name"), "plain_name");
+    }
+
+    #[test]
+    fn test_strip_name_empty() {
+        assert_eq!(strip_name(""), "");
+    }
+}

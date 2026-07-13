@@ -67,3 +67,17 @@ export interface InspectData {
   restart_policy: string;
   health: string | null;
 }
+  id: string;
+  name: string;
+  image: string;
+  created: string;
+  state: string;
+  status: string;
+  ports: { private_port: number; public_port: number | null; type: string }[];
+  mounts: { source: string; destination: string; mode: string; rw: boolean }[];
+  networks: { name: string; ip_address: string; gateway: string }[];
+  env: string[];
+  labels: Record<string, string>;
+  restart_policy: string;
+  health: string | null;
+}

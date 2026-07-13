@@ -3,7 +3,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Group, Loader, Menu, Paper, Table, Text,
   Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
-  SimpleGrid, TextInput,
+  SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData } from "../types";
 import { apiFetch, truncate } from "../api";
@@ -56,6 +56,15 @@ export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  // ── State & update filters ────────────────────────────────
+  const [stateFilter, setStateFilter] = useState<string[]>([]);
+  const [showPendingUpdates, setShowPendingUpdates] = useState(false);
+
+  const availableStates = useMemo(() => {
+    const states = new Set(containers.map(c => c.state));
+    return Array.from(states).sort();
+  }, [containers]);
 
   const handleSort = (key: string) => {
     if (sortKey === key) {
@@ -492,15 +501,24 @@ export default function DashboardPage() {
     );
 
   const q = searchQuery.toLowerCase().trim();
-  const filteredContainers = q
-    ? containers.filter((c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.image.toLowerCase().includes(q) ||
-        (c.compose_project || "").toLowerCase().includes(q) ||
-        c.ports.some((p) => p.toLowerCase().includes(q)) ||
-        c.state.toLowerCase().includes(q)
-      )
-    : containers;
+  const filteredContainers = containers.filter((c) => {
+    // Search text filter
+    if (q && !(
+      c.name.toLowerCase().includes(q) ||
+      c.image.toLowerCase().includes(q) ||
+      (c.compose_project || "").toLowerCase().includes(q) ||
+      c.ports.some((p) => p.toLowerCase().includes(q)) ||
+      c.state.toLowerCase().includes(q)
+    )) return false;
+
+    // State filter
+    if (stateFilter.length > 0 && !stateFilter.includes(c.state)) return false;
+
+    // Pending update filter
+    if (showPendingUpdates && !c.has_update) return false;
+
+    return true;
+  });
 
   const sortedContainers = sortKey
     ? [...filteredContainers].sort(sortFn)
@@ -811,6 +829,21 @@ export default function DashboardPage() {
                   <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
                 ) : undefined}
               />
+              {availableStates.length > 0 && (
+                <Chip.Group multiple value={stateFilter} onChange={setStateFilter}>
+                  <Group gap="xs" wrap="wrap">
+                    {availableStates.map(s => (
+                      <Chip key={s} value={s} size="xs" variant="outline">{s}</Chip>
+                    ))}
+                  </Group>
+                </Chip.Group>
+              )}
+              <Switch
+                label="Solo pendientes de actualizar"
+                checked={showPendingUpdates}
+                onChange={(e) => setShowPendingUpdates(e.currentTarget.checked)}
+                size="xs"
+              />
               <Text size="sm" c="dimmed">SSE en tiempo real · {filteredContainers.length} de {containers.length} containers</Text>
               <Button onClick={checkAll} variant="filled" color="cyan" fullWidth>🔍 Check all</Button>
               <Button onClick={updateAll} variant="filled" color="yellow" fullWidth>⬆️ Actualizar todo</Button>
@@ -825,6 +858,23 @@ export default function DashboardPage() {
                   <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
                 ) : undefined}
               />
+              <Group gap="md" wrap="wrap">
+                {availableStates.length > 0 && (
+                  <Chip.Group multiple value={stateFilter} onChange={setStateFilter}>
+                    <Group gap="xs" wrap="wrap">
+                      {availableStates.map(s => (
+                        <Chip key={s} value={s} size="xs" variant="outline">{s}</Chip>
+                      ))}
+                    </Group>
+                  </Chip.Group>
+                )}
+                <Switch
+                  label="Solo pendientes de actualizar"
+                  checked={showPendingUpdates}
+                  onChange={(e) => setShowPendingUpdates(e.currentTarget.checked)}
+                  size="xs"
+                />
+              </Group>
               <Group justify="space-between">
                 <Text size="sm" c="dimmed">SSE en tiempo real · {filteredContainers.length} de {containers.length} containers</Text>
                 <Group gap="xs">

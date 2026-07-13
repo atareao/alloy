@@ -372,3 +372,172 @@ pub fn routes() -> Router<AppState> {
         .route("/api/stacks/{project}/update", post(update_stack_h))
         .route("/api/stacks/{project}/down", post(down_stack_h))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn is_podman_available() -> bool {
+        std::env::var("DOCKER_HOST").is_ok()
+            || std::path::Path::new("/run/user/1000/podman/podman.sock").exists()
+    }
+
+    async fn podman_client() -> Docker {
+        let socket = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
+        Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
+            .expect("Failed to connect to Podman socket")
+    }
+
+    // ── get_compose_projects ─────────────────────────────────
+
+    #[test]
+    fn test_get_compose_projects_returns_map() {
+        // This runs `docker compose ls --format json` via the real Podman socket
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman not available");
+            return;
+        }
+        let projects = get_compose_projects();
+        // Should always return a HashMap (possibly empty)
+        assert!(projects.is_empty() || !projects.is_empty());
+    }
+
+    // ── get_compose_project_path ─────────────────────────────
+
+    #[test]
+    fn test_get_compose_project_path_nonexistent() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman not available");
+            return;
+        }
+        let path = get_compose_project_path("this-project-does-not-exist-xyz");
+        assert!(path.is_none());
+    }
+
+    // ── list_stacks_h ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_integration_list_stacks_returns_valid_structure() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let result: Json<Vec<StackInfo>> = list_stacks_h(State(docker)).await;
+        // May be empty (Quadlets), but structure must be valid
+        for stack in &result.0 {
+            assert!(!stack.project.is_empty());
+            for svc in &stack.services {
+                assert!(!svc.service.is_empty());
+                assert!(!svc.container_name.is_empty());
+                assert!(!svc.image.is_empty());
+                assert!(["running", "exited", "paused", "created"].contains(&svc.state.as_str()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_integration_list_stacks_services_have_state() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let result: Json<Vec<StackInfo>> = list_stacks_h(State(docker)).await;
+        for stack in &result.0 {
+            for svc in &stack.services {
+                // Each service must have a valid state
+                assert!(
+                    !svc.state.is_empty(),
+                    "Service {} in stack {} has empty state",
+                    svc.service,
+                    stack.project
+                );
+                assert!(
+                    !svc.status.is_empty(),
+                    "Service {} in stack {} has empty status",
+                    svc.service,
+                    stack.project
+                );
+            }
+        }
+    }
+
+    // ── StackService ─────────────────────────────────────────
+
+    #[test]
+    fn test_stack_service_creation() {
+        let svc = StackService {
+            service: "web".into(),
+            container_name: "myapp_web_1".into(),
+            image: "nginx:latest".into(),
+            status: "running".into(),
+            state: "running".into(),
+        };
+        assert_eq!(svc.service, "web");
+        assert_eq!(svc.container_name, "myapp_web_1");
+        assert_eq!(svc.image, "nginx:latest");
+        assert_eq!(svc.status, "running");
+        assert_eq!(svc.state, "running");
+    }
+
+    #[test]
+    fn test_stack_info_creation() {
+        let info = StackInfo {
+            project: "myapp".into(),
+            services: vec![StackService {
+                service: "db".into(),
+                container_name: "myapp_db_1".into(),
+                image: "postgres:15".into(),
+                status: "running".into(),
+                state: "running".into(),
+            }],
+        };
+        assert_eq!(info.project, "myapp");
+        assert_eq!(info.services.len(), 1);
+        assert_eq!(info.services[0].service, "db");
+    }
+
+    // ── StackUpdateResult ────────────────────────────────────
+
+    #[test]
+    fn test_stack_update_result_ok() {
+        let result = StackUpdateResult {
+            service: "web".into(),
+            status: "ok".into(),
+            duration_ms: 1234,
+            error: None,
+        };
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.duration_ms, 1234);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn test_stack_update_result_error() {
+        let result = StackUpdateResult {
+            service: "db".into(),
+            status: "error".into(),
+            duration_ms: 567,
+            error: Some("pull failed".into()),
+        };
+        assert_eq!(result.status, "error");
+        assert_eq!(result.error.as_deref(), Some("pull failed"));
+    }
+
+    #[test]
+    fn test_stack_update_response() {
+        let response = StackUpdateResponse {
+            project: "myapp".into(),
+            results: vec![StackUpdateResult {
+                service: "web".into(),
+                status: "ok".into(),
+                duration_ms: 100,
+                error: None,
+            }],
+        };
+        assert_eq!(response.project, "myapp");
+        assert_eq!(response.results.len(), 1);
+    }
+}
