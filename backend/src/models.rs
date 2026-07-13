@@ -4,6 +4,20 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Serialize)]
+pub struct ImageInfo {
+    pub id: String,
+    pub repo: String,
+    pub tag: String,
+    pub size_mb: f64,
+    pub virtual_size_mb: f64,
+    pub created: i64,
+    pub containers: i64,
+    pub repo_tags: Vec<String>,
+    pub repo_digests: Vec<String>,
+    pub labels: std::collections::HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct ContainerInfo {
     pub id: String,
     pub name: String,

@@ -4,6 +4,7 @@ import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, To
 import type { ContainerInfo } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
+import ImagesPage from "./components/ImagesPage";
 import ConfigPage from "./components/ConfigPage";
 import HistoryPage from "./HistoryPage";
 import AlertsPage from "./AlertsPage";
@@ -112,6 +113,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         <Tabs defaultValue="dashboard">
           <Tabs.List mb="md" style={{ overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none' }}>
             <Tabs.Tab value="dashboard" style={{ whiteSpace: 'nowrap' }}>📊 Dashboard</Tabs.Tab>
+            <Tabs.Tab value="images" style={{ whiteSpace: 'nowrap' }}>📦 Imágenes</Tabs.Tab>
             <Tabs.Tab value="history" style={{ whiteSpace: 'nowrap' }}>📜 Historial</Tabs.Tab>
             <Tabs.Tab value="alerts" style={{ whiteSpace: 'nowrap' }}>🔔 Alertas</Tabs.Tab>
             <Tabs.Tab value="schedule" style={{ whiteSpace: 'nowrap' }}>⏰ Planif</Tabs.Tab>
@@ -119,6 +121,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </Tabs.List>
 
           <Tabs.Panel value="dashboard"><DashboardPage /></Tabs.Panel>
+          <Tabs.Panel value="images"><ImagesPage /></Tabs.Panel>
           <Tabs.Panel value="history"><HistoryPage /></Tabs.Panel>
           <Tabs.Panel value="alerts"><AlertsPage containers={containers} /></Tabs.Panel>
           <Tabs.Panel value="schedule"><SchedulePage containers={containers} /></Tabs.Panel>
