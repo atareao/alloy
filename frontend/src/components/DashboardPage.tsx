@@ -1,9 +1,9 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Group, Loader, Menu, Paper, Table, Text,
   Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
-  SimpleGrid,
+  SimpleGrid, TextInput,
 } from "@mantine/core";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData } from "../types";
 import { apiFetch, truncate } from "../api";
@@ -51,6 +51,47 @@ export default function DashboardPage() {
   const [showSummary, setShowSummary] = useState(false);
 
   const isMobile = useMediaQuery("(max-width: 768px)");
+
+  // ── Search & sort ──────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      if (sortDir === 'asc') {
+        setSortDir('desc');
+      } else {
+        setSortKey(null);
+        setSortDir('asc');
+      }
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
+
+  const sortFn = useMemo(() => {
+    return (a: ContainerInfo, b: ContainerInfo) => {
+      if (!sortKey) return 0;
+      let cmp = 0;
+      switch (sortKey) {
+        case 'name':
+          cmp = a.name.localeCompare(b.name);
+          break;
+        case 'image':
+          cmp = `${a.image}:${a.image_tag}`.localeCompare(`${b.image}:${b.image_tag}`);
+          break;
+        case 'ports':
+          cmp = a.ports.length - b.ports.length;
+          break;
+        case 'state':
+          cmp = a.state.localeCompare(b.state) || a.status.localeCompare(b.status);
+          break;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    };
+  }, [sortKey, sortDir]);
 
   // ── Data fetching ──────────────────────────────────────────
 
@@ -450,9 +491,24 @@ export default function DashboardPage() {
       </Container>
     );
 
+  const q = searchQuery.toLowerCase().trim();
+  const filteredContainers = q
+    ? containers.filter((c) =>
+        c.name.toLowerCase().includes(q) ||
+        c.image.toLowerCase().includes(q) ||
+        (c.compose_project || "").toLowerCase().includes(q) ||
+        c.ports.some((p) => p.toLowerCase().includes(q)) ||
+        c.state.toLowerCase().includes(q)
+      )
+    : containers;
+
+  const sortedContainers = sortKey
+    ? [...filteredContainers].sort(sortFn)
+    : filteredContainers;
+
   const grouped = new Map<string, ContainerInfo[]>();
   const noStack: ContainerInfo[] = [];
-  for (const c of containers) {
+  for (const c of sortedContainers) {
     if (c.compose_project) {
       const list = grouped.get(c.compose_project) || [];
       list.push(c);
@@ -659,11 +715,19 @@ export default function DashboardPage() {
           <Table striped highlightOnHover>
             <Table.Thead>
               <Table.Tr>
-                <Table.Th>Container</Table.Th>
-                <Table.Th>Imagen</Table.Th>
-                <Table.Th>Puertos</Table.Th>
+                <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
+                  Container {sortKey === 'name' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </Table.Th>
+                <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('image')}>
+                  Imagen {sortKey === 'image' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </Table.Th>
+                <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('ports')}>
+                  Puertos {sortKey === 'ports' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </Table.Th>
                 <Table.Th>Traefik</Table.Th>
-                <Table.Th>Estado</Table.Th>
+                <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('state')}>
+                  Estado {sortKey === 'state' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                </Table.Th>
                 <Table.Th>Menú</Table.Th>
               </Table.Tr>
             </Table.Thead>
@@ -734,27 +798,45 @@ export default function DashboardPage() {
         </Paper>
       )}
 
-      {/* Action buttons — only visible when idle */}
+      {/* Action buttons + search — only visible when idle */}
       {batchPhase === 'idle' && (
         <Paper shadow="sm" p="md" mb="md" withBorder>
           {isMobile ? (
             <Stack gap="sm">
-              <Text size="sm" c="dimmed">SSE en tiempo real · {containers.length} containers</Text>
+              <TextInput
+                placeholder="Buscar por nombre, imagen, stack, puerto..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.currentTarget.value)}
+                rightSection={searchQuery ? (
+                  <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
+                ) : undefined}
+              />
+              <Text size="sm" c="dimmed">SSE en tiempo real · {filteredContainers.length} de {containers.length} containers</Text>
               <Button onClick={checkAll} variant="filled" color="cyan" fullWidth>🔍 Check all</Button>
               <Button onClick={updateAll} variant="filled" color="yellow" fullWidth>⬆️ Actualizar todo</Button>
             </Stack>
           ) : (
-            <Group justify="space-between">
-              <Text size="sm" c="dimmed">SSE en tiempo real · {containers.length} containers</Text>
-              <Group gap="xs">
-                <Tooltip label="Comprueba todos los containers contra el registry">
-                  <Button onClick={checkAll} variant="filled" color="cyan">🔍 Check all</Button>
-                </Tooltip>
-                <Tooltip label="Comprueba y actualiza solo los que tengan update disponible">
-                  <Button onClick={updateAll} variant="filled" color="yellow">⬆️ Actualizar todo</Button>
-                </Tooltip>
+            <Stack gap="md">
+              <TextInput
+                placeholder="Buscar por nombre, imagen, stack, puerto..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.currentTarget.value)}
+                rightSection={searchQuery ? (
+                  <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
+                ) : undefined}
+              />
+              <Group justify="space-between">
+                <Text size="sm" c="dimmed">SSE en tiempo real · {filteredContainers.length} de {containers.length} containers</Text>
+                <Group gap="xs">
+                  <Tooltip label="Comprueba todos los containers contra el registry">
+                    <Button onClick={checkAll} variant="filled" color="cyan">🔍 Check all</Button>
+                  </Tooltip>
+                  <Tooltip label="Comprueba y actualiza solo los que tengan update disponible">
+                    <Button onClick={updateAll} variant="filled" color="yellow">⬆️ Actualizar todo</Button>
+                  </Tooltip>
+                </Group>
               </Group>
-            </Group>
+            </Stack>
           )}
         </Paper>
       )}
@@ -788,11 +870,19 @@ export default function DashboardPage() {
                 <Table striped highlightOnHover>
                   <Table.Thead>
                     <Table.Tr>
-                      <Table.Th>Container</Table.Th>
-                      <Table.Th>Imagen</Table.Th>
-                      <Table.Th>Puertos</Table.Th>
+                      <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
+                        Container {sortKey === 'name' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                      </Table.Th>
+                      <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('image')}>
+                        Imagen {sortKey === 'image' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                      </Table.Th>
+                      <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('ports')}>
+                        Puertos {sortKey === 'ports' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                      </Table.Th>
                       <Table.Th>Traefik</Table.Th>
-                      <Table.Th>Estado</Table.Th>
+                      <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('state')}>
+                        Estado {sortKey === 'state' ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+                      </Table.Th>
                       <Table.Th>Menú</Table.Th>
                     </Table.Tr>
                   </Table.Thead>
