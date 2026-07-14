@@ -54,7 +54,11 @@ async fn main() {
 
     // Ensure data directory exists for persistent JSON files
     if let Err(e) = tokio::fs::create_dir_all("data").await {
-        tracing::warn!("Could not create data dir: {}", e);
+        tracing::error!(
+            "❌ Could not create data/ directory: {}. Check volume permissions.",
+            e
+        );
+        std::process::exit(1);
     }
 
     let config = Config::load();

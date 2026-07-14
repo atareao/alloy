@@ -5,7 +5,7 @@ import {
   Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
   SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
-import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData } from "../types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs } from "../types";
 import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
 
@@ -400,6 +400,8 @@ export default function DashboardPage() {
   const [stackUpdating, setStackUpdating] = useState<string | null>(null);
   const [stackInspect, setStackInspect] = useState<string | null>(null);
   const [stackConfirmDelete, setStackConfirmDelete] = useState<string | null>(null);
+  const [stackLogs, setStackLogs] = useState<StackLogs | null>(null);
+  const [stackLogsLoading, setStackLogsLoading] = useState(false);
 
   const handleStackCheckUpdates = async (project: string, items: ContainerInfo[]) => {
     for (const c of items) {
@@ -456,6 +458,20 @@ export default function DashboardPage() {
       setActionNotif({ container: project, action: "error al eliminar stack", error: e.message });
     }
     setTimeout(() => setActionNotif(null), 4000);
+  };
+
+  const handleStackLogs = async (project: string) => {
+    setStackLogs(null);
+    setStackLogsLoading(true);
+    try {
+      const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/logs`);
+      const data: StackLogs = await res.json();
+      setStackLogs(data);
+    } catch {
+      setStackLogs(null);
+    } finally {
+      setStackLogsLoading(false);
+    }
   };
 
   // ── Stack menu (shared) ────────────────────────────────────
@@ -1094,9 +1110,10 @@ export default function DashboardPage() {
       </Modal>
 
       {/* Stack inspect modal */}
-      <Modal opened={stackInspect !== null} onClose={() => setStackInspect(null)} title={`📦 Inspeccionar stack: ${stackInspect || ""}`} size={isMobile ? "100%" : "lg"}>
+      <Modal opened={stackInspect !== null} onClose={() => { setStackInspect(null); setStackLogs(null); }} title={`📦 Inspeccionar stack: ${stackInspect || ""}`} size={isMobile ? "100%" : "lg"}>
         {stackInspect && (() => {
-          const stackContainers = containers.filter(c => c.compose_project === stackInspect);
+          const project = stackInspect;
+          const stackContainers = containers.filter(c => c.compose_project === project);
           const running = stackContainers.filter(c => c.state === "running").length;
           return (
             <Stack gap="md">
@@ -1114,6 +1131,15 @@ export default function DashboardPage() {
                     <Text size="xl" fw={700} c="red">{stackContainers.length - running}</Text>
                     <Text size="xs" c="dimmed">Parados</Text>
                   </Stack>
+                  <Button
+                    size="xs"
+                    variant="light"
+                    color="gray"
+                    loading={stackLogsLoading}
+                    onClick={() => handleStackLogs(project)}
+                  >
+                    📋 Logs
+                  </Button>
                 </Group>
               </Paper>
               <Table.ScrollContainer minWidth={400}>
@@ -1142,6 +1168,36 @@ export default function DashboardPage() {
                   </Table.Tbody>
                 </Table>
               </Table.ScrollContainer>
+
+              {stackLogs && (
+                <Stack gap="sm">
+                  <Divider label="Logs" labelPosition="center" />
+                  {stackLogs.services.length === 0 && (
+                    <Text c="dimmed" ta="center" size="sm">No hay servicios con logs disponibles</Text>
+                  )}
+                  {stackLogs.services.map((svc) => (
+                    <Paper key={svc.service} shadow="xs" p="sm" withBorder>
+                      <Group justify="space-between" mb="xs">
+                        <Text fw={500} size="sm">{svc.service}</Text>
+                        <Text size="xs" c="dimmed">{svc.container}</Text>
+                      </Group>
+                      {svc.lines.length === 0 ? (
+                        <Text size="xs" c="dimmed" fs="italic">Sin logs</Text>
+                      ) : (
+                        <ScrollArea.Autosize mah={300}>
+                          <Stack gap={2}>
+                            {svc.lines.map((line, i) => (
+                              <Text key={i} size="xs" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                                {line}
+                              </Text>
+                            ))}
+                          </Stack>
+                        </ScrollArea.Autosize>
+                      )}
+                    </Paper>
+                  ))}
+                </Stack>
+              )}
             </Stack>
           );
         })()}
