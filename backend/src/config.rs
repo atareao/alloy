@@ -29,6 +29,8 @@ pub struct Config {
     #[serde(default)]
     pub matrix_room: Option<String>,
     #[serde(default)]
+    pub webhook_url: Option<String>,
+    #[serde(default)]
     pub oidc_issuer_url: Option<String>,
     #[serde(default)]
     pub oidc_client_id: Option<String>,
@@ -158,6 +160,7 @@ async fn config_handler(
         .or_else(|| config.matrix_homeserver.clone());
     let mx_token = s.matrix_token.as_ref().or(config.matrix_token.as_ref());
     let mx_room = s.matrix_room.clone().or_else(|| config.matrix_room.clone());
+    let wh_url = s.webhook_url.clone().or_else(|| config.webhook_url.clone());
     Json(PublicConfig {
         oidc_configured: true,
         port: config.port(),
@@ -174,6 +177,7 @@ async fn config_handler(
         matrix_token_set: mx_token.is_some(),
         matrix_homeserver: mx_homeserver,
         matrix_room: mx_room,
+        webhook_configured: wh_url.is_some(),
         allowed_containers: config.allowed_containers.clone(),
     })
 }
@@ -224,6 +228,13 @@ async fn update_config_h(
                 s.matrix_room = None;
             } else {
                 s.matrix_room = Some(v);
+            }
+        }
+        if let Some(v) = body.webhook_url {
+            if v.is_empty() {
+                s.webhook_url = None;
+            } else {
+                s.webhook_url = Some(v);
             }
         }
         json_writer().save(FILE_SETTINGS, &*s).await;

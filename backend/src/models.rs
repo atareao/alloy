@@ -61,6 +61,7 @@ pub struct PublicConfig {
     pub auto_update_interval_hours: u64,
     pub telegram_configured: bool,
     pub matrix_configured: bool,
+    pub webhook_configured: bool,
     pub allowed_containers: Option<Vec<String>>,
     pub telegram_token_set: bool,
     pub telegram_chat_id: Option<String>,
@@ -216,6 +217,8 @@ pub struct Settings {
     pub matrix_token: Option<String>,
     #[serde(default)]
     pub matrix_room: Option<String>,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -227,6 +230,7 @@ pub struct UpdateSettingsReq {
     pub matrix_homeserver: Option<String>,
     pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -296,10 +300,13 @@ pub fn strip_name(name: &str) -> String {
     name.trim_start_matches('/').to_string()
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    #[error("{0}")]
     NotFound(String),
+    #[error("Docker: {0}")]
     Docker(String),
+    #[error("{0}")]
     Internal(String),
 }
 

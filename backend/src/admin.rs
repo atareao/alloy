@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     response::Json,
-    routing::{delete, get},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -87,12 +87,65 @@ async fn delete_schedule_h(
     Json(serde_json::json!({"status": "deleted", "id": id}))
 }
 
+async fn export_config_h(
+    State(alerts): State<Arc<Mutex<Vec<AlertConfig>>>>,
+    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
+    State(settings): State<Arc<Mutex<Settings>>>,
+    State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+) -> Json<serde_json::Value> {
+    let a = alerts.lock().await;
+    let s = schedules.lock().await;
+    let sett = settings.lock().await;
+    let hist = update_history.lock().await;
+    Json(serde_json::json!({
+        "version": 1,
+        "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        "alerts": *a,
+        "schedules": *s,
+        "settings": *sett,
+        "update_history": *hist,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct ImportPayload {
+    alerts: Vec<AlertConfig>,
+    schedules: Vec<ScheduleTask>,
+    settings: Settings,
+}
+
+async fn import_config_h(
+    State(alerts): State<Arc<Mutex<Vec<AlertConfig>>>>,
+    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
+    State(settings): State<Arc<Mutex<Settings>>>,
+    Json(body): Json<ImportPayload>,
+) -> Json<serde_json::Value> {
+    {
+        let mut a = alerts.lock().await;
+        *a = body.alerts;
+        save_buffered!(FILE_ALERTS, &*a);
+    }
+    {
+        let mut s = schedules.lock().await;
+        *s = body.schedules;
+        save_buffered!(FILE_SCHEDULES, &*s);
+    }
+    {
+        let mut st = settings.lock().await;
+        *st = body.settings;
+        save_buffered!(FILE_SETTINGS, &*st);
+    }
+    Json(serde_json::json!({"status": "imported"}))
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/alerts", get(get_alerts_h).post(create_alert_h))
         .route("/api/alerts/{id}", delete(delete_alert_h))
         .route("/api/schedule", get(get_schedule_h).post(create_schedule_h))
         .route("/api/schedule/{id}", delete(delete_schedule_h))
+        .route("/api/admin/export", get(export_config_h))
+        .route("/api/admin/import", post(import_config_h))
 }
 
 #[cfg(test)]
@@ -318,5 +371,164 @@ mod tests {
         // Verify alerts has it, schedules doesn't
         assert_eq!(alerts.lock().await.len(), 1);
         assert!(schedules.lock().await.is_empty());
+    }
+
+    // ── Export / Import ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_export_config_empty() {
+        let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new(Vec::new()));
+        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
+        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
+        let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let result: Json<serde_json::Value> = export_config_h(
+            State(alerts),
+            State(schedules),
+            State(settings),
+            State(update_history),
+        )
+        .await;
+
+        assert_eq!(result.0["version"], 1);
+        assert!(result.0["exported_at"].is_string());
+        assert!(result.0["alerts"].as_array().unwrap().is_empty());
+        assert!(result.0["schedules"].as_array().unwrap().is_empty());
+        assert!(result.0["update_history"].as_array().unwrap().is_empty());
+        assert!(result.0["settings"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_export_config_with_data() {
+        let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new(vec![AlertConfig {
+            id: "alert-1".into(),
+            container: "nginx".into(),
+            enabled: true,
+            notify_via: vec!["telegram".into()],
+        }]));
+        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
+        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings {
+            auto_update_enabled: Some(true),
+            telegram_token: Some("tok".into()),
+            ..Default::default()
+        }));
+        let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let result: Json<serde_json::Value> = export_config_h(
+            State(alerts),
+            State(schedules),
+            State(settings),
+            State(update_history),
+        )
+        .await;
+
+        let exported_alerts = result.0["alerts"].as_array().unwrap();
+        assert_eq!(exported_alerts.len(), 1);
+        assert_eq!(exported_alerts[0]["container"], "nginx");
+        assert!(exported_alerts[0]["enabled"].as_bool().unwrap());
+
+        let exported_settings = &result.0["settings"];
+        assert_eq!(exported_settings["auto_update_enabled"], true);
+        assert_eq!(exported_settings["telegram_token"], "tok");
+    }
+
+    #[tokio::test]
+    async fn test_import_config_replaces_state() {
+        let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new(Vec::new()));
+        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
+        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
+
+        // Pre-populate with some data
+        {
+            let mut a = alerts.lock().await;
+            a.push(AlertConfig {
+                id: "old".into(),
+                container: "old-container".into(),
+                enabled: true,
+                notify_via: Vec::new(),
+            });
+        }
+
+        // Import new data
+        let payload = ImportPayload {
+            alerts: vec![AlertConfig {
+                id: "new".into(),
+                container: "new-container".into(),
+                enabled: false,
+                notify_via: vec!["matrix".into()],
+            }],
+            schedules: vec![ScheduleTask {
+                id: "sched-1".into(),
+                container: "backup".into(),
+                target_type: "container".into(),
+                cron: "0 3 * * *".into(),
+                action: "restart".into(),
+                enabled: true,
+                notify: false,
+                cleanup: "none".into(),
+            }],
+            settings: Settings {
+                auto_update_enabled: Some(false),
+                telegram_token: None,
+                telegram_chat_id: Some("123".into()),
+                ..Default::default()
+            },
+        };
+
+        let _: Json<serde_json::Value> = import_config_h(
+            State(alerts.clone()),
+            State(schedules.clone()),
+            State(settings.clone()),
+            Json(payload),
+        )
+        .await;
+
+        // Verify state was replaced
+        {
+            let a = alerts.lock().await;
+            assert_eq!(a.len(), 1);
+            assert_eq!(a[0].container, "new-container");
+            assert!(!a[0].enabled);
+        }
+        {
+            let s = schedules.lock().await;
+            assert_eq!(s.len(), 1);
+            assert_eq!(s[0].container, "backup");
+        }
+        {
+            let st = settings.lock().await;
+            assert_eq!(st.auto_update_enabled, Some(false));
+            assert!(st.telegram_token.is_none());
+            assert_eq!(st.telegram_chat_id.as_deref(), Some("123"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_import_config_overwrites_existing() {
+        let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new(vec![AlertConfig {
+            id: "keep-me".into(),
+            container: "should-be-removed".into(),
+            enabled: true,
+            notify_via: Vec::new(),
+        }]));
+        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
+        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
+
+        let payload = ImportPayload {
+            alerts: vec![],
+            schedules: vec![],
+            settings: Settings::default(),
+        };
+
+        let _: Json<serde_json::Value> = import_config_h(
+            State(alerts.clone()),
+            State(schedules.clone()),
+            State(settings.clone()),
+            Json(payload),
+        )
+        .await;
+
+        // Should have replaced the old data with empty
+        assert!(alerts.lock().await.is_empty());
     }
 }

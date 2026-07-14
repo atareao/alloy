@@ -52,21 +52,42 @@ export interface DockerInfo {
   images: number;
 }
 
-export interface InspectData {
+export interface ImageInfo {
   id: string;
-  name: string;
-  image: string;
-  created: string;
-  state: string;
-  status: string;
-  ports: { private_port: number; public_port: number | null; type: string }[];
-  mounts: { source: string; destination: string; mode: string; rw: boolean }[];
-  networks: { name: string; ip_address: string; gateway: string }[];
-  env: string[];
-  labels: Record<string, string>;
-  restart_policy: string;
-  health: string | null;
+  repo: string;
+  tag: string;
+  repo_tags: string[];
+  size_mb: number;
+  virtual_size_mb: number;
+  created: number;
+  containers: number;
 }
+
+export interface StackService {
+  service: string;
+  container_name: string;
+  image: string;
+  status: string;
+  state: string;
+}
+
+export interface StackInfo {
+  project: string;
+  services: StackService[];
+}
+
+export interface StackLogEntry {
+  service: string;
+  container: string;
+  lines: string[];
+}
+
+export interface StackLogs {
+  project: string;
+  services: StackLogEntry[];
+}
+
+export interface InspectData {
   id: string;
   name: string;
   image: string;
