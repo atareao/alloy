@@ -47,13 +47,22 @@ pub async fn notify_telegram(config: &Config, settings: &Settings, container: &s
         return;
     };
     let body = serde_json::json!({"chat_id": chat_id, "text": format!("🪐 *Alloy*\n*{}*: {}", container, status), "parse_mode": "Markdown"});
-    if let Err(e) = http_client()
+    match http_client()
         .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
         .json(&body)
         .send()
         .await
     {
-        tracing::error!("Telegram: {}", e);
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                tracing::error!("Telegram: HTTP {} - {}", status, text);
+            } else {
+                tracing::info!("Telegram: ✅ notificación enviada");
+            }
+        }
+        Err(e) => tracing::error!("Telegram: error de conexión: {}", e),
     }
 }
 
@@ -63,10 +72,10 @@ pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str
         mx_token(settings, config),
         mx_room(settings, config),
     );
-    tracing::debug!(
-        "notify_matrix: hs={:?} token={:?} room={:?}",
+    tracing::info!(
+        "notify_matrix: hs={:?} token_set={} room={:?}",
         hs,
-        token.as_ref().map(|_| "***"),
+        token.is_some(),
         room
     );
     let (Some(hs), Some(token), Some(room)) = (hs, token, room) else {
@@ -83,14 +92,25 @@ pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str
         room,
         uuid::Uuid::new_v4()
     );
-    if let Err(e) = http_client()
+    match http_client()
         .put(&url)
         .header("Authorization", format!("Bearer {}", token))
         .json(&body)
         .send()
         .await
     {
-        tracing::error!("Matrix: {}", e);
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                tracing::error!("Matrix: HTTP {} - {}", status, body_text);
+            } else {
+                tracing::info!("Matrix: ✅ notificación enviada a {}", hs);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Matrix: error de conexión: {}", e);
+        }
     }
 }
 
@@ -109,8 +129,17 @@ pub async fn notify_webhook(config: &Config, settings: &Settings, container: &st
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "source": "alloy"
     });
-    if let Err(e) = http_client().post(url).json(&body).send().await {
-        tracing::error!("Webhook: {}", e);
+    match http_client().post(url).json(&body).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                let s = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                tracing::error!("Webhook: HTTP {} - {}", s, text);
+            } else {
+                tracing::info!("Webhook: ✅ notificación enviada");
+            }
+        }
+        Err(e) => tracing::error!("Webhook: error de conexión: {}", e),
     }
 }
 
@@ -137,14 +166,14 @@ pub async fn notify_selected(
     status: &str,
     channels: &[String],
 ) {
-    tracing::debug!(
+    tracing::info!(
         "notify_selected: container={}, status={}, channels={:?}",
         container,
         status,
         channels
     );
     if channels.is_empty() {
-        tracing::debug!("notify_selected: canales vacíos → notify_all");
+        tracing::info!("notify_selected: canales vacíos → notify_all");
         notify_all(config, settings, container, status).await;
         return;
     }
