@@ -4,8 +4,12 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use bollard::{container::ListContainersOptions, Docker};
+use bollard::{
+    container::{ListContainersOptions, LogsOptions},
+    Docker,
+};
 use chrono::Local;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -366,11 +370,80 @@ async fn down_stack_h(
     }
 }
 
+async fn logs_stack_h(
+    State(docker): State<Docker>,
+    Path(project): Path<String>,
+) -> Json<serde_json::Value> {
+    let containers = docker
+        .list_containers(Some(ListContainersOptions::<String> {
+            all: true,
+            ..Default::default()
+        }))
+        .await
+        .unwrap_or_default();
+
+    let mut logs: Vec<serde_json::Value> = Vec::new();
+
+    for c in &containers {
+        let labels = c.labels.as_ref();
+        let proj = labels.and_then(|l| l.get(LABEL_COMPOSE_PROJECT)).cloned();
+        if proj.as_deref() != Some(&project) {
+            continue;
+        }
+        let service = labels
+            .and_then(|l| l.get(LABEL_COMPOSE_SERVICE))
+            .cloned()
+            .unwrap_or_else(|| "unknown".into());
+        let name = c
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|n| strip_name(n))
+            .unwrap_or_default();
+
+        let opts = LogsOptions::<String> {
+            stdout: true,
+            stderr: true,
+            tail: "50".into(),
+            timestamps: true,
+            ..Default::default()
+        };
+
+        let log_lines: Vec<String> = docker
+            .logs(&name, Some(opts))
+            .take(50)
+            .filter_map(|r| async move {
+                match r {
+                    Ok(log) => {
+                        let text = log.to_string();
+                        // Remove trailing newline from each line
+                        Some(text.trim_end().to_string())
+                    }
+                    Err(_) => None,
+                }
+            })
+            .collect()
+            .await;
+
+        logs.push(serde_json::json!({
+            "service": service,
+            "container": name,
+            "lines": log_lines,
+        }));
+    }
+
+    Json(serde_json::json!({
+        "project": project,
+        "services": logs,
+    }))
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/stacks", get(list_stacks_h))
         .route("/api/stacks/{project}/update", post(update_stack_h))
         .route("/api/stacks/{project}/down", post(down_stack_h))
+        .route("/api/stacks/{project}/logs", get(logs_stack_h))
 }
 
 #[cfg(test)]

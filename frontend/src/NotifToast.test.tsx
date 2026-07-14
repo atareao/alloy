@@ -21,8 +21,7 @@ describe('NotifToast', () => {
     expect(screen.getByText('2024-01-01T00:00:00Z')).toBeInTheDocument()
   })
 
-  it('calls onDismiss after 4 seconds', async () => {
-    vi.useFakeTimers()
+  it('calls onDismiss when dismiss button is clicked', () => {
     const onDismiss = vi.fn()
     const notif: NotifEvent = { container: 'test', status: 'ok', timestamp: '' }
 
@@ -30,12 +29,9 @@ describe('NotifToast', () => {
       <Wrapper><NotifToast notif={notif} onDismiss={onDismiss} /></Wrapper>,
     )
 
-    expect(onDismiss).not.toHaveBeenCalled()
-
-    act(() => { vi.advanceTimersByTime(4000) })
+    const dismissBtn = screen.getByRole('button')
+    act(() => { dismissBtn.click() })
 
     expect(onDismiss).toHaveBeenCalledTimes(1)
-
-    vi.useRealTimers()
   })
 })
