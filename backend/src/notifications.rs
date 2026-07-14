@@ -58,11 +58,21 @@ pub async fn notify_telegram(config: &Config, settings: &Settings, container: &s
 }
 
 pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str, status: &str) {
-    let (Some(hs), Some(token), Some(room)) = (
+    let (hs, token, room) = (
         mx_homeserver(settings, config),
         mx_token(settings, config),
         mx_room(settings, config),
-    ) else {
+    );
+    tracing::debug!(
+        "notify_matrix: hs={:?} token={:?} room={:?}",
+        hs,
+        token.as_ref().map(|_| "***"),
+        room
+    );
+    let (Some(hs), Some(token), Some(room)) = (hs, token, room) else {
+        tracing::warn!(
+            "notify_matrix: 🚫 credenciales Matrix incompletas — no se enviará notificación"
+        );
         return;
     };
     let body =
@@ -127,7 +137,14 @@ pub async fn notify_selected(
     status: &str,
     channels: &[String],
 ) {
+    tracing::debug!(
+        "notify_selected: container={}, status={}, channels={:?}",
+        container,
+        status,
+        channels
+    );
     if channels.is_empty() {
+        tracing::debug!("notify_selected: canales vacíos → notify_all");
         notify_all(config, settings, container, status).await;
         return;
     }

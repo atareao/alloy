@@ -42,11 +42,17 @@ pub async fn alerts_worker(
             })
             .collect();
 
+        tracing::debug!("alerts_worker: checking {} alerts", alerts_list.len());
         for alert in &alerts_list {
             if !alert.enabled {
                 continue;
             }
             let container_name = &alert.container;
+            tracing::debug!(
+                "alerts_worker: checking container={}, notify_via={:?}",
+                container_name,
+                alert.notify_via
+            );
             let Some(container) = container_map.get(container_name) else {
                 let prev = previous_states.insert(container_name.clone(), "gone".into());
                 if prev.as_deref() != Some("gone") {
@@ -63,6 +69,12 @@ pub async fn alerts_worker(
             };
             let current_state = container.state.as_deref().unwrap_or("unknown").to_string();
             let prev_state = previous_states.insert(container_name.clone(), current_state.clone());
+            tracing::debug!(
+                "alerts_worker: {} state={:?} prev={:?}",
+                container_name,
+                current_state,
+                prev_state
+            );
 
             if let Some(prev) = prev_state {
                 if prev == "running"
@@ -71,6 +83,13 @@ pub async fn alerts_worker(
                         || current_state == "paused"
                         || current_state == "restarting")
                 {
+                    tracing::info!(
+                        "alerts_worker: 🔔 {}: {} → {}, notificando vía {:?}",
+                        container_name,
+                        prev,
+                        current_state,
+                        alert.notify_via
+                    );
                     let msg = format!(
                         "⚠️ Container '{}' ha cambiado a: {}",
                         container_name, current_state
