@@ -28,7 +28,8 @@ export default function ImagesPage() {
   const [loading, setLoading] = useState(true);
   const [pruneModalOpen, setPruneModalOpen] = useState(false);
   const [pruning, setPruning] = useState(false);
-  const [pruneResult, setPruneResult] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+const [pruneResult, setPruneResult] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch("/api/images")
