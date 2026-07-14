@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Accordion, Badge, Button, Code, Container, Group, Loader, Modal,
-  Paper, Stack, Table, Text, Title,
+  Paper, ScrollArea, Stack, Table, Text, Title,
 } from "@mantine/core";
 import type { StackInfo, StackLogs } from "../types";
 import { apiFetch } from "../api";
@@ -188,7 +188,7 @@ export default function StacksPage() {
         onClose={() => setLogsModal(null)}
         title={`📋 Logs: ${logsModal?.project || ""}`}
         size="xl"
-        scrollArea
+        scrollAreaComponent={ScrollArea.Autosize}
       >
         {logsLoading ? (
           <Group justify="center" py="md">
