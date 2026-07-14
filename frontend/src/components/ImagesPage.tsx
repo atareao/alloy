@@ -1,11 +1,11 @@
 import { useEffect, useState, useMemo } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
-  Badge, Button, Container, Group, Loader, Paper, Table, Text,
-  Title, Stack, TextInput, ActionIcon, Tooltip, Code, SimpleGrid,
+  Badge, Button, Container, Group, Loader, Modal, Paper, Table, Text,
+  Title, Stack, TextInput, ActionIcon, Code, SimpleGrid,
 } from "@mantine/core";
 import type { ImageInfo } from "../types";
-import { apiFetch, truncate } from "../api";
+import { apiFetch } from "../api";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -26,7 +26,9 @@ export default function ImagesPage() {
   const isMobile = useMediaQuery("(max-width: 768px)");
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [pruneModalOpen, setPruneModalOpen] = useState(false);
+  const [pruning, setPruning] = useState(false);
+  const [pruneResult, setPruneResult] = useState<string | null>(null);
 
   useEffect(() => {
     apiFetch("/api/images")
@@ -34,17 +36,6 @@ export default function ImagesPage() {
       .then((data) => { setImages(data); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
-
-  if (loading) {
-    return (
-      <Container py="xl">
-        <Group justify="center">
-          <Loader />
-          <Text>Cargando imágenes...</Text>
-        </Group>
-      </Container>
-    );
-  }
 
   const q = searchQuery.toLowerCase().trim();
   const filtered = q
@@ -61,6 +52,17 @@ export default function ImagesPage() {
     [images]
   );
 
+  if (loading) {
+    return (
+      <Container py="xl">
+        <Group justify="center">
+          <Loader />
+          <Text>Cargando imágenes...</Text>
+        </Group>
+      </Container>
+    );
+  }
+
   return (
     <>
       <Paper shadow="sm" p="md" mb="md" withBorder>
@@ -70,6 +72,9 @@ export default function ImagesPage() {
             <Group gap="xs">
               <Badge size="lg" variant="light" color="blue">{images.length} imágenes</Badge>
               <Badge size="lg" variant="light" color="grape">{formatBytes(totalSize * 1_048_576)}</Badge>
+              <Button size="xs" variant="outline" color="red" onClick={() => setPruneModalOpen(true)}>
+                🗑️ Prune
+              </Button>
             </Group>
           </Group>
           <TextInput
@@ -90,7 +95,7 @@ export default function ImagesPage() {
               <Stack gap="xs">
                 <Group justify="space-between" wrap="nowrap">
                   <Text size="sm" fw={500} truncate style={{ flex: 1 }}>{img.repo}:{img.tag}</Text>
-                  <Code size="xs">{img.id}</Code>
+                  <Code style={{ fontSize: "0.75rem" }}>{img.id}</Code>
                 </Group>
                 <SimpleGrid cols={2} spacing="xs">
                   <Stack gap={0}>
@@ -140,7 +145,7 @@ export default function ImagesPage() {
               <Table.Tbody>
                 {filtered.map((img) => (
                   <Table.Tr key={img.id + img.repo + img.tag}>
-                    <Table.Td><Code size="xs">{img.id}</Code></Table.Td>
+                    <Table.Td><Code style={{ fontSize: "0.75rem" }}>{img.id}</Code></Table.Td>
                     <Table.Td>
                       <Text size="sm" fw={500}>{img.repo}</Text>
                     </Table.Td>
@@ -170,6 +175,58 @@ export default function ImagesPage() {
           </Text>
         </Paper>
       )}
+
+      <Modal
+        opened={pruneModalOpen}
+        onClose={() => { setPruneModalOpen(false); setPruneResult(null); }}
+        title="🗑️ Prune imágenes"
+        centered
+      >
+        {pruneResult ? (
+          <Stack gap="sm">
+            <Text>{pruneResult}</Text>
+            <Button onClick={() => { setPruneModalOpen(false); setPruneResult(null); }}>
+              Cerrar
+            </Button>
+          </Stack>
+        ) : (
+          <Stack gap="sm">
+            <Text>
+              ¿Eliminar imágenes colgantes (dangling)? Las imágenes sin tag y sin uso serán eliminadas.
+            </Text>
+            <Group justify="flex-end" gap="sm">
+              <Button variant="outline" onClick={() => setPruneModalOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                color="red"
+                loading={pruning}
+                onClick={async () => {
+                  setPruning(true);
+                  try {
+                    const res = await apiFetch("/api/images/prune", { method: "POST" });
+                    const data = await res.json();
+                    if (data.status === "pruned") {
+                      setPruneResult(`✅ ${data.images_deleted} imágenes eliminadas`);
+                      // Refresh list
+                      const refreshed = await apiFetch("/api/images").then((r) => r.json());
+                      setImages(refreshed);
+                    } else {
+                      setPruneResult(`❌ Error: ${data.error || "desconocido"}`);
+                    }
+                  } catch {
+                    setPruneResult("❌ Error de conexión");
+                  } finally {
+                    setPruning(false);
+                  }
+                }}
+              >
+                Prune
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
     </>
   );
 }

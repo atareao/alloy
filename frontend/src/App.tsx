@@ -5,7 +5,10 @@ import type { ContainerInfo } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ImagesPage from "./components/ImagesPage";
+import StacksPage from "./components/StacksPage";
 import ConfigPage from "./components/ConfigPage";
+import NotifToast from "./components/NotifToast";
+import type { NotifEvent } from "./types";
 import HistoryPage from "./HistoryPage";
 import AlertsPage from "./AlertsPage";
 import SchedulePage from "./SchedulePage";
@@ -26,6 +29,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
+  const [notifications, setNotifications] = useState<NotifEvent[]>([]);
   const [checking, setChecking] = useState(true);
 
   // Check auth status on mount
@@ -53,6 +57,23 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     );
     return () => evtSource.close();
   }, [authenticated]);
+
+  // Connect to notifications SSE
+  useEffect(() => {
+    if (!authenticated) return;
+    const notifSource = new EventSource("/api/notifications", { withCredentials: true });
+    notifSource.addEventListener("notification", (e) => {
+      try {
+        const notif: NotifEvent = JSON.parse(e.data);
+        setNotifications((prev) => [notif, ...prev].slice(0, 50)); // max 50
+      } catch { /* ignore malformed */ }
+    });
+    return () => notifSource.close();
+  }, [authenticated]);
+
+  const dismissNotif = (index: number) => {
+    setNotifications((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const logout = () => {
     window.location.href = "/api/auth/logout";
@@ -110,10 +131,38 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </Group>
         )}
 
+        {/* Notification toasts */}
+        {notifications.length > 0 && (
+          <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 1000, maxWidth: 400, width: '100%' }}>
+            {notifications.map((notif, i) => (
+              <NotifToast key={`${notif.container}-${notif.timestamp}-${i}`} notif={notif} onDismiss={() => dismissNotif(i)} />
+            ))}
+            {notifications.length > 3 && (
+              <div style={{ textAlign: 'center', marginTop: 4 }}>
+                <button
+                  onClick={() => setNotifications([])}
+                  style={{
+                    background: 'rgba(0,0,0,0.7)',
+                    color: '#aaa',
+                    border: '1px solid #333',
+                    borderRadius: 4,
+                    padding: '2px 12px',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Limpiar todas ({notifications.length})
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <Tabs defaultValue="dashboard">
           <Tabs.List mb="md" style={{ overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none' }}>
             <Tabs.Tab value="dashboard" style={{ whiteSpace: 'nowrap' }}>📊 Dashboard</Tabs.Tab>
             <Tabs.Tab value="images" style={{ whiteSpace: 'nowrap' }}>📦 Imágenes</Tabs.Tab>
+            <Tabs.Tab value="stacks" style={{ whiteSpace: 'nowrap' }}>🧩 Stacks</Tabs.Tab>
             <Tabs.Tab value="history" style={{ whiteSpace: 'nowrap' }}>📜 Historial</Tabs.Tab>
             <Tabs.Tab value="alerts" style={{ whiteSpace: 'nowrap' }}>🔔 Alertas</Tabs.Tab>
             <Tabs.Tab value="schedule" style={{ whiteSpace: 'nowrap' }}>⏰ Planif</Tabs.Tab>
@@ -122,6 +171,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
           <Tabs.Panel value="dashboard"><DashboardPage /></Tabs.Panel>
           <Tabs.Panel value="images"><ImagesPage /></Tabs.Panel>
+          <Tabs.Panel value="stacks"><StacksPage /></Tabs.Panel>
           <Tabs.Panel value="history"><HistoryPage /></Tabs.Panel>
           <Tabs.Panel value="alerts"><AlertsPage containers={containers} /></Tabs.Panel>
           <Tabs.Panel value="schedule"><SchedulePage containers={containers} /></Tabs.Panel>

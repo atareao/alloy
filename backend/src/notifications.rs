@@ -84,6 +84,26 @@ pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str
     }
 }
 
+pub async fn notify_webhook(config: &Config, settings: &Settings, container: &str, status: &str) {
+    let url = settings
+        .webhook_url
+        .as_deref()
+        .or(config.webhook_url.as_deref());
+    let Some(url) = url else {
+        return;
+    };
+    let body = serde_json::json!({
+        "event": "container_status",
+        "container": container,
+        "status": status,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "source": "alloy"
+    });
+    if let Err(e) = http_client().post(url).json(&body).send().await {
+        tracing::error!("Webhook: {}", e);
+    }
+}
+
 pub async fn notify_all(
     config: &Config,
     settings: &Arc<Mutex<Settings>>,
@@ -93,7 +113,8 @@ pub async fn notify_all(
     let s = settings.lock().await;
     tokio::join!(
         notify_telegram(config, &s, container, status),
-        notify_matrix(config, &s, container, status)
+        notify_matrix(config, &s, container, status),
+        notify_webhook(config, &s, container, status)
     );
 }
 
@@ -126,6 +147,11 @@ pub async fn notify_selected(
             "matrix" => {
                 tasks.push(tokio::spawn(async move {
                     notify_matrix(&conf, &sett, &c, &st).await;
+                }));
+            }
+            "webhook" => {
+                tasks.push(tokio::spawn(async move {
+                    notify_webhook(&conf, &sett, &c, &st).await;
                 }));
             }
             _ => {}

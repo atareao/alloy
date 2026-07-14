@@ -28,8 +28,7 @@ pub async fn find_container_by_name(
             all: true,
             ..Default::default()
         }))
-        .await
-        .map_err(|e| AppError::Docker(e.to_string()))?;
+        .await?;
     containers
         .into_iter()
         .find(|c| {

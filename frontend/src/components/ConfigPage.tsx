@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Alert, Button, Group, Loader, Paper, Stack, Title, TextInput, Switch,
+  Alert, Button, Group, Loader, Paper, Stack, Text, Title, TextInput, Switch,
 } from "@mantine/core";
 import type { AppConfig } from "../types";
 import { apiFetch } from "../api";

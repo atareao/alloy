@@ -505,14 +505,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_config_overwrites_existing() {
-        let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new(vec![
-            AlertConfig {
-                id: "keep-me".into(),
-                container: "should-be-removed".into(),
-                enabled: true,
-                notify_via: Vec::new(),
-            },
-        ]));
+        let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new(vec![AlertConfig {
+            id: "keep-me".into(),
+            container: "should-be-removed".into(),
+            enabled: true,
+            notify_via: Vec::new(),
+        }]));
         let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
         let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
 

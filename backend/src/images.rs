@@ -1,5 +1,13 @@
-use axum::{extract::State, response::Json, routing::get, Router};
-use bollard::{image::ListImagesOptions, Docker};
+use axum::{
+    extract::{Path, State},
+    response::Json,
+    routing::{delete, get, post},
+    Router,
+};
+use bollard::{
+    image::{ListImagesOptions, PruneImagesOptions, RemoveImageOptions},
+    Docker,
+};
 
 use crate::models::ImageInfo;
 use crate::state::AppState;
@@ -56,8 +64,51 @@ async fn list_images_h(State(docker): State<Docker>) -> Json<Vec<ImageInfo>> {
     Json(result)
 }
 
+async fn remove_image_h(
+    State(docker): State<Docker>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
+    match docker
+        .remove_image(
+            &id,
+            Some(RemoveImageOptions {
+                force: false,
+                noprune: false,
+            }),
+            None,
+        )
+        .await
+    {
+        Ok(_) => Json(serde_json::json!({"status": "deleted", "id": id})),
+        Err(e) => Json(serde_json::json!({"status": "error", "id": id, "error": e.to_string()})),
+    }
+}
+
+async fn prune_images_h(State(docker): State<Docker>) -> Json<serde_json::Value> {
+    match docker
+        .prune_images(Some(PruneImagesOptions::<&str> {
+            ..Default::default()
+        }))
+        .await
+    {
+        Ok(report) => {
+            let value: serde_json::Value = serde_json::to_value(&report).unwrap_or_default();
+            let deleted = value
+                .get("ImagesDeleted")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Json(serde_json::json!({"status": "pruned", "images_deleted": deleted}))
+        }
+        Err(e) => Json(serde_json::json!({"status": "error", "error": e.to_string()})),
+    }
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/images", get(list_images_h))
+    Router::new()
+        .route("/api/images", get(list_images_h))
+        .route("/api/images/{id}", delete(remove_image_h))
+        .route("/api/images/prune", post(prune_images_h))
 }
 
 #[cfg(test)]
