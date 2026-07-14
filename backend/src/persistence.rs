@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -7,15 +8,28 @@ use tokio::sync::mpsc;
 
 pub fn load_json<T: serde::de::DeserializeOwned>(path: &str) -> Vec<T> {
     match fs::read_to_string(path) {
-        Ok(content) => match serde_json::from_str(&content) {
-            Ok(data) => data,
-            Err(e) => {
-                tracing::warn!("load_json: error parsing {}: {}", path, e);
-                Vec::new()
+        Ok(content) => {
+            // Try as Vec<T> first, fall back to single T wrapped in Vec
+            match serde_json::from_str(&content) {
+                Ok(data) => data,
+                Err(_) => match serde_json::from_str::<T>(&content) {
+                    Ok(single) => vec![single],
+                    Err(e) => {
+                        tracing::warn!("load_json: error parsing {}: {}", path, e);
+                        Vec::new()
+                    }
+                },
             }
-        },
+        }
         Err(e) => {
-            tracing::warn!("load_json: error reading {}: {}", path, e);
+            match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    tracing::debug!("load_json: {} not found, using defaults", path);
+                }
+                _ => {
+                    tracing::warn!("load_json: error reading {}: {}", path, e);
+                }
+            }
             Vec::new()
         }
     }
@@ -97,6 +111,10 @@ async fn flush_buffer(buffer: &mut Vec<WriteOp>) {
         unique.insert(op.path, op.data);
     }
     for (path, data) in &unique {
+        // Ensure parent directory exists (e.g. data/ on first write)
+        if let Some(parent) = Path::new(path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         if let Err(e) = fs::write(path, data) {
             tracing::warn!("json_writer: error writing {}: {}", path, e);
         } else {

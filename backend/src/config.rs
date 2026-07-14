@@ -136,7 +136,12 @@ impl Config {
 }
 
 // ── API handlers ─────────────────────────────────────────────
-use axum::{extract::State, response::Json, routing::get, Router};
+use axum::{
+    extract::State,
+    response::Json,
+    routing::{get, put},
+    Router,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -243,7 +248,9 @@ async fn update_config_h(
 }
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/config", get(config_handler).put(update_config_h))
+    Router::new()
+        .route("/api/config", get(config_handler))
+        .route("/api/config", put(update_config_h))
 }
 
 #[cfg(test)]
