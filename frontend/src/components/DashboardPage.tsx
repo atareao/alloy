@@ -519,15 +519,28 @@ export default function DashboardPage({
   const renderMenu = (c: ContainerInfo) => {
     const isSingleChecking = singleCheckLoading === c.name;
     const isSingleUpdating = updating === c.name;
-    const hasUpdate = c.has_update || checkedUpdates[c.name];
     return (
       <Menu shadow="md" width={220}>
         <Menu.Target>
-          <ActionIcon variant="subtle" size="sm" aria-label="Menú">⋮</ActionIcon>
+          {isMobile ? (
+            <Button variant="subtle" size="compact-xs" color="gray" px="xs">
+              <Group gap={4} wrap="nowrap">
+                <Text size="xs" fw={400}>Acciones</Text>
+                <Text size="xs">▾</Text>
+              </Group>
+            </Button>
+          ) : (
+            <ActionIcon variant="subtle" size="sm" aria-label="Menú">⋮</ActionIcon>
+          )}
         </Menu.Target>
         <Menu.Dropdown>
-          <Menu.Item leftSection="🔍" onClick={() => handleInspect(c.name)}>Inspeccionar</Menu.Item>
-          <Menu.Divider />
+          <Menu.Item
+            leftSection={isSingleUpdating ? <Loader size="xs" /> : "⬆️"}
+            onClick={() => updateSingleContainer(c.name)}
+            disabled={isSingleUpdating || isBusy}
+          >
+            {isSingleUpdating ? 'Actualizando...' : 'Actualizar'}
+          </Menu.Item>
           <Menu.Item
             leftSection={isSingleChecking ? <Loader size="xs" /> : "🔍"}
             onClick={() => checkSingleContainer(c.name)}
@@ -535,17 +548,11 @@ export default function DashboardPage({
           >
             {isSingleChecking ? 'Comprobando...' : 'Check update'}
           </Menu.Item>
-          <Menu.Item
-            leftSection={isSingleUpdating ? <Loader size="xs" /> : (hasUpdate ? "⬆️" : "⬆️")}
-            onClick={() => updateSingleContainer(c.name)}
-            disabled={isSingleUpdating || isBusy}
-          >
-            {isSingleUpdating ? 'Actualizando...' : 'Actualizar'}
-          </Menu.Item>
+          <Menu.Item leftSection="🔍" onClick={() => handleInspect(c.name)}>Inspeccionar</Menu.Item>
           <Menu.Divider />
+          <Menu.Item leftSection="🔄" onClick={() => handleContainerAction(c.name, "restart")}>Reiniciar</Menu.Item>
           <Menu.Item leftSection="▶️" onClick={() => handleContainerAction(c.name, "start")} disabled={c.state === "running"}>Iniciar</Menu.Item>
           <Menu.Item leftSection="⏹️" onClick={() => handleContainerAction(c.name, "stop")} disabled={c.state !== "running"}>Parar</Menu.Item>
-          <Menu.Item leftSection="🔄" onClick={() => handleContainerAction(c.name, "restart")}>Reiniciar</Menu.Item>
           <Menu.Divider />
           <Menu.Item leftSection="🗑️" color="red" onClick={() => setConfirmDelete(c.name)}>Eliminar</Menu.Item>
         </Menu.Dropdown>
