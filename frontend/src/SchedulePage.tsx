@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
   Group,
-  Loader,
   Modal,
   Paper,
   Select,
@@ -18,33 +17,17 @@ import {
   SegmentedControl,
 } from '@mantine/core'
 import { apiFetch } from './api'
-
-// ═══════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════
-
-interface ScheduleEntry {
-  id: number
-  container: string
-  target_type: string
-  cron: string
-  action: string
-  enabled: boolean
-  notify: boolean
-  cleanup: string
-}
+import type { ScheduleEntry } from './types'
 
 interface ContainerInfo {
   name: string
   compose_project?: string
 }
 
-// ═══════════════════════════════════════════════════════════════
-// Page: Schedule (planificador cron)
-// ═══════════════════════════════════════════════════════════════
-
 interface SchedulePageProps {
   containers: ContainerInfo[]
+  schedules: ScheduleEntry[]
+  setSchedules: (s: ScheduleEntry[]) => void
 }
 
 const CRON_PRESETS = [
@@ -69,10 +52,8 @@ const STACK_ACTIONS = [
   { value: 'check-update', label: '🔍 Check updates' },
 ]
 
-export default function SchedulePage({ containers }: SchedulePageProps) {
+export default function SchedulePage({ containers, schedules, setSchedules }: SchedulePageProps) {
   const isMobile = useMediaQuery('(max-width: 768px)')
-  const [schedules, setSchedules] = useState<ScheduleEntry[]>([])
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -98,17 +79,6 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     return result.sort()
   }, [containers])
 
-  const loadSchedules = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await apiFetch('/api/schedule')
-      setSchedules(await res.json())
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [])
-
-  useEffect(() => { loadSchedules() }, [loadSchedules])
-
   const handleCreate = async () => {
     if (!newTarget || !newAction) return
     setSaving(true)
@@ -128,7 +98,8 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
         body: JSON.stringify(body),
       })
       if (res.ok) {
-        await loadSchedules()
+        const data = await res.json()
+        setSchedules([...schedules, data])
         setShowModal(false)
         resetForm()
       }
@@ -136,10 +107,10 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     setSaving(false)
   }
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     try {
       await apiFetch(`/api/schedule/${id}`, { method: 'DELETE' })
-      setSchedules((prev) => prev.filter((s) => s.id !== id))
+      setSchedules(schedules.filter((s) => s.id !== id))
     } catch { /* ignore */ }
   }
 
@@ -152,8 +123,6 @@ export default function SchedulePage({ containers }: SchedulePageProps) {
     setNewNotify(false)
     setNewCleanup('none')
   }
-
-  if (loading) return <Group justify="center" py="xl"><Loader /></Group>
 
   const actionColor = (action: string) => {
     switch (action) {

@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Alert, Button, Group, Loader, Paper, Stack, Text, Title, TextInput, Switch,
+  Alert, Button, Group, Paper, PasswordInput, Stack, Text, Title, TextInput, Switch,
 } from "@mantine/core";
 import type { AppConfig } from "../types";
 import { apiFetch } from "../api";
 
-export default function ConfigPage() {
-  const [loading, setLoading] = useState(true);
+interface ConfigPageProps {
+  config: AppConfig | null;
+  setConfig: (c: AppConfig) => void;
+}
+
+export default function ConfigPage({ config: configProp, setConfig: setConfigProp }: ConfigPageProps) {
   const [saving, setSaving] = useState<string | null>(null);
+  const [testing, setTesting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -26,27 +31,19 @@ export default function ConfigPage() {
   const [auEnabled, setAuEnabled] = useState(false);
   const [auInterval, setAuInterval] = useState(6);
 
-  const loadConfig = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await apiFetch("/api/config");
-      const data: AppConfig = await res.json();
-      setTgToken(data.telegram_token_set ? "********" : "");
-      setTgChatId(data.telegram_chat_id || "");
-      setTgEnabled(data.telegram_configured);
-      setMxHomeserver(data.matrix_homeserver || "");
-      setMxToken(data.matrix_token_set ? "********" : "");
-      setMxRoom(data.matrix_room || "");
-      setMxEnabled(data.matrix_configured);
-      setAuEnabled(data.auto_update_enabled);
-      setAuInterval(data.auto_update_interval_hours);
-    } catch {
-      setError("No se pudo cargar la configuración");
-    }
-    setLoading(false);
-  }, []);
-
-  useEffect(() => { loadConfig(); }, [loadConfig]);
+  // Sync from props when config changes (from App.tsx eager fetch)
+  useEffect(() => {
+    if (!configProp) return;
+    setTgToken(configProp.telegram_token ?? "");
+    setTgChatId(configProp.telegram_chat_id || "");
+    setTgEnabled(configProp.telegram_configured);
+    setMxHomeserver(configProp.matrix_homeserver || "");
+    setMxToken(configProp.matrix_token ?? "");
+    setMxRoom(configProp.matrix_room || "");
+    setMxEnabled(configProp.matrix_configured);
+    setAuEnabled(configProp.auto_update_enabled);
+    setAuInterval(configProp.auto_update_interval_hours);
+  }, [configProp]);
 
   const showSuccess = (msg: string) => {
     setSuccess(msg);
@@ -57,10 +54,10 @@ export default function ConfigPage() {
     setSaving("telegram");
     setError(null);
     try {
-      const body: Record<string, string | null> = { telegram_chat_id: tgChatId || null };
-      if (tgToken && tgToken !== "********") {
-        body.telegram_token = tgToken;
-      }
+      const body: Record<string, string | null> = {
+        telegram_token: tgToken || null,
+        telegram_chat_id: tgChatId || null,
+      };
       if (!tgEnabled) {
         body.telegram_token = "";
         body.telegram_chat_id = "";
@@ -72,7 +69,8 @@ export default function ConfigPage() {
       });
       if (res.ok) {
         const data: AppConfig = await res.json();
-        setTgToken(data.telegram_token_set ? "********" : "");
+        setConfigProp(data);
+        setTgToken(data.telegram_token ?? "");
         setTgChatId(data.telegram_chat_id || "");
         showSuccess(tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado");
       } else {
@@ -90,11 +88,9 @@ export default function ConfigPage() {
     try {
       const body: Record<string, string | null> = {
         matrix_homeserver: mxHomeserver || null,
+        matrix_token: mxToken || null,
         matrix_room: mxRoom || null,
       };
-      if (mxToken && mxToken !== "********") {
-        body.matrix_token = mxToken;
-      }
       if (!mxEnabled) {
         body.matrix_homeserver = "";
         body.matrix_token = "";
@@ -107,8 +103,9 @@ export default function ConfigPage() {
       });
       if (res.ok) {
         const data: AppConfig = await res.json();
+        setConfigProp(data);
         setMxHomeserver(data.matrix_homeserver || "");
-        setMxToken(data.matrix_token_set ? "********" : "");
+        setMxToken(data.matrix_token ?? "");
         setMxRoom(data.matrix_room || "");
         showSuccess(mxEnabled ? "✅ Matrix configurado" : "❌ Matrix desactivado");
       } else {
@@ -134,6 +131,7 @@ export default function ConfigPage() {
       });
       if (res.ok) {
         const data: AppConfig = await res.json();
+        setConfigProp(data);
         setAuEnabled(data.auto_update_enabled);
         setAuInterval(data.auto_update_interval_hours);
         showSuccess(auEnabled ? "✅ Auto-update activado" : "❌ Auto-update desactivado");
@@ -145,8 +143,6 @@ export default function ConfigPage() {
     }
     setSaving(null);
   };
-
-  if (loading) return <Group justify="center" py="xl"><Loader /></Group>;
 
   return (
     <Stack>
@@ -174,11 +170,10 @@ export default function ConfigPage() {
         </Group>
         {tgEnabled && (
           <Stack>
-            <TextInput
+            <PasswordInput
               label="Token del Bot"
               description="Token que te proporciona @BotFather"
               placeholder="123456:ABC-DEF..."
-              type="password"
               value={tgToken}
               onChange={(e) => setTgToken(e.currentTarget.value)}
             />
@@ -192,13 +187,45 @@ export default function ConfigPage() {
           </Stack>
         )}
         <Group justify="flex-end" mt="md">
-          <Button
-            onClick={saveTelegram}
-            loading={saving === "telegram"}
-            color={tgEnabled ? "blue" : "gray"}
-          >
-            {tgEnabled ? "Guardar Telegram" : "Desactivar Telegram"}
-          </Button>
+          {tgEnabled && (
+            <Button
+              onClick={async () => {
+                setTesting("telegram");
+                setError(null);
+                try {
+                  const res = await apiFetch("/api/notifications/test", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ channel: "telegram" }),
+                  });
+                  setTesting(null);
+                  if (res.ok) {
+                    showSuccess("📤 Mensaje de prueba enviado a Telegram");
+                  } else {
+                    const data = await res.json().catch(() => ({ error: "Error desconocido" }));
+                    setError(data.error || `Error HTTP ${res.status}`);
+                  }
+                } catch {
+                  setTesting(null);
+                  setError("Error de conexión al enviar test");
+                }
+              }}
+              loading={testing === "telegram"}
+              variant="outline"
+              color="green"
+            >
+              📤 Test
+            </Button>
+          )}
+          {tgEnabled && (
+            <Button
+              onClick={saveTelegram}
+              loading={saving === "telegram"}
+              color="blue"
+            >
+              Guardar Telegram
+            </Button>
+          )}
         </Group>
       </Paper>
 
@@ -222,10 +249,9 @@ export default function ConfigPage() {
               value={mxHomeserver}
               onChange={(e) => setMxHomeserver(e.currentTarget.value)}
             />
-            <TextInput
+            <PasswordInput
               label="Access Token"
               description="Token de acceso de la cuenta de bot"
-              type="password"
               placeholder="syt_..."
               value={mxToken}
               onChange={(e) => setMxToken(e.currentTarget.value)}
@@ -240,13 +266,45 @@ export default function ConfigPage() {
           </Stack>
         )}
         <Group justify="flex-end" mt="md">
-          <Button
-            onClick={saveMatrix}
-            loading={saving === "matrix"}
-            color={mxEnabled ? "blue" : "gray"}
-          >
-            {mxEnabled ? "Guardar Matrix" : "Desactivar Matrix"}
-          </Button>
+          {mxEnabled && (
+            <Button
+              onClick={async () => {
+                setTesting("matrix");
+                setError(null);
+                try {
+                  const res = await apiFetch("/api/notifications/test", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ channel: "matrix" }),
+                  });
+                  setTesting(null);
+                  if (res.ok) {
+                    showSuccess("📤 Mensaje de prueba enviado a Matrix");
+                  } else {
+                    const data = await res.json().catch(() => ({ error: "Error desconocido" }));
+                    setError(data.error || `Error HTTP ${res.status}`);
+                  }
+                } catch {
+                  setTesting(null);
+                  setError("Error de conexión al enviar test");
+                }
+              }}
+              loading={testing === "matrix"}
+              variant="outline"
+              color="green"
+            >
+              📤 Test
+            </Button>
+          )}
+          {mxEnabled && (
+            <Button
+              onClick={saveMatrix}
+              loading={saving === "matrix"}
+              color="blue"
+            >
+              Guardar Matrix
+            </Button>
+          )}
         </Group>
       </Paper>
 

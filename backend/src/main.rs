@@ -231,6 +231,7 @@ async fn main() {
         .merge(stacks::routes())
         .merge(images::routes())
         .merge(updates::routes())
+        .merge(notifications::routes())
         .layer(CorsLayer::permissive())
         .layer(axum::middleware::from_fn(
             move |headers: axum::http::HeaderMap,

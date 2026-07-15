@@ -176,10 +176,10 @@ async fn config_handler(
             .auto_update_interval_hours
             .unwrap_or_else(|| config.auto_update_interval()),
         telegram_configured: tg_token.is_some(),
-        telegram_token_set: tg_token.is_some(),
+        telegram_token: tg_token.map(|s| s.to_string()),
         telegram_chat_id: tg_chat_id,
         matrix_configured: mx_homeserver.is_some(),
-        matrix_token_set: mx_token.is_some(),
+        matrix_token: mx_token.map(|s| s.to_string()),
         matrix_homeserver: mx_homeserver,
         matrix_room: mx_room,
         webhook_configured: wh_url.is_some(),

@@ -41,10 +41,16 @@ fn mx_room<'a>(settings: &'a Settings, config: &'a Config) -> Option<&'a str> {
         .or(config.matrix_room.as_deref())
 }
 
-pub async fn notify_telegram(config: &Config, settings: &Settings, container: &str, status: &str) {
+/// Returns `Ok(())` on success, `Err(message)` on failure.
+pub async fn notify_telegram(
+    config: &Config,
+    settings: &Settings,
+    container: &str,
+    status: &str,
+) -> Result<(), String> {
     let (Some(token), Some(chat_id)) = (tg_token(settings, config), tg_chat_id(settings, config))
     else {
-        return;
+        return Err("Telegram no configurado: falta token o chat_id".into());
     };
     let body = serde_json::json!({"chat_id": chat_id, "text": format!("🪐 *Alloy*\n*{}*: {}", container, status), "parse_mode": "Markdown"});
     match http_client()
@@ -54,19 +60,32 @@ pub async fn notify_telegram(config: &Config, settings: &Settings, container: &s
         .await
     {
         Ok(resp) => {
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                tracing::error!("Telegram: HTTP {} - {}", status, text);
-            } else {
+            if resp.status().is_success() {
                 tracing::info!("Telegram: ✅ notificación enviada");
+                Ok(())
+            } else {
+                let status_code = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                let err = format!("Telegram: HTTP {} - {}", status_code, text);
+                tracing::error!("{}", err);
+                Err(err)
             }
         }
-        Err(e) => tracing::error!("Telegram: error de conexión: {}", e),
+        Err(e) => {
+            let err = format!("Telegram: error de conexión: {}", e);
+            tracing::error!("{}", err);
+            Err(err)
+        }
     }
 }
 
-pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str, status: &str) {
+/// Returns `Ok(())` on success, `Err(message)` on failure.
+pub async fn notify_matrix(
+    config: &Config,
+    settings: &Settings,
+    container: &str,
+    status: &str,
+) -> Result<(), String> {
     let (hs, token, room) = (
         mx_homeserver(settings, config),
         mx_token(settings, config),
@@ -79,15 +98,14 @@ pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str
         room
     );
     let (Some(hs), Some(token), Some(room)) = (hs, token, room) else {
-        tracing::warn!(
-            "notify_matrix: 🚫 credenciales Matrix incompletas — no se enviará notificación"
-        );
-        return;
+        let err = "Matrix no configurado: faltan homeserver, token o room".to_string();
+        tracing::warn!("notify_matrix: 🚫 {}", err);
+        return Err(err);
     };
     let body =
         serde_json::json!({"msgtype": "m.notice", "body": format!("🐳 {}: {}", container, status)});
     let url = format!(
-        "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
+        "{}/_matrix/client/r0/rooms/{}/send/m.room.message/{}",
         hs.trim_end_matches('/'),
         room,
         uuid::Uuid::new_v4()
@@ -100,27 +118,38 @@ pub async fn notify_matrix(config: &Config, settings: &Settings, container: &str
         .await
     {
         Ok(resp) => {
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body_text = resp.text().await.unwrap_or_default();
-                tracing::error!("Matrix: HTTP {} - {}", status, body_text);
-            } else {
+            if resp.status().is_success() {
                 tracing::info!("Matrix: ✅ notificación enviada a {}", hs);
+                Ok(())
+            } else {
+                let status_code = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                let err = format!("Matrix: HTTP {} - {}", status_code, body_text);
+                tracing::error!("{}", err);
+                Err(err)
             }
         }
         Err(e) => {
-            tracing::error!("Matrix: error de conexión: {}", e);
+            let err = format!("Matrix: error de conexión: {}", e);
+            tracing::error!("{}", err);
+            Err(err)
         }
     }
 }
 
-pub async fn notify_webhook(config: &Config, settings: &Settings, container: &str, status: &str) {
+/// Returns `Ok(())` on success, `Err(message)` on failure.
+pub async fn notify_webhook(
+    config: &Config,
+    settings: &Settings,
+    container: &str,
+    status: &str,
+) -> Result<(), String> {
     let url = settings
         .webhook_url
         .as_deref()
         .or(config.webhook_url.as_deref());
     let Some(url) = url else {
-        return;
+        return Err("Webhook no configurado: falta URL".into());
     };
     let body = serde_json::json!({
         "event": "container_status",
@@ -131,15 +160,22 @@ pub async fn notify_webhook(config: &Config, settings: &Settings, container: &st
     });
     match http_client().post(url).json(&body).send().await {
         Ok(resp) => {
-            if !resp.status().is_success() {
+            if resp.status().is_success() {
+                tracing::info!("Webhook: ✅ notificación enviada");
+                Ok(())
+            } else {
                 let s = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                tracing::error!("Webhook: HTTP {} - {}", s, text);
-            } else {
-                tracing::info!("Webhook: ✅ notificación enviada");
+                let err = format!("Webhook: HTTP {} - {}", s, text);
+                tracing::error!("{}", err);
+                Err(err)
             }
         }
-        Err(e) => tracing::error!("Webhook: error de conexión: {}", e),
+        Err(e) => {
+            let err = format!("Webhook: error de conexión: {}", e);
+            tracing::error!("{}", err);
+            Err(err)
+        }
     }
 }
 
@@ -150,7 +186,7 @@ pub async fn notify_all(
     status: &str,
 ) {
     let s = settings.lock().await;
-    tokio::join!(
+    let _ = tokio::join!(
         notify_telegram(config, &s, container, status),
         notify_matrix(config, &s, container, status),
         notify_webhook(config, &s, container, status)
@@ -178,7 +214,7 @@ pub async fn notify_selected(
         return;
     }
     let s = settings.lock().await;
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut tasks: Vec<tokio::task::JoinHandle<Result<(), String>>> = Vec::new();
     for ch in channels {
         let conf = config.clone();
         let sett = s.clone();
@@ -187,23 +223,70 @@ pub async fn notify_selected(
         match ch.as_str() {
             "telegram" => {
                 tasks.push(tokio::spawn(async move {
-                    notify_telegram(&conf, &sett, &c, &st).await;
+                    notify_telegram(&conf, &sett, &c, &st).await
                 }));
             }
             "matrix" => {
                 tasks.push(tokio::spawn(async move {
-                    notify_matrix(&conf, &sett, &c, &st).await;
+                    notify_matrix(&conf, &sett, &c, &st).await
                 }));
             }
             "webhook" => {
                 tasks.push(tokio::spawn(async move {
-                    notify_webhook(&conf, &sett, &c, &st).await;
+                    notify_webhook(&conf, &sett, &c, &st).await
                 }));
             }
             _ => {}
         }
     }
-    futures::future::join_all(tasks).await;
+    let _: Vec<_> = futures::future::join_all(tasks).await;
+}
+
+// ── Test notification endpoint ──────────────────────────────
+
+use axum::{extract::State, response::Json, routing::post, Router};
+
+use crate::models::TestNotificationReq;
+use crate::state::AppState;
+
+async fn test_notification_h(
+    State(config): State<crate::config::Config>,
+    State(settings): State<std::sync::Arc<tokio::sync::Mutex<crate::models::Settings>>>,
+    Json(body): Json<TestNotificationReq>,
+) -> Result<Json<serde_json::Value>, crate::models::AppError> {
+    let s = settings.lock().await;
+    match body.channel.as_str() {
+        "telegram" => {
+            let msg = "🧪 Test de notificación desde Alloy — Telegram funciona correctamente ✅";
+            match notify_telegram(&config, &s, "Alloy Test", msg).await {
+                Ok(()) => Ok(Json(serde_json::json!({
+                    "status": "ok",
+                    "channel": "telegram",
+                    "message": "enviado"
+                }))),
+                Err(e) => Err(crate::models::AppError::Internal(e)),
+            }
+        }
+        "matrix" => {
+            let msg = "🧪 Test de notificación desde Alloy — Matrix funciona correctamente ✅";
+            match notify_matrix(&config, &s, "Alloy Test", msg).await {
+                Ok(()) => Ok(Json(serde_json::json!({
+                    "status": "ok",
+                    "channel": "matrix",
+                    "message": "enviado"
+                }))),
+                Err(e) => Err(crate::models::AppError::Internal(e)),
+            }
+        }
+        other => Err(crate::models::AppError::BadRequest(format!(
+            "Canal desconocido: '{}'. Usa 'telegram' o 'matrix'.",
+            other
+        ))),
+    }
+}
+
+pub fn routes() -> Router<AppState> {
+    Router::new().route("/api/notifications/test", post(test_notification_h))
 }
 
 #[cfg(test)]

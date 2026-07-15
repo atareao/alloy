@@ -499,8 +499,9 @@ export default function DashboardPage({
     // State filter
     if (stateFilter.length > 0 && !stateFilter.includes(c.state)) return false;
 
-    // Pending update filter
-    if (showPendingUpdates && !c.has_update) return false;
+    // Pending update filter — also check locally-checked results
+    // because the backend always sends has_update=false in SSE refreshes
+    if (showPendingUpdates && !c.has_update && !checkedUpdates[c.name]) return false;
 
     return true;
   });
