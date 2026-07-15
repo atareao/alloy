@@ -32,10 +32,10 @@ export interface AppConfig {
   auto_update_enabled: boolean;
   auto_update_interval_hours: number;
   telegram_configured: boolean;
-  telegram_token_set: boolean;
+  telegram_token: string | null;
   telegram_chat_id: string | null;
   matrix_configured: boolean;
-  matrix_token_set: boolean;
+  matrix_token: string | null;
   matrix_homeserver: string | null;
   matrix_room: string | null;
   allowed_containers: string[] | null;
@@ -101,4 +101,32 @@ export interface InspectData {
   labels: Record<string, string>;
   restart_policy: string;
   health: string | null;
+}
+
+export interface HistoryEntry {
+  container: string;
+  image: string;
+  old_digest: string;
+  new_digest: string;
+  timestamp: string;
+  status: string;
+  duration_ms: number;
+}
+
+export interface AlertRule {
+  id: string;
+  container: string;
+  enabled: boolean;
+  notify_via: string[];
+}
+
+export interface ScheduleEntry {
+  id: string;
+  container: string;
+  target_type: string;
+  cron: string;
+  action: string;
+  enabled: boolean;
+  notify: boolean;
+  cleanup: string;
 }

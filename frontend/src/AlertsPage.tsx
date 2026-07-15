@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
   Group,
-  Loader,
   Modal,
   Paper,
   Select,
@@ -15,30 +14,13 @@ import {
   Divider,
 } from '@mantine/core'
 import { apiFetch } from './api'
-
-// ═══════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════
-
-interface AlertRule {
-  id: string
-  container: string
-  enabled: boolean
-  notify_via: string[]
-}
-
-interface AppConfig {
-  oidc_configured: boolean
-  port: number
-  auto_update_enabled: boolean
-  auto_update_interval_hours: number
-  telegram_configured: boolean
-  matrix_configured: boolean
-  allowed_containers: string[] | null
-}
+import type { AlertRule, AppConfig } from './types'
 
 interface AlertPageProps {
   containers: { name: string }[]
+  alerts: AlertRule[]
+  setAlerts: (a: AlertRule[]) => void
+  config: AppConfig | null
 }
 
 const NOTIFY_OPTIONS = [
@@ -46,32 +28,14 @@ const NOTIFY_OPTIONS = [
   { value: 'matrix', label: '💬 Matrix' },
 ]
 
-export default function AlertsPage({ containers }: AlertPageProps) {
+export default function AlertsPage({ containers, alerts, setAlerts, config }: AlertPageProps) {
   const isMobile = useMediaQuery('(max-width: 768px)')
-  const [alerts, setAlerts] = useState<AlertRule[]>([])
-  const [config, setConfig] = useState<AppConfig | null>(null)
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const [newContainer, setNewContainer] = useState<string | null>(null)
   const [newEnabled, setNewEnabled] = useState(true)
   const [newNotify, setNewNotify] = useState<string[]>([])
-
-  const loadAlerts = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [alertsRes, configRes] = await Promise.all([
-        apiFetch('/api/alerts'),
-        apiFetch('/api/config'),
-      ])
-      setAlerts(await alertsRes.json())
-      setConfig(await configRes.json())
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [])
-
-  useEffect(() => { loadAlerts() }, [loadAlerts])
 
   const availableChannels = NOTIFY_OPTIONS.filter((opt) => {
     if (!config) return false
@@ -96,7 +60,8 @@ export default function AlertsPage({ containers }: AlertPageProps) {
         }),
       })
       if (res.ok) {
-        await loadAlerts()
+        const data = await res.json()
+        setAlerts([...alerts, data])
         setShowModal(false)
         setNewContainer(null)
         setNewEnabled(true)
@@ -109,11 +74,9 @@ export default function AlertsPage({ containers }: AlertPageProps) {
   const handleDelete = async (id: string) => {
     try {
       await apiFetch(`/api/alerts/${id}`, { method: 'DELETE' })
-      setAlerts((prev) => prev.filter((a) => a.id !== id))
+      setAlerts(alerts.filter((a) => a.id !== id))
     } catch { /* ignore */ }
   }
-
-  if (loading) return <Group justify="center" py="xl"><Loader /></Group>
 
   // ── Mobile card ─────────────────────────────────────────────
   const renderMobileCard = (alert: AlertRule) => (

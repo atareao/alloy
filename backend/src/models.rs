@@ -63,10 +63,10 @@ pub struct PublicConfig {
     pub matrix_configured: bool,
     pub webhook_configured: bool,
     pub allowed_containers: Option<Vec<String>>,
-    pub telegram_token_set: bool,
+    pub telegram_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub matrix_homeserver: Option<String>,
-    pub matrix_token_set: bool,
+    pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
 }
 
@@ -233,6 +233,11 @@ pub struct UpdateSettingsReq {
     pub webhook_url: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct TestNotificationReq {
+    pub channel: String, // "telegram" or "matrix"
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct VersionCompare {
     pub local_tag: String,
@@ -304,6 +309,8 @@ pub fn strip_name(name: &str) -> String {
 pub enum AppError {
     #[error("{0}")]
     NotFound(String),
+    #[error("{0}")]
+    BadRequest(String),
     #[error("Docker: {0}")]
     Docker(String),
     #[error("{0}")]
@@ -314,6 +321,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, msg) = match &self {
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, m.clone()),
+            AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m.clone()),
             AppError::Docker(m) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Docker: {}", m)),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m.clone()),
         };

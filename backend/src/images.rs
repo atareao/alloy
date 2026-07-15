@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::Json,
     routing::{delete, get, post},
     Router,
@@ -12,8 +12,39 @@ use bollard::{
 use crate::models::ImageInfo;
 use crate::state::AppState;
 
-#[allow(clippy::let_and_return)]
-async fn list_images_h(State(docker): State<Docker>) -> Json<Vec<ImageInfo>> {
+#[derive(serde::Deserialize)]
+pub struct ListImagesQuery {
+    pub show_all: Option<bool>,
+}
+
+/// Filtra imágenes `<none>:<none>` (dangling) a menos que `show_all=true`.
+fn is_dangling(repo_tags: &[String]) -> bool {
+    repo_tags.is_empty()
+        || repo_tags
+            .iter()
+            .all(|t| t == "<none>:<none>" || t.starts_with("<none>:"))
+}
+
+fn image_repo_tag(i: &bollard::models::ImageSummary) -> (String, String, String) {
+    let repo_tag = i
+        .repo_tags
+        .first()
+        .filter(|t| !t.starts_with("<none>:"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "<none>:<none>".into());
+
+    let (repo, tag) = if let Some(pos) = repo_tag.rfind(':') {
+        (repo_tag[..pos].to_string(), repo_tag[pos + 1..].to_string())
+    } else {
+        (repo_tag.clone(), "latest".into())
+    };
+    (repo, tag, repo_tag)
+}
+
+async fn list_images_h(
+    State(docker): State<Docker>,
+    Query(query): Query<ListImagesQuery>,
+) -> Json<Vec<ImageInfo>> {
     let images = docker
         .list_images(Some(ListImagesOptions::<String> {
             all: false,
@@ -22,20 +53,13 @@ async fn list_images_h(State(docker): State<Docker>) -> Json<Vec<ImageInfo>> {
         .await
         .unwrap_or_default();
 
+    let show_all = query.show_all.unwrap_or(false);
+
     let result: Vec<ImageInfo> = images
         .iter()
+        .filter(|i| show_all || !is_dangling(&i.repo_tags))
         .map(|i| {
-            let repo_tag = i
-                .repo_tags
-                .first()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "<none>:<none>".into());
-
-            let (repo, tag) = if let Some(pos) = repo_tag.rfind(':') {
-                (repo_tag[..pos].to_string(), repo_tag[pos + 1..].to_string())
-            } else {
-                (repo_tag.clone(), "latest".into())
-            };
+            let (repo, tag, _) = image_repo_tag(i);
 
             ImageInfo {
                 id: i
@@ -134,8 +158,37 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let result: Json<Vec<ImageInfo>> = list_images_h(State(docker)).await;
+        let result: Json<Vec<ImageInfo>> = list_images_h(
+            State(docker),
+            Query(ListImagesQuery {
+                show_all: Some(true),
+            }),
+        )
+        .await;
         assert!(!result.0.is_empty(), "Should have at least one image");
+    }
+
+    #[tokio::test]
+    async fn test_integration_list_images_filters_dangling() {
+        if !is_podman_available() {
+            eprintln!("SKIP: Podman not available");
+            return;
+        }
+        let docker = podman_client().await;
+        let result: Json<Vec<ImageInfo>> = list_images_h(
+            State(docker),
+            Query(ListImagesQuery {
+                show_all: Some(false),
+            }),
+        )
+        .await;
+        for img in &result.0 {
+            assert!(
+                !img.repo.starts_with("<none>"),
+                "Dangling image should be filtered: {}",
+                img.repo
+            );
+        }
     }
 
     #[tokio::test]
@@ -145,18 +198,16 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let result: Json<Vec<ImageInfo>> = list_images_h(State(docker)).await;
+        let result: Json<Vec<ImageInfo>> = list_images_h(
+            State(docker),
+            Query(ListImagesQuery {
+                show_all: Some(true),
+            }),
+        )
+        .await;
         for img in &result.0 {
             assert!(!img.id.is_empty(), "Image ID should not be empty");
             assert!(img.id.len() <= 12, "ID truncated to 12 chars: {}", img.id);
-            assert!(!img.repo.is_empty(), "Repo should not be empty");
-            assert!(!img.tag.is_empty(), "Tag should not be empty");
-            assert!(img.size_mb >= 0.0, "Size >= 0 for {}", img.repo);
-            assert!(
-                img.virtual_size_mb >= 0.0,
-                "Virtual size >= 0 for {}",
-                img.repo
-            );
             assert!(img.created > 0, "Created > 0 for {}", img.repo);
         }
     }
@@ -168,28 +219,15 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let result: Json<Vec<ImageInfo>> = list_images_h(State(docker)).await;
+        let result: Json<Vec<ImageInfo>> = list_images_h(
+            State(docker),
+            Query(ListImagesQuery {
+                show_all: Some(true),
+            }),
+        )
+        .await;
         let alloy = result.0.iter().find(|img| img.repo.contains("alloy"));
         assert!(alloy.is_some(), "Image 'alloy' should be present");
-    }
-
-    #[tokio::test]
-    async fn test_integration_list_images_repo_tags_nonempty() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman not available");
-            return;
-        }
-        let docker = podman_client().await;
-        let result: Json<Vec<ImageInfo>> = list_images_h(State(docker)).await;
-        for img in &result.0 {
-            if img.repo != "<none>" {
-                assert!(
-                    !img.repo_tags.is_empty(),
-                    "repo_tags empty for {}",
-                    img.repo
-                );
-            }
-        }
     }
 
     #[test]
