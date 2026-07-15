@@ -29,14 +29,16 @@ export default function ImagesPage() {
   const [pruneModalOpen, setPruneModalOpen] = useState(false);
   const [pruning, setPruning] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-const [pruneResult, setPruneResult] = useState<string | null>(null);
+  const [pruneResult, setPruneResult] = useState<string | null>(null);
+  const [showDangling, setShowDangling] = useState(false);
 
   useEffect(() => {
-    apiFetch("/api/images")
+    const params = showDangling ? "?show_all=true" : "";
+    apiFetch(`/api/images${params}`)
       .then((res) => res.json())
       .then((data) => { setImages(data); setLoading(false); })
       .catch(() => setLoading(false));
-  }, []);
+  }, [showDangling]);
 
   const q = searchQuery.toLowerCase().trim();
   const filtered = q
@@ -78,14 +80,25 @@ const [pruneResult, setPruneResult] = useState<string | null>(null);
               </Button>
             </Group>
           </Group>
-          <TextInput
-            placeholder="Buscar por repositorio, tag o ID..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.currentTarget.value)}
-            rightSection={searchQuery ? (
-              <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
-            ) : undefined}
-          />
+          <Group gap="sm" wrap="nowrap">
+            <TextInput
+              placeholder="Buscar por repositorio, tag o ID..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.currentTarget.value)}
+              rightSection={searchQuery ? (
+                <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
+              ) : undefined}
+              style={{ flex: 1 }}
+            />
+            <Button
+              size="xs"
+              variant={showDangling ? "filled" : "outline"}
+              color="gray"
+              onClick={() => setShowDangling(!showDangling)}
+            >
+              {showDangling ? "🐾 Mostrando todas" : "🐾 Ocultar dangling"}
+            </Button>
+          </Group>
         </Stack>
       </Paper>
 

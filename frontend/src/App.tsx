@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip, Tabs } from "@mantine/core";
-import type { ContainerInfo, UpdateProgress, NotifEvent } from "./types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, AlertRule, ScheduleEntry, AppConfig } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ImagesPage from "./components/ImagesPage";
@@ -47,6 +47,35 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       .catch(() => setAuthenticated(false))
       .finally(() => setChecking(false));
   }, []);
+
+  // Initial eager fetch of containers — avoids waiting for first SSE event
+  useEffect(() => {
+    if (!authenticated) return;
+    fetch("/api/containers", { credentials: "include" })
+      .then((res) => res.json())
+      .then((data) => {
+        setContainers(data);
+        setContainersLoaded(true);
+      })
+      .catch(() => setContainersLoaded(true));
+  }, [authenticated]);
+
+  // ── Cached data for instant tab switching ────────────────
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [alerts, setAlerts] = useState<AlertRule[]>([]);
+  const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
+  const [config, setConfig] = useState<AppConfig | null>(null);
+  const api = useCallback(async (path: string) => {
+    try { return await (await fetch(path, { credentials: "include" })).json(); }
+    catch { return null; }
+  }, []);
+  useEffect(() => {
+    if (!authenticated) return;
+    api("/api/history").then((d) => { if (d) setHistory(d); });
+    api("/api/alerts").then((d) => { if (d) setAlerts(d); });
+    api("/api/schedule").then((d) => { if (d) setSchedules(d); });
+    api("/api/config").then((d) => { if (d) setConfig(d); });
+  }, [authenticated, api]);
 
   // Connect to container events SSE — lives in App so state persists across tab switches
   useEffect(() => {
@@ -202,10 +231,18 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             />
           </Tabs.Panel>
           <Tabs.Panel value="images"><ImagesPage /></Tabs.Panel>
-          <Tabs.Panel value="history"><HistoryPage /></Tabs.Panel>
-          <Tabs.Panel value="alerts"><AlertsPage containers={containers} /></Tabs.Panel>
-          <Tabs.Panel value="schedule"><SchedulePage containers={containers} /></Tabs.Panel>
-          <Tabs.Panel value="config"><ConfigPage /></Tabs.Panel>
+          <Tabs.Panel value="history">
+            <HistoryPage history={history} setHistory={setHistory} />
+          </Tabs.Panel>
+          <Tabs.Panel value="alerts">
+            <AlertsPage containers={containers} alerts={alerts} setAlerts={setAlerts} config={config} />
+          </Tabs.Panel>
+          <Tabs.Panel value="schedule">
+            <SchedulePage containers={containers} schedules={schedules} setSchedules={setSchedules} />
+          </Tabs.Panel>
+          <Tabs.Panel value="config">
+            <ConfigPage config={config} setConfig={setConfig} />
+          </Tabs.Panel>
         </Tabs>
       </Container>
     </AppShell>

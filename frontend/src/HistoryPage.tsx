@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMediaQuery } from '@mantine/hooks'
 import {
   Badge,
   Button,
   Group,
-  Loader,
   Modal,
   Paper,
   Stack,
@@ -32,23 +31,15 @@ interface HistoryEntry {
 // Page: History (histórico de updates)
 // ═══════════════════════════════════════════════════════════════
 
-export default function HistoryPage() {
+interface HistoryPageProps {
+  history: HistoryEntry[]
+  setHistory: (h: HistoryEntry[]) => void
+}
+
+export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
   const isMobile = useMediaQuery('(max-width: 768px)')
-  const [history, setHistory] = useState<HistoryEntry[]>([])
-  const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
-
-  const loadHistory = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await apiFetch('/api/history')
-      setHistory(await res.json())
-    } catch { /* ignore */ }
-    setLoading(false)
-  }, [])
-
-  useEffect(() => { loadHistory() }, [loadHistory])
 
   const handleClear = async () => {
     setClearing(true)
@@ -59,8 +50,6 @@ export default function HistoryPage() {
     setClearing(false)
     setConfirmClear(false)
   }
-
-  if (loading) return <Group justify="center" py="xl"><Loader /></Group>
 
   const statusColor = (status: string) => {
     switch (status) {
