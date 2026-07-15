@@ -1,13 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip, Tabs } from "@mantine/core";
-import type { ContainerInfo } from "./types";
+import type { ContainerInfo, UpdateProgress, NotifEvent } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ImagesPage from "./components/ImagesPage";
 import ConfigPage from "./components/ConfigPage";
 import NotifToast from "./components/NotifToast";
-import type { NotifEvent } from "./types";
 import HistoryPage from "./HistoryPage";
 import AlertsPage from "./AlertsPage";
 import SchedulePage from "./SchedulePage";
@@ -28,7 +27,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
+  const [containersLoaded, setContainersLoaded] = useState(false);
   const [notifications, setNotifications] = useState<NotifEvent[]>([]);
+  const [progress, setProgress] = useState<Map<string, UpdateProgress>>(new Map());
   const [checking, setChecking] = useState(true);
 
   // Check auth status on mount
@@ -47,27 +48,50 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       .finally(() => setChecking(false));
   }, []);
 
-  // Connect to SSE only when authenticated
+  // Connect to container events SSE — lives in App so state persists across tab switches
   useEffect(() => {
     if (!authenticated) return;
     const evtSource = new EventSource("/api/events", { withCredentials: true });
-    evtSource.addEventListener("containers", (e) =>
-      setContainers(JSON.parse(e.data).containers),
-    );
+    evtSource.addEventListener("containers", (e) => {
+      setContainers(JSON.parse(e.data).containers);
+      setContainersLoaded(true);
+    });
+    evtSource.onerror = () => setContainersLoaded(true); // stop showing loading on error too
     return () => evtSource.close();
   }, [authenticated]);
 
-  // Connect to notifications SSE
+  // Connect to notifications SSE — lives in App so state persists across tab switches
   useEffect(() => {
     if (!authenticated) return;
     const notifSource = new EventSource("/api/notifications", { withCredentials: true });
     notifSource.addEventListener("notification", (e) => {
       try {
         const notif: NotifEvent = JSON.parse(e.data);
-        setNotifications((prev) => [notif, ...prev].slice(0, 50)); // max 50
+        setNotifications((prev) => [notif, ...prev].slice(0, 50)); // max 50, newest first
       } catch { /* ignore malformed */ }
     });
     return () => notifSource.close();
+  }, [authenticated]);
+
+  // Connect to update progress SSE — lives in App so state persists across tab switches
+  useEffect(() => {
+    if (!authenticated) return;
+    const evtSource = new EventSource("/api/updates", { withCredentials: true });
+    evtSource.addEventListener("update-progress", (e) => {
+      try {
+        const data: UpdateProgress = JSON.parse(e.data);
+        setProgress((prev) => {
+          const next = new Map(prev);
+          next.set(data.container, data);
+          return next;
+        });
+        if (data.done) {
+          // Clean up progress after 3 seconds
+          setTimeout(() => setProgress((prev) => { const n = new Map(prev); n.delete(data.container); return n; }), 3000);
+        }
+      } catch { /* ignore malformed */ }
+    });
+    return () => evtSource.close();
   }, [authenticated]);
 
   const dismissNotif = (index: number) => {
@@ -167,9 +191,17 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             <Tabs.Tab value="config" style={{ whiteSpace: 'nowrap' }}>⚙️ Config</Tabs.Tab>
           </Tabs.List>
 
-          <Tabs.Panel value="dashboard"><DashboardPage /></Tabs.Panel>
+          <Tabs.Panel value="dashboard">
+            <DashboardPage
+              containers={containers}
+              setContainers={setContainers}
+              progress={progress}
+              notifications={notifications}
+              setNotifications={setNotifications}
+              containersLoaded={containersLoaded}
+            />
+          </Tabs.Panel>
           <Tabs.Panel value="images"><ImagesPage /></Tabs.Panel>
-          
           <Tabs.Panel value="history"><HistoryPage /></Tabs.Panel>
           <Tabs.Panel value="alerts"><AlertsPage containers={containers} /></Tabs.Panel>
           <Tabs.Panel value="schedule"><SchedulePage containers={containers} /></Tabs.Panel>
