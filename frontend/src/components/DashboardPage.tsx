@@ -5,6 +5,7 @@ import {
   Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
   SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
+import { showNotification } from "@mantine/notifications";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs } from "../types";
 import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
@@ -50,7 +51,6 @@ export default function DashboardPage({
   const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [actionNotif, setActionNotif] = useState<{ container: string; action: string; error?: string } | null>(null);
   const [checkedUpdates, setCheckedUpdates] = useState<Record<string, boolean>>({});
   const [singleCheckLoading, setSingleCheckLoading] = useState<string | null>(null);
 
@@ -126,18 +126,12 @@ export default function DashboardPage({
         const hasUpdate = data.has_update === true;
         setCheckedUpdates(prev => ({ ...prev, [name]: hasUpdate }));
         setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: hasUpdate } : c));
-        setActionNotif({
-          container: name,
-          action: hasUpdate ? "actualización disponible ⬆️" : "está actualizado ✅",
-        });
-        setTimeout(() => setActionNotif(null), 3000);
+        showToast(`🔍 ${name} — ${hasUpdate ? "actualización disponible ⬆️" : "está actualizado ✅"}`, hasUpdate ? "yellow" : "green");
       } else {
-        setActionNotif({ container: name, action: "error al comprobar", error: `HTTP ${res.status}` });
-        setTimeout(() => setActionNotif(null), 4000);
+        showToast(`🔍 ${name} — error HTTP ${res.status}`, "red");
       }
     } catch (e: any) {
-      setActionNotif({ container: name, action: "error al comprobar", error: e.message });
-      setTimeout(() => setActionNotif(null), 4000);
+      showToast(`🔍 ${name} — ${e.message}`, "red");
     }
     setSingleCheckLoading(null);
   };
@@ -148,11 +142,9 @@ export default function DashboardPage({
       await apiFetch(`/api/update/${encodeURIComponent(name)}`, { method: "POST" });
       setCheckedUpdates(prev => { const n = { ...prev }; delete n[name]; return n; });
       setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: false } : c));
-      setActionNotif({ container: name, action: "actualizado ✅" });
-      setTimeout(() => setActionNotif(null), 3000);
+      showToast(`⬆️ ${name} — actualizado ✅`, "green");
     } catch {
-      setActionNotif({ container: name, action: "error al actualizar", error: "fallo en la petición" });
-      setTimeout(() => setActionNotif(null), 4000);
+      showToast(`⬆️ ${name} — error al actualizar`, "red");
     }
     setUpdating(null);
   };
@@ -328,11 +320,9 @@ export default function DashboardPage({
     try {
       const res = await apiFetch(`/api/containers/${encodeURIComponent(name)}/${action}`, { method: "POST" });
       if (!res.ok) throw new Error((await res.text()) || `Error al ${action}`);
-      setActionNotif({ container: name, action: `${action} correcto` });
-      setTimeout(() => setActionNotif(null), 3000);
+      showToast(`${action} correcto ✅`, "green");
     } catch (e: any) {
-      setActionNotif({ container: name, action: `error al ${action}`, error: e.message });
-      setTimeout(() => setActionNotif(null), 3000);
+      showToast(`error al ${action}: ${e.message}`, "red");
     }
   };
 
@@ -356,11 +346,9 @@ export default function DashboardPage({
     try {
       const res = await apiFetch(`/api/containers/${encodeURIComponent(name)}/remove`, { method: "POST" });
       if (!res.ok) throw new Error((await res.text()) || "Error al eliminar");
-      setActionNotif({ container: name, action: "eliminado correctamente" });
-      setTimeout(() => setActionNotif(null), 3000);
+      showToast(`🗑️ ${name} — eliminado ✅`, "green");
     } catch (e: any) {
-      setActionNotif({ container: name, action: "error al eliminar", error: e.message });
-      setTimeout(() => setActionNotif(null), 3000);
+      showToast(`🗑️ ${name} — error: ${e.message}`, "red");
     }
   };
 
@@ -382,8 +370,7 @@ export default function DashboardPage({
         }
       } catch { /* ignore */ }
     }
-    setActionNotif({ container: project, action: "check completado ✅" });
-    setTimeout(() => setActionNotif(null), 3000);
+    showToast(`📦 ${project} — check completado ✅`, "green");
   };
 
   const handleStackUpdate = async (project: string) => {
@@ -391,14 +378,13 @@ export default function DashboardPage({
     try {
       const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/update`, { method: "POST" });
       if (res.ok) {
-        setActionNotif({ container: project, action: "stack actualizado ✅" });
+        showToast(`📦 ${project} — stack actualizado ✅`, "green");
       } else {
-        setActionNotif({ container: project, action: "error al actualizar stack", error: `HTTP ${res.status}` });
+        showToast(`📦 ${project} — error HTTP ${res.status}`, "red");
       }
     } catch (e: any) {
-      setActionNotif({ container: project, action: "error al actualizar stack", error: e.message });
+      showToast(`📦 ${project} — ${e.message}`, "red");
     }
-    setTimeout(() => setActionNotif(null), 4000);
     setStackUpdating(null);
   };
 
@@ -409,8 +395,7 @@ export default function DashboardPage({
       } catch { /* ignore */ }
     }
     const labels: Record<string, string> = { start: "iniciados", stop: "parados", restart: "reiniciados" };
-    setActionNotif({ container: project, action: `todos ${labels[action] || action} ✅` });
-    setTimeout(() => setActionNotif(null), 3000);
+    showToast(`📦 ${project} — todos ${labels[action] || action} ✅`, "green");
   };
 
   const handleStackRemove = async (project: string) => {
@@ -418,15 +403,14 @@ export default function DashboardPage({
     try {
       const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/down`, { method: "POST" });
       if (res.ok) {
-        setActionNotif({ container: project, action: "stack eliminado ✅" });
+        showToast(`📦 ${project} — stack eliminado ✅`, "green");
       } else {
         const err = await res.text();
-        setActionNotif({ container: project, action: "error al eliminar stack", error: err });
+        showToast(`📦 ${project} — error: ${err}`, "red");
       }
     } catch (e: any) {
-      setActionNotif({ container: project, action: "error al eliminar stack", error: e.message });
+      showToast(`📦 ${project} — ${e.message}`, "red");
     }
-    setTimeout(() => setActionNotif(null), 4000);
   };
 
   const handleStackLogs = async (project: string) => {
@@ -450,10 +434,15 @@ export default function DashboardPage({
     return (
       <Menu shadow="md" width={220}>
         <Menu.Target>
-          <ActionIcon variant="subtle" size="sm" aria-label="Menú stack">⋮</ActionIcon>
+          {isMobile ? (
+            <Button size="xs" variant="light" color="gray" rightSection="▾">
+              Acciones
+            </Button>
+          ) : (
+            <ActionIcon variant="subtle" size="sm" aria-label="Menú stack">⋮</ActionIcon>
+          )}
         </Menu.Target>
         <Menu.Dropdown>
-          <Menu.Item leftSection="🔍" onClick={() => handleStackCheckUpdates(project, items)}>Check updates</Menu.Item>
           <Menu.Item
             leftSection={isBusyStack ? <Loader size="xs" /> : "⬆️"}
             onClick={() => handleStackUpdate(project)}
@@ -461,7 +450,8 @@ export default function DashboardPage({
           >
             {isBusyStack ? 'Actualizando...' : 'Actualizar stack'}
           </Menu.Item>
-          <Menu.Item leftSection="🔍" onClick={() => setStackInspect(project)}>Inspeccionar</Menu.Item>
+          <Menu.Item leftSection="🔍" onClick={() => handleStackCheckUpdates(project, items)}>Check updates</Menu.Item>
+          <Menu.Item leftSection="🔍" onClick={() => setStackInspect(project)}>Ver servicios</Menu.Item>
           <Menu.Divider />
           <Menu.Item leftSection="▶️" onClick={() => handleStackAction(project, items, "start")} disabled={hasRunning}>Iniciar todos</Menu.Item>
           <Menu.Item leftSection="⏹️" onClick={() => handleStackAction(project, items, "stop")} disabled={!hasRunning}>Parar todos</Menu.Item>
@@ -568,36 +558,33 @@ export default function DashboardPage({
     const p = progress.get(c.name);
     const isSingleUpdating = updating === c.name || p?.done === false;
     const hasUpdate = c.has_update || checkedUpdates[c.name];
+    const statusColor = c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red";
+    const statusLabel = c.status.includes("healthy") ? "healthy" : c.state;
     return (
-      <Paper key={c.id} shadow="sm" p="sm" withBorder>
-        <Stack gap="xs">
-          {/* Header: name + status + menu */}
+      <Paper
+        key={c.id}
+        shadow="sm"
+        p="sm"
+        withBorder
+        style={{ borderLeft: `4px solid var(--mantine-color-${statusColor}-6)` }}
+      >
+        <Stack gap={6}>
           <Group justify="space-between" wrap="nowrap">
             <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
               <Text size="sm" fw={500} truncate>{c.name}</Text>
-              <Badge
-                size="sm"
-                color={c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red"}
-              >
-                {c.status.includes("healthy") ? "healthy" : c.state}
-              </Badge>
+              {hasUpdate && <Badge size="xs" variant="filled" color="yellow" circle>!</Badge>}
             </Group>
             {renderMenu(c)}
           </Group>
 
-          {/* Image + update button */}
           <Group gap="xs" wrap="nowrap">
+            <Badge size="sm" variant="light" color={statusColor}>{statusLabel}</Badge>
             <Text size="xs" c="dimmed" truncate style={{ flex: 1 }}>
               {truncate(`${c.image}:${c.image_tag}`)}
             </Text>
             {hasUpdate && (
-              <Tooltip label="Actualizar container">
+              <Tooltip label="Actualizar">
                 <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateSingleContainer(c.name)} loading={isSingleUpdating}>⬆</ActionIcon>
-              </Tooltip>
-            )}
-            {c.registry_url && (
-              <Tooltip label="Ver en registry">
-                <ActionIcon component="a" href={c.registry_url} target="_blank" rel="noopener noreferrer" variant="subtle" size="sm">📦</ActionIcon>
               </Tooltip>
             )}
           </Group>
@@ -609,27 +596,16 @@ export default function DashboardPage({
             </Group>
           )}
 
-          <Divider />
-
-          {/* Details grid */}
-          <SimpleGrid cols={2} spacing="xs">
-            {c.ports.length > 0 && (
-              <Stack gap={0}>
-                <Text size="xs" c="dimmed">Puertos</Text>
-                <Stack gap={2}>
-                  {c.ports.map((port, i) => <Code key={i}>{port}</Code>)}
-                </Stack>
-              </Stack>
-            )}
-            {c.traefik_url && (
-              <Stack gap={0}>
-                <Text size="xs" c="dimmed">Traefik</Text>
-                <Anchor href={c.traefik_url} target="_blank" rel="noopener noreferrer" size="xs" truncate>
-                  {c.traefik_url.replace(/^https?:\/\//, "")}
+          {(c.ports.length > 0 || c.traefik_url) && (
+            <Group gap="xs" wrap="wrap">
+              {c.ports.map((port, i) => <Code key={i} style={{ fontSize: 10 }}>{port}</Code>)}
+              {c.traefik_url && (
+                <Anchor href={c.traefik_url} target="_blank" rel="noopener noreferrer" size="xs" truncate maw={200}>
+                  🔗 {c.traefik_url.replace(/^https?:\/\//, "")}
                 </Anchor>
-              </Stack>
-            )}
-          </SimpleGrid>
+              )}
+            </Group>
+          )}
         </Stack>
       </Paper>
     );
@@ -640,25 +616,27 @@ export default function DashboardPage({
     const p = progress.get(c.name);
     const isSingleUpdating = updating === c.name || p?.done === false;
     const hasUpdate = c.has_update || checkedUpdates[c.name];
+    const statusColor = c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red";
+    const statusLabel = c.status.includes("healthy") ? "healthy" : c.state;
     return (
       <Table.Tr key={c.id}>
-        <Table.Td><Text size="sm" fw={500}>{c.name}</Text></Table.Td>
         <Table.Td>
           <Group gap="xs" wrap="nowrap">
-            <Text size="sm" c="dimmed">{truncate(`${c.image}:${c.image_tag}`)}</Text>
-            {hasUpdate && (
-              <Tooltip label="Actualizar container">
-                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateSingleContainer(c.name)} loading={isSingleUpdating}>⬆</ActionIcon>
-              </Tooltip>
-            )}
+            <Text size="sm" fw={500} truncate maw={180}>{c.name}</Text>
+            {hasUpdate && <Badge size="xs" variant="filled" color="yellow" circle>!</Badge>}
+          </Group>
+        </Table.Td>
+        <Table.Td>
+          <Group gap="xs" wrap="nowrap">
+            <Text size="xs" c="dimmed" truncate maw={220}>{truncate(`${c.image}:${c.image_tag}`)}</Text>
             {c.registry_url && (
               <Tooltip label="Ver en registry">
-                <ActionIcon component="a" href={c.registry_url} target="_blank" rel="noopener noreferrer" variant="subtle" size="sm">📦</ActionIcon>
+                <ActionIcon component="a" href={c.registry_url} target="_blank" rel="noopener noreferrer" variant="subtle" size="xs">📦</ActionIcon>
               </Tooltip>
             )}
           </Group>
           {p && (
-            <Group gap="xs" mt="xs">
+            <Group gap="xs" mt={4}>
               <Loader size="xs" />
               <Text size="xs" c="dimmed">{p.status}</Text>
             </Group>
@@ -666,57 +644,77 @@ export default function DashboardPage({
         </Table.Td>
         <Table.Td>
           {c.ports.length > 0 ? (
-            <Stack gap="2">{c.ports.map((port, i) => <Code key={i}>{port}</Code>)}</Stack>
+            <Group gap={4}>{c.ports.map((port, i) => <Code key={i} style={{ fontSize: 10 }}>{port}</Code>)}</Group>
           ) : <Text size="xs" c="dimmed">-</Text>}
         </Table.Td>
         <Table.Td>
           {c.traefik_url ? (
-            <Anchor href={c.traefik_url} target="_blank" rel="noopener noreferrer" size="xs">🔗 {c.traefik_url.replace(/^https?:\/\//, "")}</Anchor>
+            <Anchor href={c.traefik_url} target="_blank" rel="noopener noreferrer" size="xs" truncate maw={160}>{c.traefik_url.replace(/^https?:\/\//, "")}</Anchor>
           ) : <Text size="xs" c="dimmed">-</Text>}
         </Table.Td>
         <Table.Td>
-          <Badge color={c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red"}>
-            {c.status.includes("healthy") ? "healthy" : c.state}
-          </Badge>
+          <Group gap="xs" wrap="nowrap">
+            <Badge color={statusColor} variant="light" size="sm">{statusLabel}</Badge>
+            {hasUpdate && (
+              <Tooltip label="Actualizar">
+                <ActionIcon color="yellow" variant="filled" size="sm" onClick={() => updateSingleContainer(c.name)} loading={isSingleUpdating}>⬆</ActionIcon>
+              </Tooltip>
+            )}
+          </Group>
         </Table.Td>
-        <Table.Td>
-          {renderMenu(c)}
-        </Table.Td>
+        <Table.Td>{renderMenu(c)}</Table.Td>
       </Table.Tr>
     );
   };
 
+  // ── Group helpers ──────────────────────────────────────────
+  const groupStats = (items: ContainerInfo[]) => {
+    const running = items.filter(c => c.state === "running").length;
+    return { running, total: items.length };
+  };
+
   // ── Group renderers ─────────────────────────────────────────
 
-  const renderMobileGroup = (project: string, items: ContainerInfo[]) => (
-    <Paper shadow="sm" withBorder mb="md" key={project}>
-      <Group px="md" pt="sm" pb="xs" justify="space-between">
-        <Group gap="xs">
-          <Title order={4}>📦 {project}</Title>
-          <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
-        </Group>
-        {renderStackMenu(project, items)}
-      </Group>
-      <Stack px="md" pb="md" gap="sm">
-        {items.map(renderMobileCard)}
-      </Stack>
-    </Paper>
-  );
-
-  const renderGroup = (project: string, items: ContainerInfo[]) => (
-    <Paper shadow="sm" withBorder mb="md" key={project}>
-      <Stack gap={0}>
-        <Paper p="sm" style={{ background: 'var(--mantine-color-dark-6)' }}>
-          <Group justify="space-between">
-            <Group gap="xs">
-              <Title order={4}>📦 {project}</Title>
-              <Badge size="lg" variant="light" color="blue">{items.length} servicios</Badge>
+  const renderMobileGroup = (project: string, items: ContainerInfo[]) => {
+    const { running, total } = groupStats(items);
+    return (
+      <Paper shadow="sm" withBorder mb="md" key={project}>
+        <Group px="md" pt="sm" pb="xs" justify="space-between">
+          <Group gap="xs">
+            <Title order={4}>📦 {project}</Title>
+            <Group gap={4}>
+              <Badge size="sm" variant="light" color="blue">{total} servicios</Badge>
+              <Badge size="sm" variant="light" color={running === total ? "green" : "yellow"}>{running}/{total} running</Badge>
             </Group>
-            {renderStackMenu(project, items)}
           </Group>
-        </Paper>
-        <Table.ScrollContainer minWidth={700}>
-          <Table striped highlightOnHover>
+          {renderStackMenu(project, items)}
+        </Group>
+        <Stack px="md" pb="md" gap="sm">
+          {items.map(renderMobileCard)}
+        </Stack>
+      </Paper>
+    );
+  };
+
+  const renderGroup = (project: string, items: ContainerInfo[]) => {
+    const { running, total } = groupStats(items);
+    return (
+      <Paper shadow="sm" withBorder mb="md" key={project}>
+        <Stack gap={0}>
+          <Paper p="sm" style={{ background: 'var(--mantine-color-dark-6)' }}>
+            <Group justify="space-between">
+              <Group gap="xs">
+                <Title order={4}>📦 {project}</Title>
+                <Group gap={4}>
+                  <Badge size="sm" variant="light" color="blue">{total} servicios</Badge>
+                  <Badge size="sm" variant="light" color={running === total ? "green" : "yellow"}>{running}/{total} running</Badge>
+                </Group>
+              </Group>
+              {renderStackMenu(project, items)}
+            </Group>
+          </Paper>
+          <Table.ScrollContainer minWidth={700}>
+            <Table striped highlightOnHover>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th style={{ cursor: 'pointer' }} onClick={() => handleSort('name')}>
@@ -741,6 +739,7 @@ export default function DashboardPage({
       </Stack>
     </Paper>
   );
+  };
 
   // ── Batch progress bar ──────────────────────────────────────
   const renderBatchProgress = () => {
@@ -784,6 +783,21 @@ export default function DashboardPage({
 
   // ── Main render ─────────────────────────────────────────────
 
+  // ── Stats ──────────────────────────────────────────────────
+  const statsRunning = containers.filter(c => c.state === "running").length;
+  const statsStopped = containers.filter(c => c.state !== "running").length;
+  const statsUpdates = containers.filter(c => c.has_update || checkedUpdates[c.name]).length;
+
+  const showToast = (message: string, color: string, title?: string) => {
+    showNotification({
+      title: title || "Alloy",
+      message,
+      color,
+      autoClose: 3000,
+      style: { borderLeft: `4px solid var(--mantine-color-${color}-6)` },
+    });
+  };
+
   return (
     <>
       {notifications.length > 0 && (
@@ -794,6 +808,26 @@ export default function DashboardPage({
           ))}
         </Paper>
       )}
+
+      {/* Stats bar */}
+      <SimpleGrid cols={{ base: 2, sm: 4 }} mb="md">
+        <Paper shadow="sm" p="sm" withBorder style={{ borderTop: '3px solid var(--mantine-color-blue-6)' }}>
+          <Text ta="center" size="xl" fw={700}>{containers.length}</Text>
+          <Text ta="center" size="xs" c="dimmed">Total</Text>
+        </Paper>
+        <Paper shadow="sm" p="sm" withBorder style={{ borderTop: '3px solid var(--mantine-color-green-6)' }}>
+          <Text ta="center" size="xl" fw={700}>{statsRunning}</Text>
+          <Text ta="center" size="xs" c="dimmed">Running</Text>
+        </Paper>
+        <Paper shadow="sm" p="sm" withBorder style={{ borderTop: '3px solid var(--mantine-color-red-6)' }}>
+          <Text ta="center" size="xl" fw={700}>{statsStopped}</Text>
+          <Text ta="center" size="xs" c="dimmed">Stopped</Text>
+        </Paper>
+        <Paper shadow="sm" p="sm" withBorder style={{ borderTop: `3px solid var(--mantine-color-${statsUpdates > 0 ? 'yellow' : 'gray'}-6)` }}>
+          <Text ta="center" size="xl" fw={700}>{statsUpdates}</Text>
+          <Text ta="center" size="xs" c="dimmed">Updates</Text>
+        </Paper>
+      </SimpleGrid>
 
       {/* Batch progress bar (checking or updating) */}
       {batchPhase !== 'idle' && (
@@ -808,7 +842,7 @@ export default function DashboardPage({
           {isMobile ? (
             <Stack gap="sm">
               <TextInput
-                placeholder="Buscar por nombre, imagen, stack, puerto..."
+                placeholder="Buscar..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.currentTarget.value)}
                 rightSection={searchQuery ? (
@@ -824,53 +858,55 @@ export default function DashboardPage({
                   </Group>
                 </Chip.Group>
               )}
-              <Switch
-                label="Solo pendientes de actualizar"
-                checked={showPendingUpdates}
-                onChange={(e) => setShowPendingUpdates(e.currentTarget.checked)}
-                size="xs"
-              />
-              <Text size="sm" c="dimmed">SSE en tiempo real · {filteredContainers.length} de {containers.length} containers</Text>
-              <Button onClick={checkAll} variant="filled" color="cyan" fullWidth>🔍 Check all</Button>
-              <Button onClick={updateAll} variant="filled" color="yellow" fullWidth>⬆️ Actualizar todo</Button>
-            </Stack>
-          ) : (
-            <Stack gap="md">
-              <TextInput
-                placeholder="Buscar por nombre, imagen, stack, puerto..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.currentTarget.value)}
-                rightSection={searchQuery ? (
-                  <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
-                ) : undefined}
-              />
-              <Group gap="md" wrap="wrap">
-                {availableStates.length > 0 && (
-                  <Chip.Group multiple value={stateFilter} onChange={setStateFilter}>
-                    <Group gap="xs" wrap="wrap">
-                      {availableStates.map(s => (
-                        <Chip key={s} value={s} size="xs" variant="outline">{s}</Chip>
-                      ))}
-                    </Group>
-                  </Chip.Group>
-                )}
+              <Group gap="xs" wrap="wrap">
                 <Switch
-                  label="Solo pendientes de actualizar"
+                  label="Solo updates"
                   checked={showPendingUpdates}
                   onChange={(e) => setShowPendingUpdates(e.currentTarget.checked)}
                   size="xs"
                 />
+                <Button onClick={checkAll} variant="light" color="cyan" size="xs" flex={1}>🔍 Check</Button>
+                <Button onClick={updateAll} variant="light" color="yellow" size="xs" flex={1}>⬆️ Update</Button>
               </Group>
-              <Group justify="space-between">
-                <Text size="sm" c="dimmed">SSE en tiempo real · {filteredContainers.length} de {containers.length} containers</Text>
-                <Group gap="xs">
-                  <Tooltip label="Comprueba todos los containers contra el registry">
-                    <Button onClick={checkAll} variant="filled" color="cyan">🔍 Check all</Button>
-                  </Tooltip>
-                  <Tooltip label="Comprueba y actualiza solo los que tengan update disponible">
-                    <Button onClick={updateAll} variant="filled" color="yellow">⬆️ Actualizar todo</Button>
-                  </Tooltip>
+            </Stack>
+          ) : (
+            <Stack gap="sm">
+              <Group gap="md" wrap="nowrap" align="flex-end">
+                <TextInput
+                  placeholder="Buscar por nombre, imagen, stack..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.currentTarget.value)}
+                  rightSection={searchQuery ? (
+                    <ActionIcon variant="subtle" size="sm" onClick={() => setSearchQuery("")}>✕</ActionIcon>
+                  ) : undefined}
+                  style={{ flex: 1 }}
+                />
+                <Tooltip label="Comprobar todos contra registry">
+                  <Button onClick={checkAll} variant="light" color="cyan" size="sm">🔍 Check</Button>
+                </Tooltip>
+                <Tooltip label="Actualizar todos los pendientes">
+                  <Button onClick={updateAll} variant="light" color="yellow" size="sm">⬆️ Update</Button>
+                </Tooltip>
+              </Group>
+              <Group gap="md" wrap="wrap" justify="space-between">
+                <Group gap="xs" wrap="wrap">
+                  {availableStates.length > 0 && (
+                    <Chip.Group multiple value={stateFilter} onChange={setStateFilter}>
+                      <Group gap="xs" wrap="wrap">
+                        {availableStates.map(s => (
+                          <Chip key={s} value={s} size="xs" variant="outline">{s}</Chip>
+                        ))}
+                      </Group>
+                    </Chip.Group>
+                  )}
+                  <Switch
+                    label="Solo pendientes de actualizar"
+                    checked={showPendingUpdates}
+                    onChange={(e) => setShowPendingUpdates(e.currentTarget.checked)}
+                    size="xs"
+                  />
                 </Group>
+                <Text size="xs" c="dimmed">{filteredContainers.length} / {containers.length} containers</Text>
               </Group>
             </Stack>
           )}
@@ -928,15 +964,6 @@ export default function DashboardPage({
             </Paper>
           )}
         </>
-      )}
-
-      {/* Toast notification */}
-      {actionNotif && (
-        <Paper shadow="md" p="sm" withBorder mb="xs" style={{ position: "fixed", bottom: isMobile ? 0 : 20, right: isMobile ? 0 : 20, left: isMobile ? 0 : undefined, zIndex: 1000, background: actionNotif.error ? "#3d1f1f" : "#1f3d1f", borderColor: actionNotif.error ? "#e03131" : "#2f9e44" }}>
-          <Group justify="space-between">
-            <Text size="sm"><b>{actionNotif.container}</b> — {actionNotif.error ? `❌ ${actionNotif.error}` : `✅ ${actionNotif.action}`}</Text>
-          </Group>
-        </Paper>
       )}
 
       {/* Inspect modal */}
