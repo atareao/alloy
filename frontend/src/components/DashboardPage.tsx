@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Group, Loader, Menu, Paper, Table, Text,
@@ -8,6 +8,16 @@ import {
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs } from "../types";
 import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
+
+// ── Props ────────────────────────────────────────────────────
+interface DashboardPageProps {
+  containers: ContainerInfo[];
+  setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
+  progress: Map<string, UpdateProgress>;
+  notifications: NotifEvent[];
+  setNotifications: React.Dispatch<React.SetStateAction<NotifEvent[]>>;
+  containersLoaded: boolean;
+}
 
 // ── Types ────────────────────────────────────────────────────
 type CheckAllPhase = 'idle' | 'checking' | 'updating';
@@ -26,11 +36,14 @@ interface UpdateAllResults {
   errors: string[];
 }
 
-export default function DashboardPage() {
-  const [containers, setContainers] = useState<ContainerInfo[]>([]);
-  const [progress, setProgress] = useState<Map<string, UpdateProgress>>(new Map());
-  const [notifications, setNotifications] = useState<NotifEvent[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function DashboardPage({
+  containers,
+  setContainers,
+  progress,
+  notifications,
+  setNotifications,
+  containersLoaded,
+}: DashboardPageProps) {
   const [updating, setUpdating] = useState<string | null>(null);
   const [inspectName, setInspectName] = useState<string | null>(null);
   const [inspectData, setInspectData] = useState<InspectData | null>(null);
@@ -101,50 +114,6 @@ export default function DashboardPage() {
       return sortDir === 'asc' ? cmp : -cmp;
     };
   }, [sortKey, sortDir]);
-
-  // ── Data fetching ──────────────────────────────────────────
-
-  useEffect(() => {
-    apiFetch("/api/containers")
-      .then((res) => res.json())
-      .then((data) => { setContainers(data); setLoading(false); })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const evtSource = new EventSource("/api/events", { withCredentials: true });
-    evtSource.addEventListener("containers", (e) => {
-      setContainers(JSON.parse(e.data).containers);
-      setLoading(false);
-    });
-    evtSource.onerror = () => setLoading(false);
-    return () => evtSource.close();
-  }, []);
-
-  useEffect(() => {
-    const evtSource = new EventSource("/api/updates", { withCredentials: true });
-    evtSource.addEventListener("update-progress", (e) => {
-      const data: UpdateProgress = JSON.parse(e.data);
-      setProgress((prev) => {
-        const next = new Map(prev);
-        next.set(data.container, data);
-        return next;
-      });
-      if (data.done) {
-        setUpdating(null);
-        setTimeout(() => setProgress((prev) => { const n = new Map(prev); n.delete(data.container); return n; }), 3000);
-      }
-    });
-    return () => evtSource.close();
-  }, []);
-
-  useEffect(() => {
-    const evtSource = new EventSource("/api/notifications", { withCredentials: true });
-    evtSource.addEventListener("notification", (e) => {
-      setNotifications((prev) => [...prev.slice(-4), JSON.parse(e.data)]);
-    });
-    return () => evtSource.close();
-  }, []);
 
   // ── Single container actions ───────────────────────────────
 
@@ -506,7 +475,7 @@ export default function DashboardPage() {
 
   // ── Derived data ───────────────────────────────────────────
 
-  if (loading)
+  if (!containersLoaded)
     return (
       <Container py="xl">
         <Group justify="center">
@@ -819,7 +788,7 @@ export default function DashboardPage() {
       {notifications.length > 0 && (
         <Paper mb="md" p="xs">
           <Text size="xs" c="dimmed" mb="xs">🔔 Notificaciones</Text>
-          {notifications.map((n, i) => (
+          {notifications.slice(0, 4).map((n, i) => (
             <NotifToast key={i} notif={n} onDismiss={() => setNotifications((p) => p.filter((_, j) => j !== i))} />
           ))}
         </Paper>
