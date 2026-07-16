@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     response::Json,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use bollard::{
@@ -13,6 +13,8 @@ use bollard::{
     Docker,
 };
 use futures::{pin_mut, StreamExt};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::config::Config;
 use crate::models::*;
@@ -44,6 +46,7 @@ pub async fn find_container_by_name(
 pub async fn fetch_containers(
     docker: &Docker,
     allowed: &Option<Vec<String>>,
+    monitored: &[String],
 ) -> Vec<ContainerInfo> {
     let containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
@@ -191,13 +194,14 @@ pub async fn fetch_containers(
 
             Some(ContainerInfo {
                 id: c.id.as_deref().unwrap_or("").chars().take(12).collect(),
-                name,
+                name: name.clone(),
                 image: image_name,
                 image_tag: tag,
                 status: c.status.as_deref().unwrap_or("unknown").to_string(),
                 state: c.state.as_deref().unwrap_or("unknown").to_string(),
                 size_mb: ((c.size_rw.unwrap_or(0) as f64 / 1_048_576.0) * 100.0).round() / 100.0,
                 has_update: false,
+                monitored: monitored.contains(&name),
                 compose_project: c
                     .labels
                     .as_ref()
@@ -232,14 +236,66 @@ async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
     State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
 ) -> Json<Vec<ContainerInfo>> {
     let cached = cache.read().await;
     if let Some(containers) = cached.as_ref() {
         Json(containers.clone())
     } else {
         drop(cached);
-        Json(fetch_containers(&docker, &config.allowed_containers).await)
+        let monitored = settings.lock().await.monitored_containers.clone();
+        Json(fetch_containers(&docker, &config.allowed_containers, &monitored).await)
     }
+}
+
+async fn monitor_container_h(
+    State(docker): State<Docker>,
+    State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
+    Path(name): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<Vec<ContainerInfo>> {
+    let monitored = body["monitored"].as_bool().unwrap_or(false);
+    {
+        let mut s = settings.lock().await;
+        if monitored {
+            if !s.monitored_containers.contains(&name) {
+                s.monitored_containers.push(name.clone());
+            }
+        } else {
+            s.monitored_containers.retain(|c| c != &name);
+        }
+        let conn = crate::db::global().lock().await;
+        let _ = crate::db::save_settings(&conn, &s);
+    }
+    let monitored_list = settings.lock().await.monitored_containers.clone();
+    Json(fetch_containers(&docker, &config.allowed_containers, &monitored_list).await)
+}
+
+async fn monitor_all_h(
+    State(docker): State<Docker>,
+    State(config): State<Config>,
+    State(settings): State<Arc<Mutex<Settings>>>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<Vec<ContainerInfo>> {
+    let monitored = body["monitored"].as_bool().unwrap_or(false);
+    let containers = fetch_containers(&docker, &config.allowed_containers, &[]).await;
+    {
+        let mut s = settings.lock().await;
+        if monitored {
+            for c in &containers {
+                if !s.monitored_containers.contains(&c.name) {
+                    s.monitored_containers.push(c.name.clone());
+                }
+            }
+        } else {
+            s.monitored_containers.clear();
+        }
+        let conn = crate::db::global().lock().await;
+        let _ = crate::db::save_settings(&conn, &s);
+    }
+    let monitored_list = settings.lock().await.monitored_containers.clone();
+    Json(fetch_containers(&docker, &config.allowed_containers, &monitored_list).await)
 }
 
 async fn inspect_container_h(
@@ -406,6 +462,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/containers/{name}/stop", post(stop_container_h))
         .route("/api/containers/{name}/restart", post(restart_container_h))
         .route("/api/containers/{name}/remove", post(remove_container_h))
+        .route("/api/containers/{name}/monitor", put(monitor_container_h))
+        .route("/api/containers/monitor-all", put(monitor_all_h))
 }
 
 #[cfg(test)]
@@ -435,7 +493,7 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let result = fetch_containers(&docker, &None).await;
+        let result = fetch_containers(&docker, &None, &[]).await;
         assert!(!result.is_empty(), "Should have at least one container");
     }
 
@@ -446,7 +504,7 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let containers = fetch_containers(&docker, &None).await;
+        let containers = fetch_containers(&docker, &None, &[]).await;
         let c = containers
             .iter()
             .find(|c| c.name == "alloy")
@@ -469,7 +527,7 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let containers = fetch_containers(&docker, &None).await;
+        let containers = fetch_containers(&docker, &None, &[]).await;
         for c in &containers {
             // Every container must have these basic fields
             assert!(!c.id.is_empty(), "ID should not be empty for {}", c.name);
@@ -508,7 +566,7 @@ mod tests {
         }
         let docker = podman_client().await;
         let allowed = Some(vec!["alloy".into(), "oxinbox".into()]);
-        let containers = fetch_containers(&docker, &allowed).await;
+        let containers = fetch_containers(&docker, &allowed, &[]).await;
         for c in &containers {
             assert!(
                 c.name == "alloy" || c.name == "oxinbox",
@@ -526,7 +584,7 @@ mod tests {
         }
         let docker = podman_client().await;
         let allowed = Some(Vec::new());
-        let containers = fetch_containers(&docker, &allowed).await;
+        let containers = fetch_containers(&docker, &allowed, &[]).await;
         assert!(
             containers.is_empty(),
             "Empty allowed list should return nothing"
@@ -613,7 +671,7 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let containers = fetch_containers(&docker, &None).await;
+        let containers = fetch_containers(&docker, &None, &[]).await;
 
         // Check that containers with ports have valid port strings
         for c in &containers {

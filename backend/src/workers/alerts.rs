@@ -6,23 +6,23 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Config;
 use crate::models::*;
-use crate::notifications::notify_selected;
+use crate::notifications::notify_all;
 
 /// Monitoriza cambios de estado de los contenedores y notifica.
 /// Solo notifica transiciones: running → algo (problema) y algo → running (recuperación).
+/// Solo monitoriza contenedores en `settings.monitored_containers`.
 pub async fn alerts_worker(
     docker: Docker,
     config: Config,
     settings: Arc<Mutex<Settings>>,
     notif_tx: broadcast::Sender<NotifEvent>,
-    alerts: Arc<Mutex<Vec<AlertConfig>>>,
 ) {
     let mut previous_states: HashMap<String, String> = HashMap::new();
     let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(15));
 
     loop {
         tick.tick().await;
-        let alerts_list = alerts.lock().await.clone();
+        let monitored = settings.lock().await.monitored_containers.clone();
         let containers = docker
             .list_containers(Some(bollard::container::ListContainersOptions::<String> {
                 all: true,
@@ -42,17 +42,11 @@ pub async fn alerts_worker(
             })
             .collect();
 
-        tracing::debug!("alerts_worker: checking {} alerts", alerts_list.len());
-        for alert in &alerts_list {
-            if !alert.enabled {
-                continue;
-            }
-            let container_name = &alert.container;
-            tracing::debug!(
-                "alerts_worker: checking container={}, notify_via={:?}",
-                container_name,
-                alert.notify_via
-            );
+        tracing::debug!(
+            "alerts_worker: checking {} monitored containers",
+            monitored.len()
+        );
+        for container_name in &monitored {
             let Some(container) = container_map.get(container_name) else {
                 let prev = previous_states.insert(container_name.clone(), "gone".into());
                 if prev.as_deref() != Some("gone") {
@@ -62,8 +56,7 @@ pub async fn alerts_worker(
                         status: "alert: gone".into(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via)
-                        .await;
+                    notify_all(&config, &settings, container_name, &msg).await;
                 }
                 continue;
             };
@@ -84,11 +77,10 @@ pub async fn alerts_worker(
                         || current_state == "restarting")
                 {
                     tracing::info!(
-                        "alerts_worker: 🔔 {}: {} → {}, notificando vía {:?}",
+                        "alerts_worker: 🔔 {}: {} → {}",
                         container_name,
                         prev,
                         current_state,
-                        alert.notify_via
                     );
                     let msg = format!(
                         "⚠️ Container '{}' ha cambiado a: {}",
@@ -99,8 +91,7 @@ pub async fn alerts_worker(
                         status: format!("alert: {}", current_state),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via)
-                        .await;
+                    notify_all(&config, &settings, container_name, &msg).await;
                 }
                 if current_state == "running"
                     && (prev == "exited"
@@ -114,8 +105,7 @@ pub async fn alerts_worker(
                         status: "alert: recovered".into(),
                         timestamp: Local::now().format("%H:%M:%S").to_string(),
                     });
-                    notify_selected(&config, &settings, container_name, &msg, &alert.notify_via)
-                        .await;
+                    notify_all(&config, &settings, container_name, &msg).await;
                 }
             }
         }
