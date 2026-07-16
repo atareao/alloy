@@ -7,6 +7,7 @@ export interface ContainerInfo {
   status: string;
   state: string;
   has_update: boolean;
+  monitored: boolean;
   compose_project?: string;
   ports: string[];
   traefik_url: string | null;
@@ -38,6 +39,7 @@ export interface AppConfig {
   matrix_token: string | null;
   matrix_homeserver: string | null;
   matrix_room: string | null;
+  webhook_configured: boolean;
   allowed_containers: string[] | null;
 }
 

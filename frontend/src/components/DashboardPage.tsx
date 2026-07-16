@@ -6,7 +6,7 @@ import {
   SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
 import { showNotification } from "@mantine/notifications";
-import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs } from "../types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs, AppConfig } from "../types";
 import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
 
@@ -18,6 +18,7 @@ interface DashboardPageProps {
   notifications: NotifEvent[];
   setNotifications: React.Dispatch<React.SetStateAction<NotifEvent[]>>;
   containersLoaded: boolean;
+  config: AppConfig | null;
 }
 
 // ── Types ────────────────────────────────────────────────────
@@ -44,6 +45,7 @@ export default function DashboardPage({
   notifications,
   setNotifications,
   containersLoaded,
+  config,
 }: DashboardPageProps) {
   const [updating, setUpdating] = useState<string | null>(null);
   const [inspectName, setInspectName] = useState<string | null>(null);
@@ -86,6 +88,36 @@ export default function DashboardPage({
     const states = new Set(containers.map(c => c.state));
     return Array.from(states).sort();
   }, [containers]);
+
+  const monitoringEnabled = config?.telegram_configured || config?.matrix_configured || config?.webhook_configured;
+
+  const toggleContainerMonitor = async (name: string, monitored: boolean) => {
+    try {
+      const res = await apiFetch(`/api/containers/${encodeURIComponent(name)}/monitor`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ monitored }),
+      });
+      if (res.ok) {
+        const updated: ContainerInfo[] = await res.json();
+        setContainers(prev => prev.map(c => updated.find(u => u.name === c.name) || c));
+      }
+    } catch { /* ignore */ }
+  };
+
+  const toggleAllMonitor = async (monitored: boolean) => {
+    try {
+      const res = await apiFetch("/api/containers/monitor-all", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ monitored }),
+      });
+      if (res.ok) {
+        const updated: ContainerInfo[] = await res.json();
+        setContainers(prev => prev.map(c => updated.find(u => u.name === c.name) || c));
+      }
+    } catch { /* ignore */ }
+  };
 
   // ── Single container actions ───────────────────────────────
 
@@ -574,6 +606,14 @@ export default function DashboardPage({
         <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
           {statusDot(c)}
           {hasUpdate && <Badge size="xs" variant="filled" color="yellow" circle>!</Badge>}
+          <Switch
+            size="xs"
+            checked={c.monitored}
+            disabled={!monitoringEnabled}
+            onChange={(e) => { e.stopPropagation(); toggleContainerMonitor(c.name, e.currentTarget.checked); }}
+            onClick={(e) => e.stopPropagation()}
+            style={{ flexShrink: 0 }}
+          />
           <Text size="sm" fw={500} truncate style={{ minWidth: 60 }}>{c.name}</Text>
           <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>{c.status}</Text>
           <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>{`${c.image}:${c.image_tag}`}</Text>
@@ -849,6 +889,9 @@ export default function DashboardPage({
                 />
                 <Button onClick={checkAll} variant="light" color="cyan" size="xs" flex={1}>🔍 Check</Button>
                 <Button onClick={updateAll} variant="light" color="yellow" size="xs" flex={1}>⬆️ Update</Button>
+                {monitoringEnabled && (
+                  <Button onClick={() => toggleAllMonitor(true)} variant="light" color="green" size="xs" flex={1}>🔔 Mon. todos</Button>
+                )}
               </Group>
             </Stack>
           ) : (
@@ -869,6 +912,11 @@ export default function DashboardPage({
                 <Tooltip label="Actualizar todos los pendientes">
                   <Button onClick={updateAll} variant="light" color="yellow" size="sm">⬆️ Update</Button>
                 </Tooltip>
+                {monitoringEnabled && (
+                  <Tooltip label="Monitorizar todos los contenedores">
+                    <Button onClick={() => toggleAllMonitor(true)} variant="light" color="green" size="sm">🔔 Mon. todos</Button>
+                  </Tooltip>
+                )}
               </Group>
               <Group gap="md" wrap="wrap" justify="space-between">
                 <Group gap="xs" wrap="wrap">

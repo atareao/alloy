@@ -13,6 +13,7 @@ pub struct ContainerInfo {
     pub status: String,
     pub state: String,
     pub has_update: bool,
+    pub monitored: bool,
     pub compose_project: Option<String>,
     pub ports: Vec<String>,
     pub traefik_url: Option<String>,
@@ -205,6 +206,8 @@ pub struct Settings {
     pub matrix_room: Option<String>,
     #[serde(default)]
     pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub monitored_containers: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
