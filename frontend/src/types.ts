@@ -41,28 +41,6 @@ export interface AppConfig {
   allowed_containers: string[] | null;
 }
 
-export interface DockerInfo {
-  version: string;
-  os: string;
-  arch: string;
-  containers_total: number;
-  containers_running: number;
-  containers_paused: number;
-  containers_stopped: number;
-  images: number;
-}
-
-export interface ImageInfo {
-  id: string;
-  repo: string;
-  tag: string;
-  repo_tags: string[];
-  size_mb: number;
-  virtual_size_mb: number;
-  created: number;
-  containers: number;
-}
-
 export interface StackService {
   service: string;
   container_name: string;

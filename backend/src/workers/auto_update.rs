@@ -6,9 +6,9 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Config;
 use crate::containers::{find_container_by_name, pull_image};
+use crate::db;
 use crate::models::*;
 use crate::notifications::notify_all;
-use crate::persistence::json_writer;
 use crate::workers::state::docker_list_running;
 
 /// Auto-update worker: periodic pull + restart
@@ -96,7 +96,8 @@ pub async fn auto_update_worker(
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
-                json_writer().save(FILE_UPDATES_HISTORY, &*hist).await;
+                let conn = db::global().lock().await;
+                let _ = db::append_update_history(&conn, hist.last().unwrap());
             }
         }
         let _ = docker

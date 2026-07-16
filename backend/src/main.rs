@@ -2,11 +2,10 @@ mod admin;
 mod auth;
 mod config;
 mod containers;
+mod db;
 mod events;
-mod images;
 mod models;
 mod notifications;
-mod persistence;
 mod stacks;
 mod state;
 mod updates;
@@ -19,8 +18,8 @@ use tower_http::cors::CorsLayer;
 
 use crate::auth::auth_middleware;
 use crate::config::Config;
+use crate::db as database;
 use crate::models::*;
-use crate::persistence::load_json;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
 use crate::workers::{
     alerts_worker, auto_update_worker, scheduler_worker, state_worker, CachedContainers,
@@ -52,16 +51,53 @@ async fn main() {
         .install_default()
         .expect("failed to install jsonwebtoken CryptoProvider");
 
-    // Ensure data directory exists for persistent JSON files
-    if let Err(e) = tokio::fs::create_dir_all("data").await {
-        tracing::error!(
-            "❌ Could not create data/ directory: {}. Check volume permissions.",
-            e
-        );
-        std::process::exit(1);
-    }
-
+    // Initialize SQLite database
     let config = Config::load();
+
+    let db_pool = {
+        let conn = database::init_db("data/alloy.db").expect("❌ Failed to initialize database");
+        let pool: database::DbPool = Arc::new(Mutex::new(conn));
+        database::init_global(pool.clone());
+        pool
+    };
+
+    // Load persistent state from database
+    let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = {
+        let conn = db_pool.lock().await;
+        Arc::new(Mutex::new(
+            database::load_update_history(&conn).unwrap_or_default(),
+        ))
+    };
+    let alerts: Arc<Mutex<Vec<AlertConfig>>> = {
+        let conn = db_pool.lock().await;
+        let mut a: Vec<AlertConfig> = database::load_alerts(&conn).unwrap_or_default();
+        if let Some(cfg_alerts) = &config.alerts {
+            for ca in cfg_alerts {
+                if !a.iter().any(|x| x.id == ca.id) {
+                    a.push(ca.clone());
+                }
+            }
+        }
+        Arc::new(Mutex::new(a))
+    };
+    let schedules: Arc<Mutex<Vec<ScheduleTask>>> = {
+        let conn = db_pool.lock().await;
+        let mut s: Vec<ScheduleTask> = database::load_schedules(&conn).unwrap_or_default();
+        if let Some(cfg_sched) = &config.schedule {
+            for cs in cfg_sched {
+                if !s.iter().any(|x| x.id == cs.id) {
+                    s.push(cs.clone());
+                }
+            }
+        }
+        Arc::new(Mutex::new(s))
+    };
+    let settings: Arc<Mutex<Settings>> = {
+        let conn = db_pool.lock().await;
+        Arc::new(Mutex::new(
+            database::load_settings(&conn).unwrap_or_default(),
+        ))
+    };
 
     // ═══════════════════════════════════════════════════════
     // OIDC is REQUIRED — no fallback to simple JWT
@@ -136,39 +172,6 @@ async fn main() {
     let (update_tx, _) = broadcast::channel(32);
     let (notif_tx, _) = broadcast::channel(32);
 
-    // Persistent state
-    let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> =
-        Arc::new(Mutex::new(load_json(FILE_UPDATES_HISTORY)));
-    let alerts: Arc<Mutex<Vec<AlertConfig>>> = Arc::new(Mutex::new({
-        let mut a: Vec<AlertConfig> = load_json(FILE_ALERTS);
-        if let Some(cfg_alerts) = &config.alerts {
-            for ca in cfg_alerts {
-                if !a.iter().any(|x| x.id == ca.id) {
-                    a.push(ca.clone());
-                }
-            }
-        }
-        a
-    }));
-    let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new({
-        let mut s: Vec<ScheduleTask> = load_json(FILE_SCHEDULES);
-        if let Some(cfg_sched) = &config.schedule {
-            for cs in cfg_sched {
-                if !s.iter().any(|x| x.id == cs.id) {
-                    s.push(cs.clone());
-                }
-            }
-        }
-        s
-    }));
-
-    let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(
-        load_json::<Settings>(FILE_SETTINGS)
-            .into_iter()
-            .next()
-            .unwrap_or_default(),
-    ));
-
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
     let state = AppState {
@@ -185,6 +188,7 @@ async fn main() {
         schedules: schedules.clone(),
         cached_containers: cached_containers.clone(),
         settings: settings.clone(),
+        db: db_pool.clone(),
     };
 
     // Spawn workers
@@ -229,7 +233,6 @@ async fn main() {
         .merge(containers::routes())
         .merge(events::routes())
         .merge(stacks::routes())
-        .merge(images::routes())
         .merge(updates::routes())
         .merge(notifications::routes())
         .layer(CorsLayer::permissive())
