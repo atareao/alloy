@@ -259,7 +259,7 @@ pub async fn check_all_h(
     State(docker): State<Docker>,
     State(config): State<Config>,
 ) -> Json<Vec<ContainerInfo>> {
-    let mut containers = fetch_containers(&docker, &config.allowed_containers).await;
+    let mut containers = fetch_containers(&docker, &config.allowed_containers, &[]).await;
     let tasks: Vec<_> = containers
         .iter()
         .map(|c| {

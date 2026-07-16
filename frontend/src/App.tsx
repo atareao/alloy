@@ -226,6 +226,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
               notifications={notifications}
               setNotifications={setNotifications}
               containersLoaded={containersLoaded}
+              config={config}
             />
           </Tabs.Panel>
           <Tabs.Panel value="history">

@@ -183,6 +183,7 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
             traefik_url: row.get(8)?,
             compose_project: row.get(9)?,
             has_update: has_update_int != 0,
+            monitored: false,
             registry_url: row.get(11)?,
         })
     })?;
@@ -393,6 +394,10 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
         matrix_token: map.get("matrix_token").cloned().filter(|s| !s.is_empty()),
         matrix_room: map.get("matrix_room").cloned().filter(|s| !s.is_empty()),
         webhook_url: map.get("webhook_url").cloned().filter(|s| !s.is_empty()),
+        monitored_containers: serde_json::from_str(
+            &map.get("monitored_containers").cloned().unwrap_or_default(),
+        )
+        .unwrap_or_default(),
     })
 }
 
@@ -412,6 +417,10 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         ("matrix_token", settings.matrix_token.clone()),
         ("matrix_room", settings.matrix_room.clone()),
         ("webhook_url", settings.webhook_url.clone()),
+        (
+            "monitored_containers",
+            Some(serde_json::to_string(&settings.monitored_containers).unwrap_or_default()),
+        ),
     ];
 
     for (key, value) in pairs {
