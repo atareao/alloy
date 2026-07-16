@@ -145,8 +145,8 @@ use axum::{
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::models::{PublicConfig, Settings, UpdateSettingsReq, FILE_SETTINGS};
-use crate::persistence::json_writer;
+use crate::db;
+use crate::models::{PublicConfig, Settings, UpdateSettingsReq};
 use crate::state::AppState;
 
 async fn config_handler(
@@ -242,7 +242,8 @@ async fn update_config_h(
                 s.webhook_url = Some(v);
             }
         }
-        json_writer().save(FILE_SETTINGS, &*s).await;
+        let conn = db::global().lock().await;
+        let _ = db::save_settings(&conn, &s);
     }
     config_handler(State(config), State(settings)).await
 }

@@ -12,6 +12,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Config;
 use crate::containers::{fetch_containers, find_container_by_name, pull_image};
+use crate::db;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
@@ -53,9 +54,9 @@ pub async fn update_container_h(
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
-        crate::persistence::json_writer()
-            .save(FILE_UPDATES_HISTORY, &*hist)
-            .await;
+        let conn = db::global().lock().await;
+        let _ = db::append_update_history(&conn, hist.last().unwrap());
+        drop(conn);
         return Err(AppError::Internal("pull failed".into()));
     }
     let _ = update_tx.send(UpdateProgress {
@@ -93,9 +94,8 @@ pub async fn update_container_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            crate::persistence::json_writer()
-                .save(FILE_UPDATES_HISTORY, &*hist)
-                .await;
+            let conn = db::global().lock().await;
+            let _ = db::append_update_history(&conn, hist.last().unwrap());
             Ok(Json(UpdateProgress {
                 container: name,
                 status: "ok".into(),
@@ -121,9 +121,8 @@ pub async fn update_container_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            crate::persistence::json_writer()
-                .save(FILE_UPDATES_HISTORY, &*hist)
-                .await;
+            let conn = db::global().lock().await;
+            let _ = db::append_update_history(&conn, hist.last().unwrap());
             Err(AppError::Docker(format!("restart: {}", e)))
         }
     }
@@ -157,9 +156,8 @@ pub async fn update_all_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            crate::persistence::json_writer()
-                .save(FILE_UPDATES_HISTORY, &*hist)
-                .await;
+            let conn = db::global().lock().await;
+            let _ = db::append_update_history(&conn, hist.last().unwrap());
             continue;
         }
         match docker
@@ -191,9 +189,8 @@ pub async fn update_all_h(
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
-                crate::persistence::json_writer()
-                    .save(FILE_UPDATES_HISTORY, &*hist)
-                    .await;
+                let conn = db::global().lock().await;
+                let _ = db::append_update_history(&conn, hist.last().unwrap());
             }
             Err(e) => {
                 results.push(UpdateProgress {

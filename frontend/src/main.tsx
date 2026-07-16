@@ -1,6 +1,7 @@
 import { useState, StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MantineProvider } from '@mantine/core'
+import { Notifications } from '@mantine/notifications'
 import '@mantine/core/styles.css'
 import '@mantine/notifications/styles.css'
 import App from './App.tsx'
@@ -14,9 +15,11 @@ function Root() {
   return (
     <StrictMode>
       <MantineProvider forceColorScheme={colorScheme}>
-        <ErrorBoundary>
-          <App colorScheme={colorScheme} setColorScheme={setColorScheme} />
-        </ErrorBoundary>
+        <Notifications position="bottom-right" zIndex={1000} />
+          <ErrorBoundary>
+            <App colorScheme={colorScheme} setColorScheme={setColorScheme} />
+          </ErrorBoundary>
+        
       </MantineProvider>
     </StrictMode>
   )
