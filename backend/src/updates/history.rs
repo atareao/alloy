@@ -2,6 +2,7 @@ use axum::{extract::State, response::Json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::db;
 use crate::models::*;
 
 pub async fn get_history_h(
@@ -19,9 +20,8 @@ pub async fn delete_history_h(
 ) -> Json<serde_json::Value> {
     let mut hist = update_history.lock().await;
     hist.clear();
-    crate::persistence::json_writer()
-        .save(FILE_UPDATES_HISTORY, &*hist)
-        .await;
+    let conn = db::global().lock().await;
+    let _ = db::clear_update_history(&conn);
     Json(serde_json::json!({"status": "cleared"}))
 }
 

@@ -8,14 +8,9 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
+use crate::db;
 use crate::models::*;
 use crate::state::AppState;
-
-macro_rules! save_buffered {
-    ($path:expr, $data:expr) => {
-        crate::persistence::json_writer().save($path, $data).await
-    };
-}
 
 async fn get_alerts_h(
     State(alerts): State<Arc<Mutex<Vec<AlertConfig>>>>,
@@ -36,7 +31,8 @@ async fn create_alert_h(
     };
     let mut list = alerts.lock().await;
     list.push(alert.clone());
-    save_buffered!(FILE_ALERTS, &*list);
+    let conn = db::global().lock().await;
+    let _ = db::save_alert(&conn, &alert);
     Json(alert)
 }
 
@@ -46,7 +42,8 @@ async fn delete_alert_h(
 ) -> Json<serde_json::Value> {
     let mut list = alerts.lock().await;
     list.retain(|a| a.id != id);
-    save_buffered!(FILE_ALERTS, &*list);
+    let conn = db::global().lock().await;
+    let _ = db::delete_alert(&conn, &id);
     Json(serde_json::json!({"status": "deleted", "id": id}))
 }
 
@@ -73,7 +70,8 @@ async fn create_schedule_h(
     };
     let mut list = schedules.lock().await;
     list.push(task.clone());
-    save_buffered!(FILE_SCHEDULES, &*list);
+    let conn = db::global().lock().await;
+    let _ = db::save_schedule(&conn, &task);
     Json(task)
 }
 
@@ -83,7 +81,8 @@ async fn delete_schedule_h(
 ) -> Json<serde_json::Value> {
     let mut list = schedules.lock().await;
     list.retain(|s| s.id != id);
-    save_buffered!(FILE_SCHEDULES, &*list);
+    let conn = db::global().lock().await;
+    let _ = db::delete_schedule(&conn, &id);
     Json(serde_json::json!({"status": "deleted", "id": id}))
 }
 
@@ -97,6 +96,17 @@ async fn export_config_h(
     let s = schedules.lock().await;
     let sett = settings.lock().await;
     let hist = update_history.lock().await;
+    let conn = db::global().lock().await;
+    let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
+        for alert in a.iter() {
+            db::save_alert(&conn, alert)?;
+        }
+        for sched in s.iter() {
+            db::save_schedule(&conn, sched)?;
+        }
+        db::save_settings(&conn, &sett)?;
+        Ok(())
+    })();
     Json(serde_json::json!({
         "version": 1,
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -123,17 +133,24 @@ async fn import_config_h(
     {
         let mut a = alerts.lock().await;
         *a = body.alerts;
-        save_buffered!(FILE_ALERTS, &*a);
+        let conn = db::global().lock().await;
+        for alert in a.iter() {
+            let _ = db::save_alert(&conn, alert);
+        }
     }
     {
         let mut s = schedules.lock().await;
         *s = body.schedules;
-        save_buffered!(FILE_SCHEDULES, &*s);
+        let conn = db::global().lock().await;
+        for sched in s.iter() {
+            let _ = db::save_schedule(&conn, sched);
+        }
     }
     {
         let mut st = settings.lock().await;
         *st = body.settings;
-        save_buffered!(FILE_SETTINGS, &*st);
+        let conn = db::global().lock().await;
+        let _ = db::save_settings(&conn, &st);
     }
     Json(serde_json::json!({"status": "imported"}))
 }

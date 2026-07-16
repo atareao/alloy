@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::config::Config;
+use crate::db::DbPool;
 use crate::models::*;
 use crate::workers::CachedContainers;
 
@@ -134,6 +135,7 @@ pub struct AppState {
 
     pub cached_containers: CachedContainers,
     pub settings: Arc<Mutex<Settings>>,
+    pub db: DbPool,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -212,6 +214,12 @@ impl axum::extract::FromRef<AppState> for CachedContainers {
 impl axum::extract::FromRef<AppState> for Arc<Mutex<Settings>> {
     fn from_ref(state: &AppState) -> Self {
         state.settings.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for DbPool {
+    fn from_ref(state: &AppState) -> Self {
+        state.db.clone()
     }
 }
 
