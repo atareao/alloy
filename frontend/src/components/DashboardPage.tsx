@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Collapse, Group, Loader, Paper, Table, Text,
@@ -6,7 +6,7 @@ import {
   SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
 import { showNotification } from "@mantine/notifications";
-import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs, AppConfig } from "../types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs, AppConfig, UpdatePolicy } from "../types";
 import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
 
@@ -64,6 +64,18 @@ export default function DashboardPage({
   const [checkResults, setCheckResults] = useState<CheckAllResults>({ total: 0, updated: 0, uptodate: 0, failed: 0, errors: [] });
   const [updateResults, setUpdateResults] = useState<UpdateAllResults>({ done: 0, failed: 0, errors: [] });
   const [showSummary, setShowSummary] = useState(false);
+
+  // Update policies
+  const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
+  useEffect(() => {
+    fetch("/api/update-policies", { credentials: "include" })
+      .then(res => res.json())
+      .then((data: UpdatePolicy[]) => setPolicies(data))
+      .catch(() => {});
+  }, []);
+
+  const getPolicy = (name: string): UpdatePolicy | undefined =>
+    policies.find(p => p.container === name);
 
   // Collapse state per container
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
@@ -494,6 +506,68 @@ export default function DashboardPage({
     );
   };
 
+  // ── Policy-based update action button ────────────────────────
+  const PolicyActionButton = ({
+    containerName, isSingleUpdating, updateSingleContainer, getPolicy, btnSize, busy
+  }: {
+    containerName: string;
+    isSingleUpdating: boolean;
+    updateSingleContainer: (name: string) => Promise<void>;
+    getPolicy: (name: string) => UpdatePolicy | undefined;
+    btnSize: string;
+    busy: boolean;
+  }) => {
+    const [showPolicyModal, setShowPolicyModal] = useState(false);
+    const policy = getPolicy(containerName);
+    const action = policy?.action || 'pull-restart';
+
+    const labelMap: Record<string, string> = {
+      'none': '⬆ Pendiente',
+      'pull': '⬇️ Pull',
+      'pull-restart': '⬆ Actualizar',
+      'pull-restart-stack': '📦 Actualizar stack',
+    };
+    const colorMap: Record<string, string> = {
+      'none': 'gray',
+      'pull': 'cyan',
+      'pull-restart': 'yellow',
+      'pull-restart-stack': 'violet',
+    };
+
+    const handleAction = () => {
+      if (action === 'none') {
+        setShowPolicyModal(true);
+        return;
+      }
+      updateSingleContainer(containerName);
+    };
+
+    return (
+      <>
+        <Button
+          size={btnSize}
+          variant="filled"
+          color={colorMap[action] || 'yellow'}
+          leftSection="⬆"
+          onClick={handleAction}
+          loading={isSingleUpdating}
+          disabled={busy}
+        >
+          {labelMap[action] || 'Actualizar'}
+        </Button>
+        <Modal opened={showPolicyModal} onClose={() => setShowPolicyModal(false)} title="⚙️ Política de actualización" size="sm">
+          <Stack>
+            <Text size="sm" c="dimmed">
+              La acción para <b>{containerName}</b> está configurada como "No hacer nada".
+              Ve a la pestaña <b>🔄 Revisiones</b> para cambiar la política.
+            </Text>
+            <Button variant="filled" onClick={() => setShowPolicyModal(false)} fullWidth>Cerrar</Button>
+          </Stack>
+        </Modal>
+      </>
+    );
+  };
+
   // ── Expanded action buttons (icon + text) ────────────────────
   const renderActions = (c: ContainerInfo) => {
     const isSingleUpdating = updating === c.name;
@@ -532,16 +606,14 @@ export default function DashboardPage({
             </Button>
           )}
           {(hasUpdate || isSingleUpdating) && (
-            <Button
-              size={btnSize}
-              variant="filled"
-              color="yellow"
-              leftSection="⬆"
-              onClick={() => updateSingleContainer(c.name)}
-              loading={isSingleUpdating}
-            >
-              Actualizar
-            </Button>
+            <PolicyActionButton
+              containerName={c.name}
+              isSingleUpdating={isSingleUpdating}
+              updateSingleContainer={updateSingleContainer}
+              getPolicy={getPolicy}
+              btnSize={btnSize}
+              busy={busy}
+            />
           )}
           <Button
             size={btnSize}

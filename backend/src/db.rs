@@ -35,15 +35,10 @@ pub fn init_test_db() -> DbPool {
             new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
         );
-        CREATE TABLE IF NOT EXISTS alerts (
-            id TEXT PRIMARY KEY, container TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1, notify_via TEXT NOT NULL DEFAULT '[]'
-        );
-        CREATE TABLE IF NOT EXISTS schedules (
-            id TEXT PRIMARY KEY, container TEXT NOT NULL,
-            target_type TEXT NOT NULL DEFAULT 'container', cron TEXT NOT NULL,
-            action TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-            notify INTEGER NOT NULL DEFAULT 0, cleanup TEXT NOT NULL DEFAULT 'none'
+        CREATE TABLE IF NOT EXISTS update_policies (
+            container TEXT PRIMARY KEY, action TEXT NOT NULL DEFAULT 'none',
+            cleanup_old_image INTEGER NOT NULL DEFAULT 0,
+            rollback_on_failure INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -51,7 +46,6 @@ pub fn init_test_db() -> DbPool {
     )
     .expect("Failed to create test schema");
     let pool: DbPool = Arc::new(Mutex::new(conn));
-    init_global(pool.clone());
     pool
 }
 
@@ -106,22 +100,11 @@ pub fn init_db(path: &str) -> SqlResult<Connection> {
             duration_ms INTEGER NOT NULL DEFAULT 0
         );
 
-        CREATE TABLE IF NOT EXISTS alerts (
-            id TEXT PRIMARY KEY,
-            container TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            notify_via TEXT NOT NULL DEFAULT '[]'
-        );
-
-        CREATE TABLE IF NOT EXISTS schedules (
-            id TEXT PRIMARY KEY,
-            container TEXT NOT NULL,
-            target_type TEXT NOT NULL DEFAULT 'container',
-            cron TEXT NOT NULL,
-            action TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            notify INTEGER NOT NULL DEFAULT 0,
-            cleanup TEXT NOT NULL DEFAULT 'none'
+        CREATE TABLE IF NOT EXISTS update_policies (
+            container TEXT PRIMARY KEY,
+            action TEXT NOT NULL DEFAULT 'none',
+            cleanup_old_image INTEGER NOT NULL DEFAULT 0,
+            rollback_on_failure INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -274,61 +257,19 @@ pub fn clear_update_history(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
-// ── Alerts ───────────────────────────────────────────────────
+// ── Update Policies ─────────────────────────────────────────
 
-pub fn load_alerts(conn: &Connection) -> SqlResult<Vec<AlertConfig>> {
-    let mut stmt = conn.prepare("SELECT id, container, enabled, notify_via FROM alerts")?;
-    let rows = stmt.query_map([], |row| {
-        let notify_via_str: String = row.get(3)?;
-        let notify_via: Vec<String> = serde_json::from_str(&notify_via_str).unwrap_or_default();
-        Ok(AlertConfig {
-            id: row.get(0)?,
-            container: row.get(1)?,
-            enabled: row.get(2)?,
-            notify_via,
-        })
-    })?;
-    let mut result = Vec::new();
-    for r in rows {
-        result.push(r?);
-    }
-    Ok(result)
-}
-
-pub fn save_alert(conn: &Connection, alert: &AlertConfig) -> SqlResult<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO alerts (id, container, enabled, notify_via) VALUES (?1, ?2, ?3, ?4)",
-        params![
-            alert.id,
-            alert.container,
-            alert.enabled as i32,
-            serde_json::to_string(&alert.notify_via).unwrap_or_default(),
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn delete_alert(conn: &Connection, id: &str) -> SqlResult<()> {
-    conn.execute("DELETE FROM alerts WHERE id = ?1", params![id])?;
-    Ok(())
-}
-
-// ── Schedules ────────────────────────────────────────────────
-
-pub fn load_schedules(conn: &Connection) -> SqlResult<Vec<ScheduleTask>> {
+pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
     let mut stmt = conn.prepare(
-        "SELECT id, container, target_type, cron, action, enabled, notify, cleanup FROM schedules",
+        "SELECT container, action, cleanup_old_image, rollback_on_failure FROM update_policies",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok(ScheduleTask {
-            id: row.get(0)?,
-            container: row.get(1)?,
-            target_type: row.get(2)?,
-            cron: row.get(3)?,
-            action: row.get(4)?,
-            enabled: row.get(5)?,
-            notify: row.get(6)?,
-            cleanup: row.get(7)?,
+        let action_str: String = row.get(1)?;
+        Ok(UpdatePolicy {
+            container: row.get(0)?,
+            action: action_str.parse().unwrap_or(UpdateAction::None),
+            cleanup_old_image: row.get::<_, i32>(2)? != 0,
+            rollback_on_failure: row.get::<_, i32>(3)? != 0,
         })
     })?;
     let mut result = Vec::new();
@@ -338,26 +279,25 @@ pub fn load_schedules(conn: &Connection) -> SqlResult<Vec<ScheduleTask>> {
     Ok(result)
 }
 
-pub fn save_schedule(conn: &Connection, sched: &ScheduleTask) -> SqlResult<()> {
+pub fn save_update_policy(conn: &Connection, policy: &UpdatePolicy) -> SqlResult<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO schedules (id, container, target_type, cron, action, enabled, notify, cleanup)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT OR REPLACE INTO update_policies (container, action, cleanup_old_image, rollback_on_failure)
+         VALUES (?1, ?2, ?3, ?4)",
         params![
-            sched.id,
-            sched.container,
-            sched.target_type,
-            sched.cron,
-            sched.action,
-            sched.enabled as i32,
-            sched.notify as i32,
-            sched.cleanup,
+            policy.container,
+            policy.action.to_string(),
+            policy.cleanup_old_image as i32,
+            policy.rollback_on_failure as i32,
         ],
     )?;
     Ok(())
 }
 
-pub fn delete_schedule(conn: &Connection, id: &str) -> SqlResult<()> {
-    conn.execute("DELETE FROM schedules WHERE id = ?1", params![id])?;
+pub fn delete_update_policy(conn: &Connection, container: &str) -> SqlResult<()> {
+    conn.execute(
+        "DELETE FROM update_policies WHERE container = ?1",
+        params![container],
+    )?;
     Ok(())
 }
 
@@ -398,6 +338,12 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             &map.get("monitored_containers").cloned().unwrap_or_default(),
         )
         .unwrap_or_default(),
+        update_check_cron: map
+            .get("update_check_cron")
+            .cloned()
+            .filter(|s| !s.is_empty()),
+        update_check_enabled: map.get("update_check_enabled").and_then(|v| v.parse().ok()),
+        update_check_notify: map.get("update_check_notify").and_then(|v| v.parse().ok()),
     })
 }
 
@@ -420,6 +366,15 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         (
             "monitored_containers",
             Some(serde_json::to_string(&settings.monitored_containers).unwrap_or_default()),
+        ),
+        ("update_check_cron", settings.update_check_cron.clone()),
+        (
+            "update_check_enabled",
+            settings.update_check_enabled.map(|v| v.to_string()),
+        ),
+        (
+            "update_check_notify",
+            settings.update_check_notify.map(|v| v.to_string()),
         ),
     ];
 

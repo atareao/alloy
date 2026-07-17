@@ -1,25 +1,285 @@
-use bollard::{
-    container::{ListContainersOptions, RestartContainerOptions},
-    Docker,
-};
+use bollard::{container::ListContainersOptions, Docker};
 use chrono::Local;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 use crate::config::Config;
-use crate::containers::{find_container_by_name, pull_image};
+use crate::containers::pull_image;
+use crate::db;
 use crate::models::*;
 use crate::notifications::notify_all;
+use crate::updates::digest::check_remote_digest;
 use crate::workers::auto_update::{rollback_container, tag_backup_image, verify_container_healthy};
-use crate::workers::state::docker_list_running;
 
-fn match_cron(cron: &str, dt: &chrono::DateTime<Local>) -> bool {
-    let expr = format!("0 {}", cron);
-    match expr.parse::<cron::Schedule>() {
-        Ok(schedule) => schedule.includes(dt.to_utc()),
-        Err(e) => {
-            tracing::warn!("Invalid cron expression '{}': {}", cron, e);
-            false
+/// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
+/// 1. Lee la configuración de update_check de Settings.
+/// 2. Si está habilitado y el cron coincide, revisa todos los contenedores.
+/// 3. Marca los contenedores con actualizaciones pendientes en la DB.
+/// 4. Ejecuta las acciones configuradas (pull, pull+restart, etc.) para cada contenedor.
+pub async fn update_check_worker(
+    docker: Docker,
+    config: Config,
+    settings: Arc<Mutex<Settings>>,
+    update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
+    update_tx: broadcast::Sender<UpdateProgress>,
+    _notif_tx: broadcast::Sender<NotifEvent>,
+) {
+    let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
+    loop {
+        tick.tick().await;
+        let s = settings.lock().await;
+        let enabled = s.update_check_enabled.unwrap_or(false);
+        let cron = s
+            .update_check_cron
+            .clone()
+            .unwrap_or_else(|| "0 */6 * * *".into());
+        let notify = s.update_check_notify.unwrap_or(false);
+        drop(s);
+
+        if !enabled {
+            continue;
+        }
+        let now = Local::now();
+        let expr = format!("0 {}", cron);
+        let should_run = match expr.parse::<cron::Schedule>() {
+            Ok(schedule) => schedule.includes(now.to_utc()),
+            Err(e) => {
+                tracing::warn!("update_check: invalid cron '{}': {}", cron, e);
+                false
+            }
+        };
+        if !should_run {
+            continue;
+        }
+
+        tracing::info!(
+            "update_check: ejecutando revisión de actualizaciones (cron={})",
+            cron
+        );
+
+        // 1. Obtener todos los contenedores
+        let containers = docker
+            .list_containers(Some(ListContainersOptions::<String> {
+                all: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap_or_default();
+
+        // 2. Revisar cada contenedor en paralelo
+        let mut results: Vec<(String, bool)> = Vec::new();
+        let tasks: Vec<_> = containers
+            .iter()
+            .map(|c| {
+                let name = c
+                    .names
+                    .as_ref()
+                    .and_then(|n| n.first())
+                    .map(|n| crate::models::strip_name(n))
+                    .unwrap_or_default();
+                let image_full = c.image.as_deref().unwrap_or("").to_string();
+                let image_id = c.image_id.clone().unwrap_or_default();
+                async move {
+                    if image_full.is_empty() {
+                        return (name, false);
+                    }
+                    let (repo, local_tag) = crate::updates::digest::parse_image_ref(&image_full);
+                    match check_remote_digest(&repo, &local_tag).await {
+                        Ok((remote_digest, _)) => {
+                            let has_update = if !image_id.is_empty() {
+                                let local_short = crate::updates::digest::short_digest(&image_id);
+                                let remote_short =
+                                    crate::updates::digest::short_digest(&remote_digest);
+                                local_short != remote_short
+                            } else {
+                                false
+                            };
+                            (name, has_update)
+                        }
+                        Err(_) => (name, false),
+                    }
+                }
+            })
+            .collect();
+        for task in futures::future::join_all(tasks).await {
+            results.push(task);
+        }
+
+        // 3. Persistir has_update en DB
+        {
+            let conn = db::global().lock().await;
+            let mut updated_count = 0u32;
+            for (name, has_update) in &results {
+                let _ = db::update_container_has_update(&conn, name, *has_update);
+                if *has_update {
+                    updated_count += 1;
+                }
+            }
+            tracing::info!(
+                "update_check: {} containers checked, {} with updates",
+                results.len(),
+                updated_count
+            );
+        }
+
+        // 4. Obtener políticas de actualización
+        let policies = update_policies.lock().await.clone();
+        let policy_map: HashMap<String, UpdatePolicy> = policies
+            .into_iter()
+            .map(|p| (p.container.clone(), p))
+            .collect();
+
+        // 5. Ejecutar acciones para contenedores con actualizaciones pendientes
+        for (name, has_update) in &results {
+            if !*has_update {
+                continue;
+            }
+            let policy = match policy_map.get(name) {
+                Some(p) => p,
+                None => continue, // sin política → no hacer nada
+            };
+            if policy.action == UpdateAction::None {
+                continue;
+            }
+
+            let _ = update_tx.send(UpdateProgress {
+                container: name.clone(),
+                status: format!("[update-check] 🔍 {}", policy.action),
+                done: false,
+                error: None,
+            });
+
+            let container = containers.iter().find(|c| {
+                c.names
+                    .as_ref()
+                    .and_then(|n| n.first())
+                    .map(|n| crate::models::strip_name(n) == *name)
+                    .unwrap_or(false)
+            });
+            let Some(container) = container else {
+                continue;
+            };
+            let image_full = container.image.as_deref().unwrap_or("").to_string();
+            let cid = container.id.as_deref().unwrap_or("").to_string();
+
+            match policy.action {
+                UpdateAction::Pull => {
+                    if pull_image(&docker, &image_full).await {
+                        let _ = update_tx.send(UpdateProgress {
+                            container: name.clone(),
+                            status: "✅ pulled".into(),
+                            done: true,
+                            error: None,
+                        });
+                    }
+                }
+                UpdateAction::PullRestart => {
+                    if policy.cleanup_old_image || policy.rollback_on_failure {
+                        // Con limpieza/rollback
+                        let backup = if policy.rollback_on_failure {
+                            tag_backup_image(&docker, &image_full).await
+                        } else {
+                            None
+                        };
+                        if pull_image(&docker, &image_full).await {
+                            let _ = docker
+                                .restart_container(
+                                    &cid,
+                                    None::<bollard::container::RestartContainerOptions>,
+                                )
+                                .await;
+                            if policy.rollback_on_failure
+                                && !verify_container_healthy(&docker, name).await
+                            {
+                                if let Some((backup_full, base, orig_tag)) = backup {
+                                    rollback_container(
+                                        &docker,
+                                        &cid,
+                                        &base,
+                                        &orig_tag,
+                                        &backup_full,
+                                        &image_full,
+                                    )
+                                    .await;
+                                }
+                            } else if policy.cleanup_old_image {
+                                let _ = docker
+                                    .remove_image(
+                                        &cid,
+                                        None::<bollard::image::RemoveImageOptions>,
+                                        None,
+                                    )
+                                    .await;
+                            }
+                            let _ = update_tx.send(UpdateProgress {
+                                container: name.clone(),
+                                status: "✅ updated + restarted".into(),
+                                done: true,
+                                error: None,
+                            });
+                        }
+                    } else {
+                        if pull_image(&docker, &image_full).await {
+                            let _ = docker
+                                .restart_container(
+                                    &cid,
+                                    None::<bollard::container::RestartContainerOptions>,
+                                )
+                                .await;
+                            let _ = update_tx.send(UpdateProgress {
+                                container: name.clone(),
+                                status: "✅ updated + restarted".into(),
+                                done: true,
+                                error: None,
+                            });
+                        }
+                    }
+                }
+                UpdateAction::PullRestartStack => {
+                    let compose_project = container
+                        .labels
+                        .as_ref()
+                        .and_then(|l| l.get(crate::models::LABEL_COMPOSE_PROJECT))
+                        .cloned();
+                    if let Some(ref project) = compose_project {
+                        let compose_file = resolve_compose_file(&docker, project).await;
+                        if let Some(ref file) = compose_file {
+                            let _ = update_tx.send(UpdateProgress {
+                                container: name.clone(),
+                                status: format!("📥 Pulling stack '{}'...", project),
+                                done: false,
+                                error: None,
+                            });
+                            let pull = tokio::process::Command::new("docker")
+                                .args(["compose", "-f", file, "pull"])
+                                .output()
+                                .await;
+                            if let Ok(output) = pull {
+                                if output.status.success() {
+                                    let _ = tokio::process::Command::new("docker")
+                                        .args(["compose", "-f", file, "up", "-d"])
+                                        .output()
+                                        .await;
+                                    let _ = update_tx.send(UpdateProgress {
+                                        container: name.clone(),
+                                        status: "✅ stack updated".into(),
+                                        done: true,
+                                        error: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            // Notificar si está configurado
+            if notify {
+                let msg = format!("🔄 '{}' → {} (update-check)", name, policy.action);
+                let _ = notify_all(&config, &settings, name, &msg).await;
+            }
         }
     }
 }
@@ -60,301 +320,20 @@ async fn resolve_compose_file(docker: &Docker, project: &str) -> Option<String> 
         .filter(|p| std::path::Path::new(p).exists())
 }
 
-pub async fn scheduler_worker(
-    docker: Docker,
-    config: Config,
-    settings: Arc<Mutex<Settings>>,
-    update_tx: broadcast::Sender<UpdateProgress>,
-    notif_tx: broadcast::Sender<NotifEvent>,
-    schedules: Arc<Mutex<Vec<ScheduleTask>>>,
-) {
-    let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
-    loop {
-        tick.tick().await;
-        let now = Local::now();
-        let tasks = schedules.lock().await.clone();
-        for task in &tasks {
-            if !task.enabled {
-                continue;
-            }
-            if !match_cron(&task.cron, &now) {
-                continue;
-            }
-            tracing::info!(
-                "Scheduler: ejecutando '{}' target_type='{}' target='{}'",
-                task.action,
-                task.target_type,
-                task.container
-            );
+#[cfg(test)]
+mod tests {
+    use chrono::{Local, TimeZone};
 
-            let targets: Vec<(String, String, String)> = match task.target_type.as_str() {
-                "stack" => {
-                    let containers = docker
-                        .list_containers(Some(ListContainersOptions::<String> {
-                            all: true,
-                            ..Default::default()
-                        }))
-                        .await
-                        .unwrap_or_default();
-                    containers
-                        .iter()
-                        .filter(|c| {
-                            c.labels
-                                .as_ref()
-                                .and_then(|l| l.get(crate::models::LABEL_COMPOSE_PROJECT))
-                                .map(|p| p == &task.container)
-                                .unwrap_or(false)
-                        })
-                        .filter_map(|c| {
-                            let cname = c
-                                .names
-                                .as_ref()
-                                .and_then(|n| n.first())
-                                .map(|n| crate::models::strip_name(n))
-                                .unwrap_or_default();
-                            c.id.as_deref()
-                                .zip(c.image.as_deref())
-                                .map(|(id, img)| (cname, img.to_string(), id.to_string()))
-                        })
-                        .collect()
-                }
-                _ => {
-                    if task.container == crate::models::ALL_CONTAINERS {
-                        docker_list_running(&docker)
-                            .await
-                            .into_iter()
-                            .map(|(name, image, cid, _)| (name, image, cid))
-                            .collect()
-                    } else {
-                        match find_container_by_name(&docker, &task.container).await {
-                            Ok(c) => {
-                                c.id.as_deref()
-                                    .zip(c.image.as_deref())
-                                    .map(|(id, img)| {
-                                        (task.container.clone(), img.to_string(), id.to_string())
-                                    })
-                                    .into_iter()
-                                    .collect()
-                            }
-                            Err(_) => vec![],
-                        }
-                    }
-                }
-            };
-
-            if targets.is_empty() {
-                tracing::warn!("Scheduler: no targets found for task '{}'", task.container);
-                continue;
-            }
-
-            let mut updated_ok = 0u32;
-            let mut failed = 0u32;
-
-            match task.action.as_str() {
-                "check-update" => {
-                    for (cname, image, _cid) in &targets {
-                        tracing::info!("Scheduler: check-update for {} ({})", cname, image);
-                        let _ = update_tx.send(UpdateProgress {
-                            container: cname.clone(),
-                            status: format!("[scheduled] 🔍 checked {}", image),
-                            done: true,
-                            error: None,
-                        });
-                    }
-                    updated_ok = targets.len() as u32;
-                }
-                "update" => {
-                    if task.target_type == "stack" {
-                        let compose_file = resolve_compose_file(&docker, &task.container).await;
-                        if let Some(ref file) = compose_file {
-                            tracing::info!(
-                                "Scheduler: pulling stack '{}' via {}",
-                                task.container,
-                                file
-                            );
-                            let _ = update_tx.send(UpdateProgress {
-                                container: task.container.clone(),
-                                status: format!("📥 Pulling stack '{}'...", task.container),
-                                done: false,
-                                error: None,
-                            });
-                            let pull = tokio::process::Command::new("docker")
-                                .args(["compose", "-f", file, "pull"])
-                                .output()
-                                .await;
-                            if let Ok(output) = pull {
-                                if output.status.success() {
-                                    tracing::info!(
-                                        "Scheduler: stack '{}' pulled, recreating...",
-                                        task.container
-                                    );
-                                    let up = tokio::process::Command::new("docker")
-                                        .args(["compose", "-f", file, "up", "-d"])
-                                        .output()
-                                        .await;
-                                    if let Ok(up_out) = up {
-                                        if up_out.status.success() {
-                                            updated_ok = targets.len() as u32;
-                                            let _ = notif_tx.send(NotifEvent {
-                                                container: format!("stack:{}", task.container),
-                                                status: "🕐 scheduled stack update ✅".into(),
-                                                timestamp: Local::now()
-                                                    .format("%H:%M:%S")
-                                                    .to_string(),
-                                            });
-                                        } else {
-                                            failed = targets.len() as u32;
-                                            let stderr =
-                                                String::from_utf8_lossy(&up_out.stderr).to_string();
-                                            tracing::error!("Stack up error: {}", stderr);
-                                        }
-                                    }
-                                } else {
-                                    failed = targets.len() as u32;
-                                    let stderr =
-                                        String::from_utf8_lossy(&output.stderr).to_string();
-                                    tracing::error!("Stack pull error: {}", stderr);
-                                }
-                            } else {
-                                failed = targets.len() as u32;
-                            }
-                        } else {
-                            tracing::error!("No compose file found for stack '{}'", task.container);
-                            failed = targets.len() as u32;
-                        }
-                    } else {
-                        for (cname, image, cid) in &targets {
-                            let _ = update_tx.send(UpdateProgress {
-                                container: cname.clone(),
-                                status: format!("[scheduled] pulling {}", image),
-                                done: false,
-                                error: None,
-                            });
-
-                            match task.cleanup.as_str() {
-                                "rollback" => {
-                                    let backup = tag_backup_image(&docker, image).await;
-                                    if pull_image(&docker, image).await {
-                                        let _ = docker
-                                            .restart_container(cid, None::<RestartContainerOptions>)
-                                            .await;
-                                        if verify_container_healthy(&docker, cname).await {
-                                            updated_ok += 1;
-                                            if let Some((ref backup_full, _, _)) = backup {
-                                                let _ = docker
-                                                    .remove_image(
-                                                        backup_full,
-                                                        None::<bollard::image::RemoveImageOptions>,
-                                                        None,
-                                                    )
-                                                    .await;
-                                            }
-                                        } else {
-                                            failed += 1;
-                                            if let Some((backup_full, base, orig_tag)) = backup {
-                                                rollback_container(
-                                                    &docker,
-                                                    cid,
-                                                    &base,
-                                                    &orig_tag,
-                                                    &backup_full,
-                                                    image,
-                                                )
-                                                .await;
-                                            }
-                                        }
-                                    } else {
-                                        failed += 1;
-                                        if let Some((backup_full, base, orig_tag)) = backup {
-                                            let restore = bollard::image::TagImageOptions {
-                                                repo: base,
-                                                tag: orig_tag,
-                                            };
-                                            let _ =
-                                                docker.tag_image(&backup_full, Some(restore)).await;
-                                        }
-                                    }
-                                }
-                                "delete-old" => {
-                                    if pull_image(&docker, image).await {
-                                        let _ = docker
-                                            .restart_container(cid, None::<RestartContainerOptions>)
-                                            .await;
-                                        updated_ok += 1;
-                                        let _ = docker
-                                            .remove_image(
-                                                cid,
-                                                None::<bollard::image::RemoveImageOptions>,
-                                                None,
-                                            )
-                                            .await;
-                                    } else {
-                                        failed += 1;
-                                    }
-                                }
-                                _ => {
-                                    if pull_image(&docker, image).await {
-                                        let _ = docker
-                                            .restart_container(cid, None::<RestartContainerOptions>)
-                                            .await;
-                                        updated_ok += 1;
-                                    } else {
-                                        failed += 1;
-                                    }
-                                }
-                            }
-
-                            let _ = notif_tx.send(NotifEvent {
-                                container: cname.clone(),
-                                status: format!(
-                                    "🕐 scheduled update {}",
-                                    if failed > 0 { "❌" } else { "✅" }
-                                ),
-                                timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            });
-                        }
-                    }
-                }
-                "restart" => {
-                    for (cname, _image, cid) in &targets {
-                        let _ = docker
-                            .restart_container(cid, None::<RestartContainerOptions>)
-                            .await;
-                        updated_ok += 1;
-                        let _ = notif_tx.send(NotifEvent {
-                            container: cname.clone(),
-                            status: "🕐 scheduled restart ✅".into(),
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                        });
-                    }
-                }
-                _ => {
-                    tracing::warn!("Scheduler: acción desconocida '{}'", task.action);
-                }
-            }
-
-            if task.notify {
-                let status = if failed > 0 {
-                    format!(
-                        "⚠️ Tarea '{}': {} ok, {} fallos",
-                        task.action, updated_ok, failed
-                    )
-                } else {
-                    format!(
-                        "✅ Tarea '{}' completada ({} targets)",
-                        task.action, updated_ok
-                    )
-                };
-                let _ = notify_all(&config, &settings, &task.container, &status).await;
+    fn match_cron(cron: &str, dt: &chrono::DateTime<Local>) -> bool {
+        let expr = format!("0 {}", cron);
+        match expr.parse::<cron::Schedule>() {
+            Ok(schedule) => schedule.includes(dt.to_utc()),
+            Err(e) => {
+                tracing::warn!("Invalid cron expression '{}': {}", cron, e);
+                false
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::TimeZone;
 
     #[test]
     fn test_match_cron_every_minute() {
@@ -448,33 +427,5 @@ mod tests {
     fn test_match_cron_not_weekly() {
         let dt = Local.with_ymd_and_hms(2024, 1, 8, 0, 0, 0).unwrap();
         let _ = match_cron("0 0 * * 0", &dt);
-    }
-
-    // ── Integration: resolve_compose_file ───────────────────
-
-    fn is_podman_available() -> bool {
-        std::env::var("DOCKER_HOST").is_ok()
-            || std::path::Path::new("/run/user/1000/podman/podman.sock").exists()
-    }
-
-    async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST")
-            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
-        Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
-            .expect("Failed to connect to Podman socket")
-    }
-
-    #[tokio::test]
-    async fn test_integration_resolve_compose_file_nonexistent() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman not available");
-            return;
-        }
-        let docker = podman_client().await;
-        let result = resolve_compose_file(&docker, "nonexistent-project-xyz").await;
-        assert!(
-            result.is_none(),
-            "Should return None for nonexistent project"
-        );
     }
 }

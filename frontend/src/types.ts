@@ -93,20 +93,17 @@ export interface HistoryEntry {
   duration_ms: number;
 }
 
-export interface AlertRule {
-  id: string;
+export type UpdateAction = 'none' | 'pull' | 'pull-restart' | 'pull-restart-stack';
+
+export interface UpdatePolicy {
   container: string;
-  enabled: boolean;
-  notify_via: string[];
+  action: UpdateAction;
+  cleanup_old_image: boolean;
+  rollback_on_failure: boolean;
 }
 
-export interface ScheduleEntry {
-  id: string;
-  container: string;
-  target_type: string;
+export interface UpdateCheckConfig {
   cron: string;
-  action: string;
   enabled: boolean;
   notify: boolean;
-  cleanup: string;
 }
