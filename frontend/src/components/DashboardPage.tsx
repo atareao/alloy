@@ -3,7 +3,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Collapse, Group, Loader, Paper, Table, Text,
   Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
-  SimpleGrid, TextInput, Chip, Switch,
+  SimpleGrid, TextInput, Chip, Switch, Select,
 } from "@mantine/core";
 import { showNotification } from "@mantine/notifications";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs, AppConfig, UpdatePolicy } from "../types";
@@ -53,8 +53,6 @@ export default function DashboardPage({
   const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [checkedUpdates, setCheckedUpdates] = useState<Record<string, boolean>>({});
-  const [singleCheckLoading, setSingleCheckLoading] = useState<string | null>(null);
 
   // Check all / Update all state
   const [batchPhase, setBatchPhase] = useState<CheckAllPhase>('idle');
@@ -133,30 +131,10 @@ export default function DashboardPage({
 
   // ── Single container actions ───────────────────────────────
 
-  const checkSingleContainer = async (name: string) => {
-    setSingleCheckLoading(name);
-    try {
-      const res = await apiFetch(`/api/check-update/${encodeURIComponent(name)}`, { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        const hasUpdate = data.has_update === true;
-        setCheckedUpdates(prev => ({ ...prev, [name]: hasUpdate }));
-        setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: hasUpdate } : c));
-        showToast(`🔍 ${name} — ${hasUpdate ? "actualización disponible ⬆️" : "está actualizado ✅"}`, hasUpdate ? "yellow" : "green");
-      } else {
-        showToast(`🔍 ${name} — error HTTP ${res.status}`, "red");
-      }
-    } catch (e: any) {
-      showToast(`🔍 ${name} — ${e.message}`, "red");
-    }
-    setSingleCheckLoading(null);
-  };
-
   const updateSingleContainer = async (name: string) => {
     setUpdating(name);
     try {
       await apiFetch(`/api/update/${encodeURIComponent(name)}`, { method: "POST" });
-      setCheckedUpdates(prev => { const n = { ...prev }; delete n[name]; return n; });
       setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: false } : c));
       showToast(`⬆️ ${name} — actualizado ✅`, "green");
     } catch {
@@ -212,7 +190,6 @@ export default function DashboardPage({
       }
     }
 
-    setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
     setContainers(prev => prev.map(c => ({ ...c, has_update: !!updatedUpdates[c.name] })));
     setCheckResults({ total: initialContainers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, errors });
     setBatchProgress({ current: initialContainers.length, total: initialContainers.length });
@@ -271,7 +248,6 @@ export default function DashboardPage({
 
     const updatedUpdates: Record<string, boolean> = {};
     containersToUpdate.forEach(c => { updatedUpdates[c.name] = true; });
-    setCheckedUpdates(prev => ({ ...prev, ...updatedUpdates }));
     setContainers(prev => prev.map(c => ({ ...c, has_update: !!updatedUpdates[c.name] })));
     setCheckResults({ total: initialContainers.length, updated: checkUpdated, uptodate: checkUptodate, failed: checkFailed, errors: checkErrors });
 
@@ -307,11 +283,6 @@ export default function DashboardPage({
 
       setUpdateResults({ done: updateDone, failed: updateFailed, errors: updateErrors });
 
-      setCheckedUpdates(prev => {
-        const n = { ...prev };
-        succeededNames.forEach(name => { n[name] = false; });
-        return n;
-      });
       setContainers(prev => prev.map(c =>
         succeededNames.includes(c.name) ? { ...c, has_update: false } : c
       ));
@@ -379,7 +350,7 @@ export default function DashboardPage({
         const res = await apiFetch(`/api/check-update/${encodeURIComponent(c.name)}`, { method: "POST" });
         if (res.ok) {
           const data = await res.json();
-          setCheckedUpdates(prev => ({ ...prev, [c.name]: data.has_update === true }));
+          setContainers(prev => prev.map(pc => pc.name === c.name ? { ...pc, has_update: data.has_update === true } : pc));
         }
       } catch { /* ignore */ }
     }
@@ -464,7 +435,7 @@ export default function DashboardPage({
 
     if (stateFilter.length > 0 && !stateFilter.includes(c.state)) return false;
 
-    if (showPendingUpdates && !c.has_update && !checkedUpdates[c.name]) return false;
+    if (showPendingUpdates && !c.has_update) return false;
 
     return true;
   });
@@ -508,18 +479,60 @@ export default function DashboardPage({
 
   // ── Policy-based update action button ────────────────────────
   const PolicyActionButton = ({
-    containerName, isSingleUpdating, updateSingleContainer, getPolicy, btnSize, busy
+    containerName, isSingleUpdating, updateSingleContainer, getPolicy, setPolicies, btnSize, busy, hasUpdate
   }: {
     containerName: string;
     isSingleUpdating: boolean;
     updateSingleContainer: (name: string) => Promise<void>;
     getPolicy: (name: string) => UpdatePolicy | undefined;
+    setPolicies: React.Dispatch<React.SetStateAction<UpdatePolicy[]>>;
     btnSize: string;
     busy: boolean;
+    hasUpdate: boolean;
   }) => {
     const [showPolicyModal, setShowPolicyModal] = useState(false);
+    const [editAction, setEditAction] = useState<string>('pull-restart');
+    const [editCleanup, setEditCleanup] = useState(false);
+    const [editRollback, setEditRollback] = useState(false);
+    const [savingPolicy, setSavingPolicy] = useState(false);
+
     const policy = getPolicy(containerName);
     const action = policy?.action || 'pull-restart';
+
+    const openConfig = () => {
+      setEditAction(policy?.action || 'pull-restart');
+      setEditCleanup(policy?.cleanup_old_image || false);
+      setEditRollback(policy?.rollback_on_failure || false);
+      setShowPolicyModal(true);
+    };
+
+    const savePolicy = async () => {
+      setSavingPolicy(true);
+      try {
+        const res = await apiFetch(`/api/update-policies/${encodeURIComponent(containerName)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: editAction,
+            cleanup_old_image: editCleanup,
+            rollback_on_failure: editRollback,
+          }),
+        });
+        if (res.ok) {
+          const updated: UpdatePolicy = await res.json();
+          setPolicies(prev => {
+            const next = prev.filter(p => p.container !== containerName);
+            next.push(updated);
+            return next;
+          });
+          setShowPolicyModal(false);
+          showToast(`⚙️ Política de ${containerName} actualizada ✅`, "green");
+        }
+      } catch {
+        showToast(`⚙️ Error al guardar política`, "red");
+      }
+      setSavingPolicy(false);
+    };
 
     const labelMap: Record<string, string> = {
       'none': '⬆ Pendiente',
@@ -535,8 +548,8 @@ export default function DashboardPage({
     };
 
     const handleAction = () => {
-      if (action === 'none') {
-        setShowPolicyModal(true);
+      if (action === 'none' || !hasUpdate) {
+        openConfig();
         return;
       }
       updateSingleContainer(containerName);
@@ -548,20 +561,45 @@ export default function DashboardPage({
           size={btnSize}
           variant="filled"
           color={colorMap[action] || 'yellow'}
-          leftSection="⬆"
+          leftSection={hasUpdate ? "⬆" : "⚙️"}
           onClick={handleAction}
           loading={isSingleUpdating}
           disabled={busy}
         >
-          {labelMap[action] || 'Actualizar'}
+          {hasUpdate ? (labelMap[action] || 'Actualizar') : 'Configurar'}
         </Button>
-        <Modal opened={showPolicyModal} onClose={() => setShowPolicyModal(false)} title="⚙️ Política de actualización" size="sm">
+        <Modal opened={showPolicyModal} onClose={() => setShowPolicyModal(false)} title={`⚙️ Política: ${containerName}`} size="md">
           <Stack>
-            <Text size="sm" c="dimmed">
-              La acción para <b>{containerName}</b> está configurada como "No hacer nada".
-              Ve a la pestaña <b>🔄 Revisiones</b> para cambiar la política.
+            <Text size="sm" c="dimmed" mb="xs">
+              Configura qué hacer cuando haya una actualización disponible para este contenedor.
             </Text>
-            <Button variant="filled" onClick={() => setShowPolicyModal(false)} fullWidth>Cerrar</Button>
+            <Select
+              label="Acción"
+              data={[
+                { value: 'none', label: '❌ No hacer nada' },
+                { value: 'pull', label: '⬇️ Pull imagen' },
+                { value: 'pull-restart', label: '🔄 Pull + reiniciar contenedor' },
+                { value: 'pull-restart-stack', label: '📦 Pull + reiniciar stack' },
+              ]}
+              value={editAction}
+              onChange={(v) => v && setEditAction(v)}
+            />
+            <Switch
+              label="🧹 Borrar imagen anterior"
+              description="Elimina la imagen anterior después de actualizar"
+              checked={editCleanup}
+              onChange={(e) => setEditCleanup(e.currentTarget.checked)}
+            />
+            <Switch
+              label="↩️ Rollback si falla"
+              description="Si el contenedor no arranca correctamente, restaura la imagen anterior"
+              checked={editRollback}
+              onChange={(e) => setEditRollback(e.currentTarget.checked)}
+            />
+            <Group justify="flex-end" mt="md">
+              <Button variant="default" onClick={() => setShowPolicyModal(false)}>Cancelar</Button>
+              <Button onClick={savePolicy} loading={savingPolicy}>Guardar política</Button>
+            </Group>
           </Stack>
         </Modal>
       </>
@@ -571,9 +609,8 @@ export default function DashboardPage({
   // ── Expanded action buttons (icon + text) ────────────────────
   const renderActions = (c: ContainerInfo) => {
     const isSingleUpdating = updating === c.name;
-    const isSingleChecking = singleCheckLoading === c.name;
     const p = progress.get(c.name);
-    const hasUpdate = c.has_update || checkedUpdates[c.name];
+    const hasUpdate = c.has_update;
     const busy = isSingleUpdating || isBusy;
     const btnSize = isMobile ? "sm" : "compact-sm";
 
@@ -589,32 +626,16 @@ export default function DashboardPage({
           >
             Inspeccionar
           </Button>
-          {isSingleChecking ? (
-            <Button size={btnSize} variant="light" color="gray" loading disabled>
-              Check
-            </Button>
-          ) : (
-            <Button
-              size={btnSize}
-              variant="light"
-              color="cyan"
-              leftSection="🔄"
-              onClick={() => checkSingleContainer(c.name)}
-              disabled={busy}
-            >
-              Check
-            </Button>
-          )}
-          {(hasUpdate || isSingleUpdating) && (
-            <PolicyActionButton
+          <PolicyActionButton
               containerName={c.name}
               isSingleUpdating={isSingleUpdating}
               updateSingleContainer={updateSingleContainer}
               getPolicy={getPolicy}
+              setPolicies={setPolicies}
               btnSize={btnSize}
               busy={busy}
-            />
-          )}
+              hasUpdate={hasUpdate}
+          />
           <Button
             size={btnSize}
             variant="light"
@@ -671,7 +692,7 @@ export default function DashboardPage({
 
   // ── Container card/row header ────────────────────────────────
   const renderHeader = (c: ContainerInfo) => {
-    const hasUpdate = c.has_update || checkedUpdates[c.name];
+    const hasUpdate = c.has_update;
     const isExpanded = !!expandedRows[c.name];
     return (
       <Group justify="space-between" wrap="nowrap" style={{ flex: 1, cursor: 'pointer' }} onClick={() => toggleExpand(c.name)}>
@@ -881,7 +902,7 @@ export default function DashboardPage({
   // ── Stats ──────────────────────────────────────────────────
   const statsRunning = containers.filter(c => c.state === "running").length;
   const statsStopped = containers.filter(c => c.state !== "running").length;
-  const statsUpdates = containers.filter(c => c.has_update || checkedUpdates[c.name]).length;
+  const statsUpdates = containers.filter(c => c.has_update).length;
 
   const showToast = (message: string, color: string, title?: string) => {
     showNotification({

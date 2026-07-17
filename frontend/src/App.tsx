@@ -1,13 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
-import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip, Tabs } from "@mantine/core";
-import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, AppConfig, UpdatePolicy, UpdateCheckConfig } from "./types";
+import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip } from "@mantine/core";
+import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, AppConfig } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
 import NotifToast from "./components/NotifToast";
 import HistoryPage from "./HistoryPage";
-import CheckConfigPage from "./CheckConfigPage";
 
 interface AppProps {
   colorScheme: "dark" | "light";
@@ -60,8 +59,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // ── Cached data for instant tab switching ────────────────
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
-  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const api = useCallback(async (path: string) => {
     try { return await (await fetch(path, { credentials: "include" })).json(); }
@@ -70,8 +67,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   useEffect(() => {
     if (!authenticated) return;
     api("/api/history").then((d) => { if (d) setHistory(d); });
-    api("/api/update-policies").then((d) => { if (d) setPolicies(d); });
-    api("/api/update-check/config").then((d) => { if (d) setCheckConfig(d); });
     api("/api/config").then((d) => { if (d) setConfig(d); });
   }, [authenticated, api]);
 
@@ -127,6 +122,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const logout = () => {
     window.location.href = "/api/auth/logout";
   };
+
+  const [view, setView] = useState<"dashboard" | "history" | "config">("dashboard");
 
   const toggleColorScheme = () => {
     const next = colorScheme === "dark" ? "light" : "dark";
@@ -196,41 +193,48 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </div>
         )}
 
-        <Tabs defaultValue="dashboard">
-          <Tabs.List mb="md" style={{ overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none' }}>
-            <Tabs.Tab value="dashboard" style={{ whiteSpace: 'nowrap' }}>📊 Dashboard</Tabs.Tab>
-            <Tabs.Tab value="history" style={{ whiteSpace: 'nowrap' }}>📜 Historial</Tabs.Tab>
-            <Tabs.Tab value="updates" style={{ whiteSpace: 'nowrap' }}>🔄 Revisiones</Tabs.Tab>
-            <Tabs.Tab value="config" style={{ whiteSpace: 'nowrap' }}>⚙️ Config</Tabs.Tab>
-          </Tabs.List>
+        {/* Navigation buttons */}
+        <Group justify="center" mb="md" gap="xs">
+          <Button
+            variant={view === "dashboard" ? "filled" : "light"}
+            color={view === "dashboard" ? "blue" : "gray"}
+            onClick={() => setView("dashboard")}
+          >
+            📊 Dashboard
+          </Button>
+          <Button
+            variant={view === "history" ? "filled" : "light"}
+            color={view === "history" ? "blue" : "gray"}
+            onClick={() => setView("history")}
+          >
+            📜 Historial
+          </Button>
+          <Button
+            variant={view === "config" ? "filled" : "light"}
+            color={view === "config" ? "blue" : "gray"}
+            onClick={() => setView("config")}
+          >
+            ⚙️ Config
+          </Button>
+        </Group>
 
-          <Tabs.Panel value="dashboard">
-            <DashboardPage
-              containers={containers}
-              setContainers={setContainers}
-              progress={progress}
-              notifications={notifications}
-              setNotifications={setNotifications}
-              containersLoaded={containersLoaded}
-              config={config}
-            />
-          </Tabs.Panel>
-          <Tabs.Panel value="history">
-            <HistoryPage history={history} setHistory={setHistory} />
-          </Tabs.Panel>
-          <Tabs.Panel value="updates">
-            <CheckConfigPage
-              containers={containers}
-              policies={policies}
-              setPolicies={setPolicies}
-              config={checkConfig}
-              setConfig={setCheckConfig}
-            />
-          </Tabs.Panel>
-          <Tabs.Panel value="config">
-            <ConfigPage config={config} setConfig={setConfig} />
-          </Tabs.Panel>
-        </Tabs>
+        {view === "dashboard" && (
+          <DashboardPage
+            containers={containers}
+            setContainers={setContainers}
+            progress={progress}
+            notifications={notifications}
+            setNotifications={setNotifications}
+            containersLoaded={containersLoaded}
+            config={config}
+          />
+        )}
+        {view === "history" && (
+          <HistoryPage history={history} setHistory={setHistory} />
+        )}
+        {view === "config" && (
+          <ConfigPage config={config} setConfig={setConfig} />
+        )}
       </Container>
     </AppShell>
   );

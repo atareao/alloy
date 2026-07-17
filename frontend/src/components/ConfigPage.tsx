@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
 import {
-  Alert, Button, Group, Paper, PasswordInput, Stack, Text, Title, TextInput, Switch,
+  Alert, Button, Group, Paper, PasswordInput, Stack, Text, Title, TextInput, Switch, Select,
 } from "@mantine/core";
-import type { AppConfig } from "../types";
+import type { AppConfig, UpdateCheckConfig } from "../types";
 import { apiFetch } from "../api";
+
+const CRON_PRESETS = [
+  { value: '0 */6 * * *', label: 'Cada 6 horas' },
+  { value: '0 */12 * * *', label: 'Cada 12 horas' },
+  { value: '0 0 * * *', label: 'Cada día a medianoche' },
+  { value: '0 6 * * *', label: 'Cada día a las 6:00' },
+  { value: '0 0 * * 0', label: 'Cada domingo' },
+  { value: '0 0 1 * *', label: 'Cada 1 del mes' },
+  { value: '*/30 * * * *', label: 'Cada 30 minutos' },
+  { value: '0 */1 * * *', label: 'Cada hora' },
+];
 
 interface ConfigPageProps {
   config: AppConfig | null;
@@ -30,6 +41,25 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
   // Auto-update
   const [auEnabled, setAuEnabled] = useState(false);
   const [auInterval, setAuInterval] = useState(6);
+
+  // Update check cron
+  const [ucCron, setUcCron] = useState("0 */6 * * *");
+  const [ucEnabled, setUcEnabled] = useState(false);
+  const [ucNotify, setUcNotify] = useState(false);
+
+  // Update check config — fetched separately
+  const [_checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
+  useEffect(() => {
+    fetch("/api/update-check/config", { credentials: "include" })
+      .then(res => res.json())
+      .then((data: UpdateCheckConfig) => {
+        setCheckConfig(data);
+        setUcCron(data.cron);
+        setUcEnabled(data.enabled);
+        setUcNotify(data.notify);
+      })
+      .catch(() => {});
+  }, []);
 
   // Sync from props when config changes (from App.tsx eager fetch)
   useEffect(() => {
@@ -140,6 +170,31 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
       }
     } catch {
       setError("Error de conexión al guardar Auto-update");
+    }
+    setSaving(null);
+  };
+
+  const saveUpdateCheck = async () => {
+    setSaving("update-check");
+    setError(null);
+    try {
+      const res = await apiFetch("/api/update-check/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cron: ucCron, enabled: ucEnabled, notify: ucNotify }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCheckConfig(data);
+        setUcCron(data.cron);
+        setUcEnabled(data.enabled);
+        setUcNotify(data.notify);
+        showSuccess(ucEnabled ? "✅ Revisión programada activada" : "❌ Revisión programada desactivada");
+      } else {
+        setError("Error al guardar la revisión de actualizaciones");
+      }
+    } catch {
+      setError("Error de conexión");
     }
     setSaving(null);
   };
@@ -337,6 +392,56 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
             color={auEnabled ? "blue" : "gray"}
           >
             {auEnabled ? "Guardar Auto-update" : "Desactivar Auto-update"}
+          </Button>
+        </Group>
+      </Paper>
+
+      {/* ═══ Revisión de actualizaciones ═══ */}
+      <Paper shadow="sm" p="md" withBorder>
+        <Group justify="space-between" mb="md">
+          <Title order={4}>⏰ Revisión de actualizaciones</Title>
+          <Switch
+            label={ucEnabled ? "Activada" : "Desactivada"}
+            checked={ucEnabled}
+            onChange={(e) => setUcEnabled(e.currentTarget.checked)}
+            color={ucEnabled ? "green" : "gray"}
+          />
+        </Group>
+        <Text size="sm" c="dimmed" mb="md">
+          Programa revisiones periódicas de imágenes. Cuando se detecte una
+          actualización pendiente, se marcará el contenedor y se podrá actuar
+          desde el Dashboard.
+        </Text>
+        {ucEnabled && (
+          <Stack>
+            <Select
+              label="Frecuencia"
+              data={CRON_PRESETS}
+              value={ucCron}
+              onChange={(v) => v && setUcCron(v)}
+              searchable
+            />
+            <TextInput
+              label="Expresión Cron (personalizada)"
+              description="Edita directamente si los presets no se ajustan"
+              placeholder="0 */6 * * *"
+              value={ucCron}
+              onChange={(e) => setUcCron(e.currentTarget.value)}
+            />
+            <Switch
+              label="🔔 Notificar vía Telegram/Matrix"
+              checked={ucNotify}
+              onChange={(e) => setUcNotify(e.currentTarget.checked)}
+            />
+          </Stack>
+        )}
+        <Group justify="flex-end" mt="md">
+          <Button
+            onClick={saveUpdateCheck}
+            loading={saving === "update-check"}
+            color={ucEnabled ? "blue" : "gray"}
+          >
+            {ucEnabled ? "Guardar revisión" : "Desactivar revisión"}
           </Button>
         </Group>
       </Paper>

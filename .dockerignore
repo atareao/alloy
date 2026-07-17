@@ -12,6 +12,12 @@ frontend/node_modules/
 *.json
 *.log
 
+# Runtime data (created at startup)
+data/
+
+# Local config with secrets
+backend/config.yaml
+
 # Docs / config examples
 AGENTS.md
 README.md
