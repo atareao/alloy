@@ -153,26 +153,6 @@ pub struct UpdateHistoryEntry {
     pub duration_ms: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AlertConfig {
-    #[serde(default = "default_alert_id")]
-    pub id: String,
-    pub container: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub notify_via: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct CreateAlert {
-    pub container: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub notify_via: Vec<String>,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct CreateSchedule {
     pub container: String,
@@ -263,9 +243,6 @@ pub fn default_cleanup() -> String {
     "none".to_string()
 }
 
-pub fn default_alert_id() -> String {
-    Uuid::new_v4().to_string()
-}
 pub fn default_enabled() -> bool {
     true
 }
@@ -358,13 +335,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_alert_id_is_uuid() {
-        let id = default_alert_id();
-        assert!(!id.is_empty());
-        assert!(Uuid::parse_str(&id).is_ok());
-    }
-
-    #[test]
     fn test_default_enabled() {
         assert!(default_enabled());
     }
@@ -401,16 +371,5 @@ mod tests {
     fn test_app_error_from_status_code() {
         let err = AppError::from(StatusCode::BAD_REQUEST);
         assert!(matches!(err, AppError::Internal(_)));
-    }
-
-    #[test]
-    fn test_alert_config_defaults() {
-        let alert = AlertConfig {
-            id: String::new(),
-            container: "web".into(),
-            enabled: false,
-            notify_via: vec![],
-        };
-        assert_eq!(alert.container, "web");
     }
 }

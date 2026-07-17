@@ -193,55 +193,6 @@ pub async fn notify_all(
     );
 }
 
-/// Notifica solo los canales indicados en `channels` (ej: "telegram", "matrix").
-/// Si `channels` está vacío, se notifica a todos los canales configurados.
-pub async fn notify_selected(
-    config: &Config,
-    settings: &Arc<Mutex<Settings>>,
-    container: &str,
-    status: &str,
-    channels: &[String],
-) {
-    tracing::info!(
-        "notify_selected: container={}, status={}, channels={:?}",
-        container,
-        status,
-        channels
-    );
-    if channels.is_empty() {
-        tracing::info!("notify_selected: canales vacíos → notify_all");
-        notify_all(config, settings, container, status).await;
-        return;
-    }
-    let s = settings.lock().await;
-    let mut tasks: Vec<tokio::task::JoinHandle<Result<(), String>>> = Vec::new();
-    for ch in channels {
-        let conf = config.clone();
-        let sett = s.clone();
-        let c = container.to_string();
-        let st = status.to_string();
-        match ch.as_str() {
-            "telegram" => {
-                tasks.push(tokio::spawn(async move {
-                    notify_telegram(&conf, &sett, &c, &st).await
-                }));
-            }
-            "matrix" => {
-                tasks.push(tokio::spawn(async move {
-                    notify_matrix(&conf, &sett, &c, &st).await
-                }));
-            }
-            "webhook" => {
-                tasks.push(tokio::spawn(async move {
-                    notify_webhook(&conf, &sett, &c, &st).await
-                }));
-            }
-            _ => {}
-        }
-    }
-    let _: Vec<_> = futures::future::join_all(tasks).await;
-}
-
 // ── Test notification endpoint ──────────────────────────────
 
 use axum::{extract::State, response::Json, routing::post, Router};
@@ -528,67 +479,6 @@ mod tests {
             ..Default::default()
         };
         notify_matrix(&empty_config(), &s, "test", "running").await;
-    }
-
-    // ── notify_selected ─────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_notify_selected_empty_channels_does_not_panic() {
-        // Empty channels = notify_all = tries both (with no config, both return early)
-        let settings = Arc::new(Mutex::new(empty_settings()));
-        notify_selected(&empty_config(), &settings, "test", "running", &[]).await;
-    }
-
-    #[tokio::test]
-    async fn test_notify_selected_telegram_channel_does_not_panic() {
-        let settings = Arc::new(Mutex::new(empty_settings()));
-        notify_selected(
-            &empty_config(),
-            &settings,
-            "test",
-            "running",
-            &["telegram".to_string()],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn test_notify_selected_matrix_channel_does_not_panic() {
-        let settings = Arc::new(Mutex::new(empty_settings()));
-        notify_selected(
-            &empty_config(),
-            &settings,
-            "test",
-            "running",
-            &["matrix".to_string()],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn test_notify_selected_both_channels_does_not_panic() {
-        let settings = Arc::new(Mutex::new(empty_settings()));
-        notify_selected(
-            &empty_config(),
-            &settings,
-            "test",
-            "running",
-            &["telegram".to_string(), "matrix".to_string()],
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn test_notify_selected_unknown_channel_ignored() {
-        let settings = Arc::new(Mutex::new(empty_settings()));
-        notify_selected(
-            &empty_config(),
-            &settings,
-            "test",
-            "running",
-            &["unknown".to_string()],
-        )
-        .await;
     }
 
     // ── notify_all ──────────────────────────────────────────

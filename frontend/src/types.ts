@@ -93,13 +93,6 @@ export interface HistoryEntry {
   duration_ms: number;
 }
 
-export interface AlertRule {
-  id: string;
-  container: string;
-  enabled: boolean;
-  notify_via: string[];
-}
-
 export interface ScheduleEntry {
   id: string;
   container: string;

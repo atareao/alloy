@@ -1,13 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip, Tabs } from "@mantine/core";
-import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, AlertRule, ScheduleEntry, AppConfig } from "./types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, ScheduleEntry, AppConfig } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
 import NotifToast from "./components/NotifToast";
 import HistoryPage from "./HistoryPage";
-import AlertsPage from "./AlertsPage";
 import SchedulePage from "./SchedulePage";
 
 interface AppProps {
@@ -61,7 +60,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // ── Cached data for instant tab switching ────────────────
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [alerts, setAlerts] = useState<AlertRule[]>([]);
   const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const api = useCallback(async (path: string) => {
@@ -71,7 +69,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   useEffect(() => {
     if (!authenticated) return;
     api("/api/history").then((d) => { if (d) setHistory(d); });
-    api("/api/alerts").then((d) => { if (d) setAlerts(d); });
     api("/api/schedule").then((d) => { if (d) setSchedules(d); });
     api("/api/config").then((d) => { if (d) setConfig(d); });
   }, [authenticated, api]);
@@ -213,7 +210,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           <Tabs.List mb="md" style={{ overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none' }}>
             <Tabs.Tab value="dashboard" style={{ whiteSpace: 'nowrap' }}>📊 Dashboard</Tabs.Tab>
             <Tabs.Tab value="history" style={{ whiteSpace: 'nowrap' }}>📜 Historial</Tabs.Tab>
-            <Tabs.Tab value="alerts" style={{ whiteSpace: 'nowrap' }}>🔔 Alertas</Tabs.Tab>
             <Tabs.Tab value="schedule" style={{ whiteSpace: 'nowrap' }}>⏰ Planif</Tabs.Tab>
             <Tabs.Tab value="config" style={{ whiteSpace: 'nowrap' }}>⚙️ Config</Tabs.Tab>
           </Tabs.List>
@@ -231,9 +227,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </Tabs.Panel>
           <Tabs.Panel value="history">
             <HistoryPage history={history} setHistory={setHistory} />
-          </Tabs.Panel>
-          <Tabs.Panel value="alerts">
-            <AlertsPage containers={containers} alerts={alerts} setAlerts={setAlerts} config={config} />
           </Tabs.Panel>
           <Tabs.Panel value="schedule">
             <SchedulePage containers={containers} schedules={schedules} setSchedules={setSchedules} />

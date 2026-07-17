@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use crate::models::{AlertConfig, ScheduleTask};
+use crate::models::ScheduleTask;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Config {
@@ -38,8 +38,6 @@ pub struct Config {
     pub oidc_client_secret: Option<String>,
     #[serde(default)]
     pub oidc_redirect_url: Option<String>,
-    #[serde(default)]
-    pub alerts: Option<Vec<AlertConfig>>,
     #[serde(default)]
     pub schedule: Option<Vec<ScheduleTask>>,
 }

@@ -35,10 +35,6 @@ pub fn init_test_db() -> DbPool {
             new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
         );
-        CREATE TABLE IF NOT EXISTS alerts (
-            id TEXT PRIMARY KEY, container TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1, notify_via TEXT NOT NULL DEFAULT '[]'
-        );
         CREATE TABLE IF NOT EXISTS schedules (
             id TEXT PRIMARY KEY, container TEXT NOT NULL,
             target_type TEXT NOT NULL DEFAULT 'container', cron TEXT NOT NULL,
@@ -51,7 +47,6 @@ pub fn init_test_db() -> DbPool {
     )
     .expect("Failed to create test schema");
     let pool: DbPool = Arc::new(Mutex::new(conn));
-    init_global(pool.clone());
     pool
 }
 
@@ -104,13 +99,6 @@ pub fn init_db(path: &str) -> SqlResult<Connection> {
             timestamp TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '',
             duration_ms INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS alerts (
-            id TEXT PRIMARY KEY,
-            container TEXT NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            notify_via TEXT NOT NULL DEFAULT '[]'
         );
 
         CREATE TABLE IF NOT EXISTS schedules (
@@ -271,45 +259,6 @@ pub fn append_update_history(conn: &Connection, entry: &UpdateHistoryEntry) -> S
 
 pub fn clear_update_history(conn: &Connection) -> SqlResult<()> {
     conn.execute("DELETE FROM update_history", [])?;
-    Ok(())
-}
-
-// ── Alerts ───────────────────────────────────────────────────
-
-pub fn load_alerts(conn: &Connection) -> SqlResult<Vec<AlertConfig>> {
-    let mut stmt = conn.prepare("SELECT id, container, enabled, notify_via FROM alerts")?;
-    let rows = stmt.query_map([], |row| {
-        let notify_via_str: String = row.get(3)?;
-        let notify_via: Vec<String> = serde_json::from_str(&notify_via_str).unwrap_or_default();
-        Ok(AlertConfig {
-            id: row.get(0)?,
-            container: row.get(1)?,
-            enabled: row.get(2)?,
-            notify_via,
-        })
-    })?;
-    let mut result = Vec::new();
-    for r in rows {
-        result.push(r?);
-    }
-    Ok(result)
-}
-
-pub fn save_alert(conn: &Connection, alert: &AlertConfig) -> SqlResult<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO alerts (id, container, enabled, notify_via) VALUES (?1, ?2, ?3, ?4)",
-        params![
-            alert.id,
-            alert.container,
-            alert.enabled as i32,
-            serde_json::to_string(&alert.notify_via).unwrap_or_default(),
-        ],
-    )?;
-    Ok(())
-}
-
-pub fn delete_alert(conn: &Connection, id: &str) -> SqlResult<()> {
-    conn.execute("DELETE FROM alerts WHERE id = ?1", params![id])?;
     Ok(())
 }
 

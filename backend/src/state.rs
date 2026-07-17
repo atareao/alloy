@@ -130,7 +130,6 @@ pub struct AppState {
     pub oidc_metadata: Option<OidcMetadata>,
     pub jwt_validator: JwtValidator,
     pub update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
-    pub alerts: Arc<Mutex<Vec<AlertConfig>>>,
     pub schedules: Arc<Mutex<Vec<ScheduleTask>>>,
 
     pub cached_containers: CachedContainers,
@@ -172,12 +171,6 @@ impl axum::extract::FromRef<AppState> for broadcast::Sender<NotifEvent> {
 impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<UpdateHistoryEntry>>> {
     fn from_ref(state: &AppState) -> Self {
         state.update_history.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<AlertConfig>>> {
-    fn from_ref(state: &AppState) -> Self {
-        state.alerts.clone()
     }
 }
 

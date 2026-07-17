@@ -21,9 +21,7 @@ use crate::config::Config;
 use crate::db as database;
 use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
-use crate::workers::{
-    alerts_worker, auto_update_worker, scheduler_worker, state_worker, CachedContainers,
-};
+use crate::workers::{auto_update_worker, scheduler_worker, state_worker, CachedContainers};
 
 use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
@@ -67,18 +65,6 @@ async fn main() {
         Arc::new(Mutex::new(
             database::load_update_history(&conn).unwrap_or_default(),
         ))
-    };
-    let alerts: Arc<Mutex<Vec<AlertConfig>>> = {
-        let conn = db_pool.lock().await;
-        let mut a: Vec<AlertConfig> = database::load_alerts(&conn).unwrap_or_default();
-        if let Some(cfg_alerts) = &config.alerts {
-            for ca in cfg_alerts {
-                if !a.iter().any(|x| x.id == ca.id) {
-                    a.push(ca.clone());
-                }
-            }
-        }
-        Arc::new(Mutex::new(a))
     };
     let schedules: Arc<Mutex<Vec<ScheduleTask>>> = {
         let conn = db_pool.lock().await;
@@ -184,7 +170,6 @@ async fn main() {
         oidc_metadata,
         jwt_validator,
         update_history: update_history.clone(),
-        alerts: alerts.clone(),
         schedules: schedules.clone(),
         cached_containers: cached_containers.clone(),
         settings: settings.clone(),
@@ -205,12 +190,6 @@ async fn main() {
         settings.clone(),
         notif_tx.clone(),
         update_history.clone(),
-    ));
-    tokio::spawn(alerts_worker(
-        docker.clone(),
-        config.clone(),
-        settings.clone(),
-        notif_tx.clone(),
     ));
     tokio::spawn(scheduler_worker(
         docker.clone(),
