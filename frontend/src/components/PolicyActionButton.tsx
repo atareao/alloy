@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button, Group, Modal, Select, Stack, Switch, Text } from "@mantine/core";
 import { apiFetch } from "../api";
-import type { UpdatePolicy, UpdateAction } from "../types";
+import type { UpdatePolicy } from "../types";
 
 interface PolicyActionButtonProps {
   containerName: string;
