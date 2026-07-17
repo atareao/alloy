@@ -21,9 +21,7 @@ use crate::config::Config;
 use crate::db as database;
 use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
-use crate::workers::{
-    alerts_worker, auto_update_worker, scheduler_worker, state_worker, CachedContainers,
-};
+use crate::workers::{auto_update_worker, state_worker, update_check_worker, CachedContainers};
 
 use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
@@ -68,29 +66,11 @@ async fn main() {
             database::load_update_history(&conn).unwrap_or_default(),
         ))
     };
-    let alerts: Arc<Mutex<Vec<AlertConfig>>> = {
+    let update_policies: Arc<Mutex<Vec<UpdatePolicy>>> = {
         let conn = db_pool.lock().await;
-        let mut a: Vec<AlertConfig> = database::load_alerts(&conn).unwrap_or_default();
-        if let Some(cfg_alerts) = &config.alerts {
-            for ca in cfg_alerts {
-                if !a.iter().any(|x| x.id == ca.id) {
-                    a.push(ca.clone());
-                }
-            }
-        }
-        Arc::new(Mutex::new(a))
-    };
-    let schedules: Arc<Mutex<Vec<ScheduleTask>>> = {
-        let conn = db_pool.lock().await;
-        let mut s: Vec<ScheduleTask> = database::load_schedules(&conn).unwrap_or_default();
-        if let Some(cfg_sched) = &config.schedule {
-            for cs in cfg_sched {
-                if !s.iter().any(|x| x.id == cs.id) {
-                    s.push(cs.clone());
-                }
-            }
-        }
-        Arc::new(Mutex::new(s))
+        Arc::new(Mutex::new(
+            database::load_update_policies(&conn).unwrap_or_default(),
+        ))
     };
     let settings: Arc<Mutex<Settings>> = {
         let conn = db_pool.lock().await;
@@ -184,8 +164,7 @@ async fn main() {
         oidc_metadata,
         jwt_validator,
         update_history: update_history.clone(),
-        alerts: alerts.clone(),
-        schedules: schedules.clone(),
+        update_policies: update_policies.clone(),
         cached_containers: cached_containers.clone(),
         settings: settings.clone(),
         db: db_pool.clone(),
@@ -206,19 +185,13 @@ async fn main() {
         notif_tx.clone(),
         update_history.clone(),
     ));
-    tokio::spawn(alerts_worker(
+    tokio::spawn(update_check_worker(
         docker.clone(),
         config.clone(),
         settings.clone(),
-        notif_tx.clone(),
-    ));
-    tokio::spawn(scheduler_worker(
-        docker.clone(),
-        config.clone(),
-        settings.clone(),
+        update_policies.clone(),
         update_tx.clone(),
         notif_tx.clone(),
-        schedules.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
 
