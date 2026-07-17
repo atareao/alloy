@@ -678,14 +678,15 @@ export default function DashboardPage({
         <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
           {statusDot(c)}
           {hasUpdate && <Badge size="xs" variant="filled" color="yellow" circle>!</Badge>}
-          <Switch
-            size="xs"
-            checked={c.monitored}
-            disabled={!monitoringEnabled}
-            onChange={(e) => { e.stopPropagation(); toggleContainerMonitor(c.name, e.currentTarget.checked); }}
-            onClick={(e) => e.stopPropagation()}
-            style={{ flexShrink: 0 }}
-          />
+          <div onClick={(e) => e.stopPropagation()}>
+            <Switch
+              size="xs"
+              checked={c.monitored}
+              disabled={!monitoringEnabled}
+              onChange={(e) => { toggleContainerMonitor(c.name, e.currentTarget.checked); }}
+              style={{ flexShrink: 0 }}
+            />
+          </div>
           <Text size="sm" fw={500} truncate style={{ minWidth: 60 }}>{c.name}</Text>
           <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>{c.status}</Text>
           <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>{`${c.image}:${c.image_tag}`}</Text>
