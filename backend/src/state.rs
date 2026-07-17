@@ -130,7 +130,7 @@ pub struct AppState {
     pub oidc_metadata: Option<OidcMetadata>,
     pub jwt_validator: JwtValidator,
     pub update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
-    pub schedules: Arc<Mutex<Vec<ScheduleTask>>>,
+    pub update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
 
     pub cached_containers: CachedContainers,
     pub settings: Arc<Mutex<Settings>>,
@@ -174,9 +174,9 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<UpdateHistoryEntry>>> {
     }
 }
 
-impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<ScheduleTask>>> {
+impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<UpdatePolicy>>> {
     fn from_ref(state: &AppState) -> Self {
-        state.schedules.clone()
+        state.update_policies.clone()
     }
 }
 

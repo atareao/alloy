@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use uuid::Uuid;
-
 #[derive(Clone, Debug, Serialize)]
 pub struct ContainerInfo {
     pub id: String,
@@ -153,21 +151,6 @@ pub struct UpdateHistoryEntry {
     pub duration_ms: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct CreateSchedule {
-    pub container: String,
-    #[serde(default = "default_target_type")]
-    pub target_type: String,
-    pub cron: String,
-    pub action: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub notify: bool,
-    #[serde(default = "default_cleanup")]
-    pub cleanup: String,
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
@@ -188,6 +171,66 @@ pub struct Settings {
     pub webhook_url: Option<String>,
     #[serde(default)]
     pub monitored_containers: Vec<String>,
+    #[serde(default)]
+    pub update_check_cron: Option<String>,
+    #[serde(default)]
+    pub update_check_enabled: Option<bool>,
+    #[serde(default)]
+    pub update_check_notify: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdatePolicy {
+    pub container: String,
+    pub action: UpdateAction,
+    pub cleanup_old_image: bool,
+    pub rollback_on_failure: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdatePolicyReq {
+    pub action: UpdateAction,
+    pub cleanup_old_image: bool,
+    pub rollback_on_failure: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum UpdateAction {
+    None,
+    Pull,
+    PullRestart,
+    PullRestartStack,
+}
+
+impl std::fmt::Display for UpdateAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UpdateAction::None => write!(f, "none"),
+            UpdateAction::Pull => write!(f, "pull"),
+            UpdateAction::PullRestart => write!(f, "pull-restart"),
+            UpdateAction::PullRestartStack => write!(f, "pull-restart-stack"),
+        }
+    }
+}
+
+impl std::str::FromStr for UpdateAction {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "none" => Ok(UpdateAction::None),
+            "pull" => Ok(UpdateAction::Pull),
+            "pull-restart" => Ok(UpdateAction::PullRestart),
+            "pull-restart-stack" => Ok(UpdateAction::PullRestartStack),
+            _ => Err(format!("unknown action: {}", s)),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UpdateCheckConfig {
+    pub cron: String,
+    pub enabled: bool,
+    pub notify: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -218,36 +261,9 @@ pub struct VersionCompare {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ScheduleTask {
-    #[serde(default = "default_schedule_id")]
-    pub id: String,
-    pub container: String,
-    #[serde(default = "default_target_type")]
-    pub target_type: String,
-    pub cron: String,
-    pub action: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub notify: bool,
-    #[serde(default = "default_cleanup")]
-    pub cleanup: String,
-}
-
-pub fn default_target_type() -> String {
-    "container".to_string()
-}
-
-pub fn default_cleanup() -> String {
-    "none".to_string()
-}
-
+#[expect(dead_code)]
 pub fn default_enabled() -> bool {
     true
-}
-pub fn default_schedule_id() -> String {
-    Uuid::new_v4().to_string()
 }
 
 use axum::http::StatusCode;
@@ -256,6 +272,7 @@ use axum::Json;
 
 // ── Constants ──────────────────────────────────────────────
 
+#[expect(dead_code)]
 pub const ALL_CONTAINERS: &str = "*";
 
 pub const LABEL_COMPOSE_PROJECT: &str = "com.docker.compose.project";
@@ -337,13 +354,6 @@ mod tests {
     #[test]
     fn test_default_enabled() {
         assert!(default_enabled());
-    }
-
-    #[test]
-    fn test_default_schedule_id_is_uuid() {
-        let id = default_schedule_id();
-        assert!(!id.is_empty());
-        assert!(Uuid::parse_str(&id).is_ok());
     }
 
     #[test]

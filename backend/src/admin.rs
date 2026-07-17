@@ -1,76 +1,106 @@
 use axum::{
     extract::State,
     response::Json,
-    routing::{delete, get, post},
+    routing::{get, put},
     Router,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use crate::db;
 use crate::models::*;
 use crate::state::AppState;
 
-async fn get_schedule_h(
-    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
-) -> Json<Vec<ScheduleTask>> {
-    let list = schedules.lock().await;
+// ── Update Check Config ──────────────────────────────────────
+
+async fn get_update_check_config_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+) -> Json<UpdateCheckConfig> {
+    let s = settings.lock().await;
+    Json(UpdateCheckConfig {
+        cron: s
+            .update_check_cron
+            .clone()
+            .unwrap_or_else(|| "0 */6 * * *".into()),
+        enabled: s.update_check_enabled.unwrap_or(false),
+        notify: s.update_check_notify.unwrap_or(false),
+    })
+}
+
+async fn put_update_check_config_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+    Json(body): Json<UpdateCheckConfig>,
+) -> Json<UpdateCheckConfig> {
+    let mut s = settings.lock().await;
+    s.update_check_cron = Some(body.cron.clone());
+    s.update_check_enabled = Some(body.enabled);
+    s.update_check_notify = Some(body.notify);
+    let conn = db::global().lock().await;
+    let _ = db::save_settings(&conn, &s);
+    Json(body)
+}
+
+// ── Update Policies ─────────────────────────────────────────
+
+async fn get_update_policies_h(
+    State(policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
+) -> Json<Vec<UpdatePolicy>> {
+    let list = policies.lock().await;
     Json(list.clone())
 }
 
-async fn create_schedule_h(
-    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
-    Json(body): Json<CreateSchedule>,
-) -> Json<ScheduleTask> {
-    let task = ScheduleTask {
-        id: Uuid::new_v4().to_string(),
-        container: body.container,
-        target_type: body.target_type,
-        cron: body.cron,
+async fn put_update_policy_h(
+    State(policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<UpdatePolicyReq>,
+) -> Json<UpdatePolicy> {
+    let policy = UpdatePolicy {
+        container: name.clone(),
         action: body.action,
-        enabled: body.enabled,
-        notify: body.notify,
-        cleanup: body.cleanup,
+        cleanup_old_image: body.cleanup_old_image,
+        rollback_on_failure: body.rollback_on_failure,
     };
-    let mut list = schedules.lock().await;
-    list.push(task.clone());
+    {
+        let mut list = policies.lock().await;
+        if let Some(existing) = list.iter_mut().find(|p| p.container == name) {
+            existing.action = policy.action.clone();
+            existing.cleanup_old_image = policy.cleanup_old_image;
+            existing.rollback_on_failure = policy.rollback_on_failure;
+        } else {
+            list.push(policy.clone());
+        }
+    }
     let conn = db::global().lock().await;
-    let _ = db::save_schedule(&conn, &task);
-    Json(task)
+    let _ = db::save_update_policy(&conn, &policy);
+    Json(policy)
 }
 
-async fn delete_schedule_h(
-    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
-    axum::extract::Path(id): axum::extract::Path<String>,
+async fn delete_update_policy_h(
+    State(policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
-    let mut list = schedules.lock().await;
-    list.retain(|s| s.id != id);
+    {
+        let mut list = policies.lock().await;
+        list.retain(|p| p.container != name);
+    }
     let conn = db::global().lock().await;
-    let _ = db::delete_schedule(&conn, &id);
-    Json(serde_json::json!({"status": "deleted", "id": id}))
+    let _ = db::delete_update_policy(&conn, &name);
+    Json(serde_json::json!({"status": "deleted", "container": name}))
 }
+
+// ── Export / Import ──────────────────────────────────────────
 
 async fn export_config_h(
-    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
 ) -> Json<serde_json::Value> {
-    let s = schedules.lock().await;
     let sett = settings.lock().await;
     let hist = update_history.lock().await;
     let conn = db::global().lock().await;
-    let _ = (|| -> Result<(), Box<dyn std::error::Error>> {
-        for sched in s.iter() {
-            db::save_schedule(&conn, sched)?;
-        }
-        db::save_settings(&conn, &sett)?;
-        Ok(())
-    })();
+    let _ = db::save_settings(&conn, &sett);
     Json(serde_json::json!({
         "version": 1,
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-        "schedules": *s,
         "settings": *sett,
         "update_history": *hist,
     }))
@@ -78,23 +108,13 @@ async fn export_config_h(
 
 #[derive(serde::Deserialize)]
 struct ImportPayload {
-    schedules: Vec<ScheduleTask>,
     settings: Settings,
 }
 
 async fn import_config_h(
-    State(schedules): State<Arc<Mutex<Vec<ScheduleTask>>>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     Json(body): Json<ImportPayload>,
 ) -> Json<serde_json::Value> {
-    {
-        let mut s = schedules.lock().await;
-        *s = body.schedules;
-        let conn = db::global().lock().await;
-        for sched in s.iter() {
-            let _ = db::save_schedule(&conn, sched);
-        }
-    }
     {
         let mut st = settings.lock().await;
         *st = body.settings;
@@ -106,104 +126,133 @@ async fn import_config_h(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/api/schedule", get(get_schedule_h).post(create_schedule_h))
-        .route("/api/schedule/{id}", delete(delete_schedule_h))
+        .route(
+            "/api/update-check/config",
+            get(get_update_check_config_h).put(put_update_check_config_h),
+        )
+        .route("/api/update-policies", get(get_update_policies_h))
+        .route(
+            "/api/update-policies/{name}",
+            put(put_update_policy_h).delete(delete_update_policy_h),
+        )
         .route("/api/admin/export", get(export_config_h))
         .route("/api/admin/import", post(import_config_h))
 }
+
+use axum::routing::post;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::Json;
 
-    // ── Schedules ────────────────────────────────────────────
+    // ── Update Check Config ─────────────────────────────────
 
     #[tokio::test]
-    async fn test_get_schedules_empty() {
-        let schedules = Arc::new(Mutex::new(Vec::new()));
-        let result: Json<Vec<ScheduleTask>> = get_schedule_h(State(schedules)).await;
+    async fn test_get_update_check_config_defaults() {
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let result: Json<UpdateCheckConfig> = get_update_check_config_h(State(settings)).await;
+        assert_eq!(result.0.cron, "0 */6 * * *");
+        assert!(!result.0.enabled);
+        assert!(!result.0.notify);
+    }
+
+    #[tokio::test]
+    async fn test_put_update_check_config() {
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let config = UpdateCheckConfig {
+            cron: "0 0 * * *".into(),
+            enabled: true,
+            notify: true,
+        };
+        let result: Json<UpdateCheckConfig> =
+            put_update_check_config_h(State(settings.clone()), Json(config)).await;
+        assert_eq!(result.0.cron, "0 0 * * *");
+        assert!(result.0.enabled);
+        assert!(result.0.notify);
+        let s = settings.lock().await;
+        assert_eq!(s.update_check_cron.as_deref(), Some("0 0 * * *"));
+        assert_eq!(s.update_check_enabled, Some(true));
+    }
+
+    // ── Update Policies ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_update_policies_empty() {
+        let policies = Arc::new(Mutex::new(Vec::new()));
+        let result: Json<Vec<UpdatePolicy>> = get_update_policies_h(State(policies)).await;
         assert!(result.0.is_empty());
     }
 
     #[tokio::test]
-    async fn test_create_schedule() {
-        let schedules = Arc::new(Mutex::new(Vec::new()));
-        let body = CreateSchedule {
-            container: "nginx".into(),
-            target_type: default_target_type(),
-            cron: "0 3 * * *".into(),
-            action: "restart".into(),
-            enabled: true,
-            notify: true,
-            cleanup: default_cleanup(),
+    async fn test_put_update_policy() {
+        let policies = Arc::new(Mutex::new(Vec::new()));
+        let req = UpdatePolicyReq {
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: true,
+            rollback_on_failure: true,
         };
-        let result: Json<ScheduleTask> =
-            create_schedule_h(State(schedules.clone()), Json(body)).await;
+        let result: Json<UpdatePolicy> = put_update_policy_h(
+            State(policies.clone()),
+            axum::extract::Path("nginx".into()),
+            Json(req),
+        )
+        .await;
         assert_eq!(result.0.container, "nginx");
-        assert_eq!(result.0.cron, "0 3 * * *");
-        assert_eq!(result.0.action, "restart");
-        assert!(result.0.enabled);
-        assert!(result.0.notify);
-        assert_eq!(result.0.target_type, "container");
-        assert_eq!(result.0.cleanup, "none");
-        assert!(Uuid::parse_str(&result.0.id).is_ok());
-
-        // Verify stored
-        let stored = schedules.lock().await;
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].container, "nginx");
+        assert_eq!(result.0.action, UpdateAction::PullRestart);
+        assert!(result.0.cleanup_old_image);
+        assert!(result.0.rollback_on_failure);
+        let list = policies.lock().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].action, UpdateAction::PullRestart);
     }
 
     #[tokio::test]
-    async fn test_create_schedule_disabled_no_notify() {
-        let schedules = Arc::new(Mutex::new(Vec::new()));
-        let body = CreateSchedule {
-            container: "postgres".into(),
-            target_type: "container".into(),
-            cron: "0 6 * * 0".into(),
-            action: "stop".into(),
-            enabled: false,
-            notify: false,
-            cleanup: "volume".into(),
-        };
-        let result: Json<ScheduleTask> =
-            create_schedule_h(State(schedules.clone()), Json(body)).await;
-        assert_eq!(result.0.container, "postgres");
-        assert!(!result.0.enabled);
-        assert!(!result.0.notify);
-        assert_eq!(result.0.cleanup, "volume");
-    }
-
-    #[tokio::test]
-    async fn test_delete_schedule() {
-        let schedules = Arc::new(Mutex::new(Vec::new()));
-        let body = CreateSchedule {
+    async fn test_put_update_policy_overwrites() {
+        let policies = Arc::new(Mutex::new(vec![UpdatePolicy {
             container: "nginx".into(),
-            target_type: default_target_type(),
-            cron: "0 3 * * *".into(),
-            action: "restart".into(),
-            enabled: true,
-            notify: false,
-            cleanup: default_cleanup(),
+            action: UpdateAction::None,
+            cleanup_old_image: false,
+            rollback_on_failure: false,
+        }]));
+        let req = UpdatePolicyReq {
+            action: UpdateAction::Pull,
+            cleanup_old_image: false,
+            rollback_on_failure: false,
         };
-        let created: Json<ScheduleTask> =
-            create_schedule_h(State(schedules.clone()), Json(body)).await;
-        let id = created.0.id.clone();
-
-        let result: Json<serde_json::Value> =
-            delete_schedule_h(State(schedules.clone()), axum::extract::Path(id)).await;
-        assert_eq!(result.0["status"], "deleted");
-
-        let stored = schedules.lock().await;
-        assert!(stored.is_empty());
+        let result: Json<UpdatePolicy> = put_update_policy_h(
+            State(policies.clone()),
+            axum::extract::Path("nginx".into()),
+            Json(req),
+        )
+        .await;
+        assert_eq!(result.0.action, UpdateAction::Pull);
+        let list = policies.lock().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].action, UpdateAction::Pull);
     }
 
     #[tokio::test]
-    async fn test_delete_schedule_nonexistent() {
-        let schedules = Arc::new(Mutex::new(Vec::new()));
-        let result: Json<serde_json::Value> = delete_schedule_h(
-            State(schedules.clone()),
+    async fn test_delete_update_policy() {
+        let policies = Arc::new(Mutex::new(vec![UpdatePolicy {
+            container: "nginx".into(),
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: true,
+            rollback_on_failure: false,
+        }]));
+        let result: Json<serde_json::Value> =
+            delete_update_policy_h(State(policies.clone()), axum::extract::Path("nginx".into()))
+                .await;
+        assert_eq!(result.0["status"], "deleted");
+        let list = policies.lock().await;
+        assert!(list.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_update_policy_nonexistent() {
+        let policies = Arc::new(Mutex::new(Vec::new()));
+        let result: Json<serde_json::Value> = delete_update_policy_h(
+            State(policies.clone()),
             axum::extract::Path("nonexistent".into()),
         )
         .await;
@@ -211,77 +260,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_schedules_multiple() {
-        let schedules = Arc::new(Mutex::new(Vec::new()));
-        for i in 0..3 {
-            let body = CreateSchedule {
-                container: format!("container_{}", i),
-                target_type: default_target_type(),
-                cron: "0 3 * * *".into(),
-                action: "restart".into(),
-                enabled: true,
-                notify: false,
-                cleanup: default_cleanup(),
-            };
-            let _ = create_schedule_h(State(schedules.clone()), Json(body)).await;
-        }
-        let result: Json<Vec<ScheduleTask>> = get_schedule_h(State(schedules.clone())).await;
-        assert_eq!(result.0.len(), 3);
+    async fn test_get_update_policies_multiple() {
+        let policies = Arc::new(Mutex::new(vec![
+            UpdatePolicy {
+                container: "nginx".into(),
+                action: UpdateAction::Pull,
+                cleanup_old_image: false,
+                rollback_on_failure: false,
+            },
+            UpdatePolicy {
+                container: "redis".into(),
+                action: UpdateAction::None,
+                cleanup_old_image: false,
+                rollback_on_failure: false,
+            },
+        ]));
+        let result: Json<Vec<UpdatePolicy>> = get_update_policies_h(State(policies)).await;
+        assert_eq!(result.0.len(), 2);
     }
 
     // ── Export / Import ──────────────────────────────────────
 
     #[tokio::test]
     async fn test_export_config_empty() {
-        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
-        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
+        let settings = Arc::new(Mutex::new(Settings::default()));
         let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
         let result: Json<serde_json::Value> =
-            export_config_h(State(schedules), State(settings), State(update_history)).await;
+            export_config_h(State(settings), State(update_history)).await;
 
         assert_eq!(result.0["version"], 1);
         assert!(result.0["exported_at"].is_string());
-        assert!(result.0["schedules"].as_array().unwrap().is_empty());
-        assert!(result.0["update_history"].as_array().unwrap().is_empty());
         assert!(result.0["settings"].is_object());
     }
 
     #[tokio::test]
-    async fn test_export_config_with_data() {
-        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
-        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings {
-            auto_update_enabled: Some(true),
-            telegram_token: Some("tok".into()),
-            ..Default::default()
-        }));
-        let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
-
-        let result: Json<serde_json::Value> =
-            export_config_h(State(schedules), State(settings), State(update_history)).await;
-
-        let exported_settings = &result.0["settings"];
-        assert_eq!(exported_settings["auto_update_enabled"], true);
-        assert_eq!(exported_settings["telegram_token"], "tok");
-    }
-
-    #[tokio::test]
     async fn test_import_config_replaces_state() {
-        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
-        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
+        let settings = Arc::new(Mutex::new(Settings::default()));
 
-        // Import new data
         let payload = ImportPayload {
-            schedules: vec![ScheduleTask {
-                id: "sched-1".into(),
-                container: "backup".into(),
-                target_type: "container".into(),
-                cron: "0 3 * * *".into(),
-                action: "restart".into(),
-                enabled: true,
-                notify: false,
-                cleanup: "none".into(),
-            }],
             settings: Settings {
                 auto_update_enabled: Some(false),
                 telegram_token: None,
@@ -290,45 +307,24 @@ mod tests {
             },
         };
 
-        let _: Json<serde_json::Value> = import_config_h(
-            State(schedules.clone()),
-            State(settings.clone()),
-            Json(payload),
-        )
-        .await;
+        let _: Json<serde_json::Value> =
+            import_config_h(State(settings.clone()), Json(payload)).await;
 
-        // Verify state was replaced
-        {
-            let s = schedules.lock().await;
-            assert_eq!(s.len(), 1);
-            assert_eq!(s[0].container, "backup");
-        }
-        {
-            let st = settings.lock().await;
-            assert_eq!(st.auto_update_enabled, Some(false));
-            assert!(st.telegram_token.is_none());
-            assert_eq!(st.telegram_chat_id.as_deref(), Some("123"));
-        }
+        let st = settings.lock().await;
+        assert_eq!(st.auto_update_enabled, Some(false));
+        assert!(st.telegram_token.is_none());
+        assert_eq!(st.telegram_chat_id.as_deref(), Some("123"));
     }
 
     #[tokio::test]
     async fn test_import_config_overwrites_existing() {
-        let schedules: Arc<Mutex<Vec<ScheduleTask>>> = Arc::new(Mutex::new(Vec::new()));
-        let settings: Arc<Mutex<Settings>> = Arc::new(Mutex::new(Settings::default()));
+        let settings = Arc::new(Mutex::new(Settings::default()));
 
         let payload = ImportPayload {
-            schedules: vec![],
             settings: Settings::default(),
         };
 
-        let _: Json<serde_json::Value> = import_config_h(
-            State(schedules.clone()),
-            State(settings.clone()),
-            Json(payload),
-        )
-        .await;
-
-        // Should have replaced with empty
-        assert!(schedules.lock().await.is_empty());
+        let _: Json<serde_json::Value> =
+            import_config_h(State(settings.clone()), Json(payload)).await;
     }
 }

@@ -2,8 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-use crate::models::ScheduleTask;
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -38,8 +36,6 @@ pub struct Config {
     pub oidc_client_secret: Option<String>,
     #[serde(default)]
     pub oidc_redirect_url: Option<String>,
-    #[serde(default)]
-    pub schedule: Option<Vec<ScheduleTask>>,
 }
 
 /// Intenta leer un secreto de Podman montado en `/run/secrets/<name>`.

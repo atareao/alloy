@@ -207,50 +207,47 @@ pub async fn update_all_h(
 
 pub async fn check_update_h(
     State(docker): State<Docker>,
+    State(db_pool): State<db::DbPool>,
     Path(name): Path<String>,
 ) -> Result<Json<VersionCompare>, AppError> {
     let container = find_container_by_name(&docker, &name).await?;
     let image_full = container.image.as_deref().unwrap_or("");
-    if image_full.is_empty() {
-        return Ok(Json(VersionCompare {
-            local_tag: "unknown".into(),
-            remote_tag: None,
-            has_update: None,
-            local_digest: None,
-            remote_digest: None,
-            changelog_url: None,
-            error: Some("no image".into()),
-        }));
+    let (has_update, local_tag, remote_digest, remote_tag, error) = if image_full.is_empty() {
+        (None, "unknown".into(), None, None, Some("no image".into()))
+    } else {
+        let (repo, local_tag) = crate::updates::digest::parse_image_ref(image_full);
+        let (remote_digest, remote_tag, error) = match check_remote_digest(&repo, &local_tag).await
+        {
+            Ok((digest, tag)) => (Some(digest), Some(tag), None),
+            Err(e) => (None, None, Some(e)),
+        };
+        let has_update = match (&container.image_id, &remote_digest) {
+            (Some(local_digest), Some(remote_digest)) => {
+                let local_short = crate::updates::digest::short_digest(local_digest);
+                let remote_short = crate::updates::digest::short_digest(remote_digest);
+                Some(local_short != remote_short)
+            }
+            _ => None,
+        };
+        (has_update, local_tag, remote_digest, remote_tag, error)
+    };
+    // Persist has_update to database
+    if let Some(hu) = has_update {
+        let conn = db_pool.lock().await;
+        let _ = db::update_container_has_update(&conn, &name, hu);
+        drop(conn);
     }
-    let (repo, local_tag) = crate::updates::digest::parse_image_ref(image_full);
-    let (remote_digest, remote_tag, error) = match check_remote_digest(&repo, &local_tag).await {
-        Ok((digest, tag)) => (Some(digest), Some(tag), None),
-        Err(e) => (None, None, Some(e)),
-    };
-    let has_update = match (&container.image_id, &remote_digest) {
-        (Some(local_digest), Some(remote_digest)) => {
-            let local_short = crate::updates::digest::short_digest(local_digest);
-            let remote_short = crate::updates::digest::short_digest(remote_digest);
-            Some(local_short != remote_short)
-        }
-        _ => None,
-    };
     let local_digest = container
         .image_id
         .as_ref()
         .map(|d| crate::updates::digest::short_digest(d));
-    let changelog_url = if repo.contains('/') {
-        Some(format!("https://hub.docker.com/r/{}/tags", repo))
-    } else {
-        Some(format!("https://hub.docker.com/_/{}/tags", repo))
-    };
     Ok(Json(VersionCompare {
         local_tag,
         remote_tag,
         has_update,
         local_digest,
         remote_digest: remote_digest.map(|d| crate::updates::digest::short_digest(&d)),
-        changelog_url,
+        changelog_url: None,
         error,
     }))
 }
@@ -258,6 +255,7 @@ pub async fn check_update_h(
 pub async fn check_all_h(
     State(docker): State<Docker>,
     State(config): State<Config>,
+    State(db_pool): State<db::DbPool>,
 ) -> Json<Vec<ContainerInfo>> {
     let mut containers = fetch_containers(&docker, &config.allowed_containers, &[]).await;
     let tasks: Vec<_> = containers
@@ -313,5 +311,11 @@ pub async fn check_all_h(
     for c in &mut containers {
         c.has_update = *update_map.get(&c.name).unwrap_or(&false);
     }
+    // Persist has_update to database
+    let conn = db_pool.lock().await;
+    for c in &containers {
+        let _ = db::update_container_has_update(&conn, &c.name, c.has_update);
+    }
+    drop(conn);
     Json(containers)
 }

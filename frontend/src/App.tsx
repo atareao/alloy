@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip, Tabs } from "@mantine/core";
-import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, ScheduleEntry, AppConfig } from "./types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, AppConfig, UpdatePolicy, UpdateCheckConfig } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
 import NotifToast from "./components/NotifToast";
 import HistoryPage from "./HistoryPage";
-import SchedulePage from "./SchedulePage";
+import CheckConfigPage from "./CheckConfigPage";
 
 interface AppProps {
   colorScheme: "dark" | "light";
@@ -60,7 +60,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // ── Cached data for instant tab switching ────────────────
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
+  const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
+  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const api = useCallback(async (path: string) => {
     try { return await (await fetch(path, { credentials: "include" })).json(); }
@@ -69,7 +70,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   useEffect(() => {
     if (!authenticated) return;
     api("/api/history").then((d) => { if (d) setHistory(d); });
-    api("/api/schedule").then((d) => { if (d) setSchedules(d); });
+    api("/api/update-policies").then((d) => { if (d) setPolicies(d); });
+    api("/api/update-check/config").then((d) => { if (d) setCheckConfig(d); });
     api("/api/config").then((d) => { if (d) setConfig(d); });
   }, [authenticated, api]);
 
@@ -81,7 +83,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       setContainers(JSON.parse(e.data).containers);
       setContainersLoaded(true);
     });
-    evtSource.onerror = () => setContainersLoaded(true); // stop showing loading on error too
+    evtSource.onerror = () => setContainersLoaded(true);
     return () => evtSource.close();
   }, [authenticated]);
 
@@ -92,7 +94,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     notifSource.addEventListener("notification", (e) => {
       try {
         const notif: NotifEvent = JSON.parse(e.data);
-        setNotifications((prev) => [notif, ...prev].slice(0, 50)); // max 50, newest first
+        setNotifications((prev) => [notif, ...prev].slice(0, 50));
       } catch { /* ignore malformed */ }
     });
     return () => notifSource.close();
@@ -111,7 +113,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           return next;
         });
         if (data.done) {
-          // Clean up progress after 3 seconds
           setTimeout(() => setProgress((prev) => { const n = new Map(prev); n.delete(data.container); return n; }), 3000);
         }
       } catch { /* ignore malformed */ }
@@ -187,18 +188,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             ))}
             {notifications.length > 3 && (
               <div style={{ textAlign: 'center', marginTop: 4 }}>
-                <button
-                  onClick={() => setNotifications([])}
-                  style={{
-                    background: 'rgba(0,0,0,0.7)',
-                    color: '#aaa',
-                    border: '1px solid #333',
-                    borderRadius: 4,
-                    padding: '2px 12px',
-                    fontSize: 12,
-                    cursor: 'pointer',
-                  }}
-                >
+                <button onClick={() => setNotifications([])} style={{ background: 'rgba(0,0,0,0.7)', color: '#aaa', border: '1px solid #333', borderRadius: 4, padding: '2px 12px', fontSize: 12, cursor: 'pointer' }}>
                   Limpiar todas ({notifications.length})
                 </button>
               </div>
@@ -210,7 +200,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           <Tabs.List mb="md" style={{ overflowX: 'auto', flexWrap: 'nowrap', scrollbarWidth: 'none' }}>
             <Tabs.Tab value="dashboard" style={{ whiteSpace: 'nowrap' }}>📊 Dashboard</Tabs.Tab>
             <Tabs.Tab value="history" style={{ whiteSpace: 'nowrap' }}>📜 Historial</Tabs.Tab>
-            <Tabs.Tab value="schedule" style={{ whiteSpace: 'nowrap' }}>⏰ Planif</Tabs.Tab>
+            <Tabs.Tab value="updates" style={{ whiteSpace: 'nowrap' }}>🔄 Revisiones</Tabs.Tab>
             <Tabs.Tab value="config" style={{ whiteSpace: 'nowrap' }}>⚙️ Config</Tabs.Tab>
           </Tabs.List>
 
@@ -228,8 +218,14 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           <Tabs.Panel value="history">
             <HistoryPage history={history} setHistory={setHistory} />
           </Tabs.Panel>
-          <Tabs.Panel value="schedule">
-            <SchedulePage containers={containers} schedules={schedules} setSchedules={setSchedules} />
+          <Tabs.Panel value="updates">
+            <CheckConfigPage
+              containers={containers}
+              policies={policies}
+              setPolicies={setPolicies}
+              config={checkConfig}
+              setConfig={setCheckConfig}
+            />
           </Tabs.Panel>
           <Tabs.Panel value="config">
             <ConfigPage config={config} setConfig={setConfig} />
