@@ -344,6 +344,16 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .filter(|s| !s.is_empty()),
         update_check_enabled: map.get("update_check_enabled").and_then(|v| v.parse().ok()),
         update_check_notify: map.get("update_check_notify").and_then(|v| v.parse().ok()),
+        default_update_action: map
+            .get("default_update_action")
+            .cloned()
+            .filter(|s| !s.is_empty()),
+        default_cleanup_old_image: map
+            .get("default_cleanup_old_image")
+            .and_then(|v| v.parse().ok()),
+        default_rollback_on_failure: map
+            .get("default_rollback_on_failure")
+            .and_then(|v| v.parse().ok()),
     })
 }
 
@@ -375,6 +385,15 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         (
             "update_check_notify",
             settings.update_check_notify.map(|v| v.to_string()),
+        ),
+        ("default_update_action", settings.default_update_action.clone()),
+        (
+            "default_cleanup_old_image",
+            settings.default_cleanup_old_image.map(|v| v.to_string()),
+        ),
+        (
+            "default_rollback_on_failure",
+            settings.default_rollback_on_failure.map(|v| v.to_string()),
         ),
     ];
 

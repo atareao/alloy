@@ -177,6 +177,12 @@ pub struct Settings {
     pub update_check_enabled: Option<bool>,
     #[serde(default)]
     pub update_check_notify: Option<bool>,
+    #[serde(default)]
+    pub default_update_action: Option<String>,
+    #[serde(default)]
+    pub default_cleanup_old_image: Option<bool>,
+    #[serde(default)]
+    pub default_rollback_on_failure: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

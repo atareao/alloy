@@ -48,7 +48,6 @@ RUN apk add --no-cache \
 WORKDIR /app
 COPY --from=backend-builder /build/target/release/alloy .
 COPY --from=frontend-builder /build/dist ./dist
-COPY backend/config.yaml .
 
 RUN mkdir -p /app/data && chown -R app:app /app
 

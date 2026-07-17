@@ -137,45 +137,61 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   return (
     <AppShell padding="md">
       <Container size="lg" py="md">
-        {isMobile ? (
-          <Stack mb="md">
-            <Group justify="space-between">
-              <Title order={2}>
+        <Stack mb="lg" gap="xs">
+          <Group justify="space-between" wrap="nowrap">
+            <Group gap="md" style={{ flex: 1 }}>
+              <Title order={2} style={{ whiteSpace: 'nowrap' }}>
                 <img src="/icon-48x48.png" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
                 Alloy
               </Title>
-              <Group gap="xs">
-                <Tooltip label={colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"}>
-                  <ActionIcon variant="outline" color="gray" onClick={toggleColorScheme} size="lg" aria-label="Toggle color scheme">
-                    {colorScheme === "dark" ? "☀️" : "🌙"}
-                  </ActionIcon>
-                </Tooltip>
-                <Button size="xs" variant="outline" color="gray" onClick={logout}>🚪</Button>
+              <Group gap="xs" style={{ flex: 1 }} justify="center">
+                <Button
+                  size={isMobile ? "xs" : "sm"}
+                  variant={view === "dashboard" ? "filled" : "light"}
+                  color={view === "dashboard" ? "blue" : "gray"}
+                  onClick={() => setView("dashboard")}
+                >
+                  📊 Dashboard
+                </Button>
+                <Button
+                  size={isMobile ? "xs" : "sm"}
+                  variant={view === "history" ? "filled" : "light"}
+                  color={view === "history" ? "blue" : "gray"}
+                  onClick={() => setView("history")}
+                >
+                  📜 Historial
+                </Button>
+                <Button
+                  size={isMobile ? "xs" : "sm"}
+                  variant={view === "config" ? "filled" : "light"}
+                  color={view === "config" ? "blue" : "gray"}
+                  onClick={() => setView("config")}
+                >
+                  ⚙️ Config
+                </Button>
               </Group>
             </Group>
-            <Group gap="xs" wrap="wrap">
-              {user && <Badge size="sm" variant="light" color="gray">{user.name}</Badge>}
-              <Badge size="sm" variant="light" color="blue">{containers.length} containers</Badge>
-            </Group>
-          </Stack>
-        ) : (
-          <Group justify="space-between" mb="lg">
-            <Title order={2}>
-              <img src="/icon-48x48.png" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
-              Alloy
-            </Title>
-            <Group>
-              {user && <Badge size="lg" variant="light" color="gray">{user.name}</Badge>}
-              <Badge size="lg" variant="light" color="blue">{containers.length} containers</Badge>
+            <Group gap="xs" wrap="nowrap">
+              {user && <Badge size={isMobile ? "sm" : "lg"} variant="light" color="gray">{user.name}</Badge>}
               <Tooltip label={colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"}>
                 <ActionIcon variant="outline" color="gray" onClick={toggleColorScheme} size="lg" aria-label="Toggle color scheme">
                   {colorScheme === "dark" ? "☀️" : "🌙"}
                 </ActionIcon>
               </Tooltip>
-              <Button size="xs" variant="outline" color="gray" onClick={logout}>🚪 Salir</Button>
+              <Button
+                size={isMobile ? "xs" : "sm"}
+                variant="outline"
+                color="gray"
+                onClick={logout}
+              >
+                {isMobile ? "🚪" : "🚪 Salir"}
+              </Button>
             </Group>
           </Group>
-        )}
+          <Group justify="center" gap="xs">
+            <Badge size="sm" variant="light" color="blue">{containers.length} containers</Badge>
+          </Group>
+        </Stack>
 
         {/* Notification toasts */}
         {notifications.length > 0 && (
@@ -192,31 +208,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             )}
           </div>
         )}
-
-        {/* Navigation buttons */}
-        <Group justify="center" mb="md" gap="xs">
-          <Button
-            variant={view === "dashboard" ? "filled" : "light"}
-            color={view === "dashboard" ? "blue" : "gray"}
-            onClick={() => setView("dashboard")}
-          >
-            📊 Dashboard
-          </Button>
-          <Button
-            variant={view === "history" ? "filled" : "light"}
-            color={view === "history" ? "blue" : "gray"}
-            onClick={() => setView("history")}
-          >
-            📜 Historial
-          </Button>
-          <Button
-            variant={view === "config" ? "filled" : "light"}
-            color={view === "config" ? "blue" : "gray"}
-            onClick={() => setView("config")}
-          >
-            ⚙️ Config
-          </Button>
-        </Group>
 
         {view === "dashboard" && (
           <DashboardPage
