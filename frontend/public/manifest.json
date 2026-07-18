@@ -18,6 +18,12 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-1000x1000.png",
+      "sizes": "1000x1000",
+      "type": "image/png",
+      "purpose": "any maskable"
     }
   ]
 }

@@ -93,7 +93,11 @@ export interface HistoryEntry {
   duration_ms: number;
 }
 
-export type UpdateAction = 'none' | 'pull' | 'pull-restart' | 'pull-restart-stack';
+export type UpdateAction =
+  | "none"
+  | "pull"
+  | "pull-restart"
+  | "pull-restart-stack";
 
 export interface UpdatePolicy {
   container: string;

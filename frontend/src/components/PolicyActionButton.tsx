@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { Button, Group, Modal, Select, Stack, Switch, Text } from "@mantine/core";
+import {
+  Button,
+  Group,
+  Modal,
+  Select,
+  Stack,
+  Switch,
+  Text,
+} from "@mantine/core";
 import { apiFetch } from "../api";
 import type { UpdatePolicy } from "../types";
 
@@ -12,10 +20,14 @@ interface PolicyActionButtonProps {
 }
 
 export default function PolicyActionButton({
-  containerName, busy, showToast, getPolicy, setPolicies,
+  containerName,
+  busy,
+  showToast,
+  getPolicy,
+  setPolicies,
 }: PolicyActionButtonProps) {
   const [showPolicyModal, setShowPolicyModal] = useState(false);
-  const [editAction, setEditAction] = useState<string>('pull-restart');
+  const [editAction, setEditAction] = useState<string>("pull-restart");
   const [editCleanup, setEditCleanup] = useState(false);
   const [editRollback, setEditRollback] = useState(false);
   const [savingPolicy, setSavingPolicy] = useState(false);
@@ -23,7 +35,7 @@ export default function PolicyActionButton({
   const policy = getPolicy(containerName);
 
   const openConfig = () => {
-    setEditAction(policy?.action || 'pull-restart');
+    setEditAction(policy?.action || "pull-restart");
     setEditCleanup(policy?.cleanup_old_image || false);
     setEditRollback(policy?.rollback_on_failure || false);
     setShowPolicyModal(true);
@@ -32,19 +44,22 @@ export default function PolicyActionButton({
   const savePolicy = async () => {
     setSavingPolicy(true);
     try {
-      const res = await apiFetch(`/api/update-policies/${encodeURIComponent(containerName)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: editAction,
-          cleanup_old_image: editCleanup,
-          rollback_on_failure: editRollback,
-        }),
-      });
+      const res = await apiFetch(
+        `/api/update-policies/${encodeURIComponent(containerName)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: editAction,
+            cleanup_old_image: editCleanup,
+            rollback_on_failure: editRollback,
+          }),
+        },
+      );
       if (res.ok) {
         const updated: UpdatePolicy = await res.json();
-        setPolicies(prev => {
-          const next = prev.filter(p => p.container !== containerName);
+        setPolicies((prev) => {
+          const next = prev.filter((p) => p.container !== containerName);
           next.push(updated);
           return next;
         });
@@ -72,18 +87,30 @@ export default function PolicyActionButton({
       >
         Configurar política
       </Button>
-      <Modal opened={showPolicyModal} onClose={() => setShowPolicyModal(false)} title={`⚙️ Política: ${containerName}`} size="md">
+      <Modal
+        opened={showPolicyModal}
+        onClose={() => setShowPolicyModal(false)}
+        title={`⚙️ Política: ${containerName}`}
+        size="md"
+      >
         <Stack>
           <Text size="sm" c="dimmed" mb="xs">
-            Configura qué hacer cuando haya una actualización disponible para este contenedor.
+            Configura qué hacer cuando haya una actualización disponible para
+            este contenedor.
           </Text>
           <Select
             label="Acción"
             data={[
-              { value: 'none', label: '❌ No hacer nada' },
-              { value: 'pull', label: '⬇️ Pull imagen' },
-              { value: 'pull-restart', label: '🔄 Pull + reiniciar contenedor' },
-              { value: 'pull-restart-stack', label: '📦 Pull + reiniciar stack' },
+              { value: "none", label: "❌ No hacer nada" },
+              { value: "pull", label: "⬇️ Pull imagen" },
+              {
+                value: "pull-restart",
+                label: "🔄 Pull + reiniciar contenedor",
+              },
+              {
+                value: "pull-restart-stack",
+                label: "📦 Pull + reiniciar stack",
+              },
             ]}
             value={editAction}
             onChange={(v) => v && setEditAction(v)}
@@ -101,8 +128,12 @@ export default function PolicyActionButton({
             onChange={(e) => setEditRollback(e.currentTarget.checked)}
           />
           <Group justify="flex-end" mt="md">
-            <Button variant="default" onClick={() => setShowPolicyModal(false)}>Cancelar</Button>
-            <Button onClick={savePolicy} loading={savingPolicy}>Guardar política</Button>
+            <Button variant="default" onClick={() => setShowPolicyModal(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={savePolicy} loading={savingPolicy}>
+              Guardar política
+            </Button>
           </Group>
         </Stack>
       </Modal>
