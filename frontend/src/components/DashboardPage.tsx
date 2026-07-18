@@ -572,18 +572,33 @@ export default function DashboardPage({
             </Text>
           </Group>
         )}
-        <Group gap="xs" justify="space-between" wrap="nowrap">
-          <Text size="xs" c="dimmed">
-            Política: {policyLabels[policyAction] || policyAction}
-          </Text>
-          <PolicyActionButton
-            containerName={c.name}
-            getPolicy={getPolicy}
-            setPolicies={setPolicies}
-            busy={busy}
-            showToast={showToast}
-          />
-        </Group>
+        {isMobile ? (
+          <Stack gap="xs">
+            <Text size="xs" c="dimmed">
+              Política: {policyLabels[policyAction] || policyAction}
+            </Text>
+            <PolicyActionButton
+              containerName={c.name}
+              getPolicy={getPolicy}
+              setPolicies={setPolicies}
+              busy={busy}
+              showToast={showToast}
+            />
+          </Stack>
+        ) : (
+          <Group gap="xs" justify="space-between" wrap="nowrap">
+            <Text size="xs" c="dimmed">
+              Política: {policyLabels[policyAction] || policyAction}
+            </Text>
+            <PolicyActionButton
+              containerName={c.name}
+              getPolicy={getPolicy}
+              setPolicies={setPolicies}
+              busy={busy}
+              showToast={showToast}
+            />
+          </Group>
+        )}
       </Stack>
     );
   };
@@ -622,12 +637,33 @@ export default function DashboardPage({
             />
           </div>
           <Text size="sm" fw={500} truncate style={{ minWidth: 60 }}>
-            {c.name}
+            {isMobile
+              ? c.name.length > 12
+                ? c.name.slice(0, 9) + "..."
+                : c.name
+              : c.name}
           </Text>
           <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>
-            {c.status}
+            {isMobile
+              ? c.status.length > 20
+                ? c.status.slice(0, 17) + "..."
+                : c.status
+              : c.status}
           </Text>
-          {c.traefik_url && (
+          {c.traefik_url && isMobile ? (
+            <Button
+              component="a"
+              href={c.traefik_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              variant="light"
+              color="blue"
+              size="sm"
+              onClick={(e) => e.stopPropagation()}
+            >
+              🔗
+            </Button>
+          ) : c.traefik_url ? (
             <Anchor
               href={c.traefik_url}
               target="_blank"
@@ -639,16 +675,18 @@ export default function DashboardPage({
             >
               🔗 {c.traefik_url.replace(/^https?:\/\//, "")}
             </Anchor>
-          )}
+          ) : null}
         </Group>
-        <ActionIcon
-          variant="subtle"
-          color="gray"
-          size="sm"
-          style={{ flexShrink: 0 }}
-        >
-          {isExpanded ? "▲" : "▼"}
-        </ActionIcon>
+        {!isMobile && (
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="sm"
+            style={{ flexShrink: 0 }}
+          >
+            {isExpanded ? "▲" : "▼"}
+          </ActionIcon>
+        )}
       </Group>
     );
   };
@@ -918,7 +956,7 @@ export default function DashboardPage({
                   color="cyan"
                   size="sm"
                 >
-                  🔍 Check
+                  {isMobile ? "🔍" : "🔍 Check"}
                 </Button>
               </Tooltip>
               {monitoringEnabled && (
@@ -937,9 +975,13 @@ export default function DashboardPage({
                     color="green"
                     size="sm"
                   >
-                    {containers.every((c) => c.monitored)
-                      ? "🔕 Desmon. todos"
-                      : "🔔 Mon. todos"}
+                    {isMobile
+                      ? containers.every((c) => c.monitored)
+                        ? "🔕"
+                        : "🔔"
+                      : containers.every((c) => c.monitored)
+                        ? "🔕 Desmon. todos"
+                        : "🔔 Mon. todos"}
                   </Button>
                 </Tooltip>
               )}

@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
-  ActionIcon,
   AppShell,
   Button,
   Container,
@@ -9,7 +8,6 @@ import {
   Stack,
   Text,
   Title,
-  Tooltip,
 } from "@mantine/core";
 import type {
   ContainerInfo,
@@ -168,12 +166,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     "dashboard",
   );
 
-  const toggleColorScheme = () => {
-    const next = colorScheme === "dark" ? "light" : "dark";
-    localStorage.setItem("color-scheme", next);
-    setColorScheme(next);
-  };
-
   if (checking) return null;
   if (!authenticated) return <LoginScreen />;
 
@@ -182,8 +174,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       <Container size="lg" py="md">
         <Stack mb="lg" gap="xs">
           <Group justify="space-between" wrap="nowrap">
-            <Group gap="md" style={{ flex: 1 }}>
-              <div>
+            <Group gap="md" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ flexShrink: 0 }}>
                 <Title order={2} style={{ whiteSpace: "nowrap" }}>
                   <img
                     src="/icon-48x48.png"
@@ -200,9 +192,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                   </Text>
                 )}
               </div>
-              <Group gap="xs" style={{ flex: 1 }} justify="center" wrap="nowrap">
+              <Group gap={isMobile ? 4 : "xs"} wrap="nowrap" style={{ flex: 1 }} justify="center">
                 <Button
-                  size={isMobile ? "md" : "sm"}
+                  size="sm"
                   variant={view === "dashboard" ? "filled" : "light"}
                   color={view === "dashboard" ? "blue" : "gray"}
                   onClick={() => setView("dashboard")}
@@ -210,7 +202,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                   {isMobile ? "📊" : "📊 Dashboard"}
                 </Button>
                 <Button
-                  size={isMobile ? "md" : "sm"}
+                  size="sm"
                   variant={view === "history" ? "filled" : "light"}
                   color={view === "history" ? "blue" : "gray"}
                   onClick={() => setView("history")}
@@ -218,39 +210,22 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                   {isMobile ? "📜" : "📜 Historial"}
                 </Button>
                 <Button
-                  size={isMobile ? "md" : "sm"}
+                  size="sm"
                   variant={view === "config" ? "filled" : "light"}
                   color={view === "config" ? "blue" : "gray"}
                   onClick={() => setView("config")}
                 >
                   {isMobile ? "⚙️" : "⚙️ Config"}
                 </Button>
-              </Group>
-            </Group>
-            <Group gap="xs" wrap="nowrap">
-              <Tooltip
-                label={
-                  colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"
-                }
-              >
-                <ActionIcon
-                  variant="outline"
+                <Button
+                  size="sm"
+                  variant="light"
                   color="gray"
-                  onClick={toggleColorScheme}
-                  size="lg"
-                  aria-label="Toggle color scheme"
+                  onClick={logout}
                 >
-                  {colorScheme === "dark" ? "☀️" : "🌙"}
-                </ActionIcon>
-              </Tooltip>
-              <Button
-                size={isMobile ? "xs" : "sm"}
-                variant="outline"
-                color="gray"
-                onClick={logout}
-              >
-                {isMobile ? "🚪" : "🚪 Salir"}
-              </Button>
+                  {isMobile ? "🚪" : "🚪 Salir"}
+                </Button>
+              </Group>
             </Group>
           </Group>
         </Stack>
@@ -310,7 +285,12 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           <HistoryPage history={history} setHistory={setHistory} />
         )}
         {view === "config" && (
-          <ConfigPage config={config} setConfig={setConfig} />
+          <ConfigPage
+            config={config}
+            setConfig={setConfig}
+            colorScheme={colorScheme}
+            setColorScheme={setColorScheme}
+          />
         )}
       </Container>
     </AppShell>

@@ -10,7 +10,7 @@ export default function LoginScreen() {
     <Container size="xs" py="xl">
       <Title order={2} mb="lg" ta="center">
         <img
-          src="/icon-512x512.png"
+          src="/icon-512x512.jpg"
           width="512"
           height="512"
           style={{ verticalAlign: "middle", marginRight: 8, maxWidth: "100%", height: "auto" }}
