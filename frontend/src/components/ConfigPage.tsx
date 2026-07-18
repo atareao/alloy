@@ -33,11 +33,15 @@ const CRON_PRESETS = [
 interface ConfigPageProps {
   config: AppConfig | null;
   setConfig: (c: AppConfig) => void;
+  colorScheme: "dark" | "light";
+  setColorScheme: (scheme: "dark" | "light") => void;
 }
 
 export default function ConfigPage({
   config: configProp,
   setConfig: setConfigProp,
+  colorScheme,
+  setColorScheme,
 }: ConfigPageProps) {
   const [saving, setSaving] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
@@ -283,6 +287,33 @@ export default function ConfigPage({
           {success}
         </Alert>
       )}
+
+      {/* ═══ Tema ═══ */}
+      <Paper shadow="sm" p="md" withBorder>
+        <Group justify="space-between">
+          <div>
+            <Title order={4}>
+              {colorScheme === "dark" ? "🌙" : "☀️"} Tema
+            </Title>
+            <Text size="sm" c="dimmed">
+              {colorScheme === "dark"
+                ? "Modo oscuro"
+                : "Modo claro"}
+            </Text>
+          </div>
+          <Switch
+            checked={colorScheme === "dark"}
+            onChange={(e) => {
+              const next = e.currentTarget.checked ? "dark" : "light";
+              localStorage.setItem("color-scheme", next);
+              setColorScheme(next);
+            }}
+            onLabel="🌙"
+            offLabel="☀️"
+            size="lg"
+          />
+        </Group>
+      </Paper>
 
       {/* ═══ Telegram ═══ */}
       <Paper shadow="sm" p="md" withBorder>

@@ -63,6 +63,7 @@
     │   │   ├── DashboardPage.tsx
     │   │   ├── ConfigPage.tsx
     │   │   ├── LoginScreen.tsx
+    │   │   ├── PolicyActionButton.tsx
     │   │   ├── ErrorBoundary.tsx
     │   │   └── NotifToast.tsx
     │   ├── api.test.ts
@@ -179,13 +180,29 @@ Cargada desde `config.yaml` (YAML) con override de variables de entorno. Soporta
 - `AUTO_UPDATE_ENABLED`, `AUTO_UPDATE_INTERVAL_HOURS`
 - `ALERTS` (inline en YAML), `SCHEDULE` (inline en YAML)
 
-### 9. Alertas (simplificadas)
+### 10. Frontend Components
 
-Las alertas solo monitorizan **cambios de estado de contenedor**:
-- `running` → `exited`/`dead`/`paused`/`restarting` → notifica problema
-- Vuelta a `running` → notifica recuperación
-- Contenedor desaparecido → notifica
-- Sin CPU/RAM, sin threshold, sin `notify_via` (se usa el canal configurado en Settings)
+| Component | Líneas | Propósito |
+|---|---|---|
+| `App.tsx` | 300 | Shell principal, tabs, SSE conexiones, layout header |
+| `DashboardPage.tsx` | 1474 | Lista de contenedores, batch check/update, inspect, políticas |
+| `ConfigPage.tsx` | 686 | Config de notificaciones, auto-update, tema, export/import |
+| `LoginScreen.tsx` | 31 | Pantalla de login OIDC |
+| `PolicyActionButton.tsx` | 142 | Modal de configuración de política por contenedor |
+| `ErrorBoundary.tsx` | — | Error boundary global |
+| `NotifToast.tsx` | — | Toast de notificaciones SSE |
+
+### 11. Mobile Responsive Patterns
+
+El frontend usa `useMediaQuery("(max-width: 768px)")` para detectar mobile. Patrones clave:
+
+- **Header**: 4 botones (Dashboard, Historial, Config, Salir) en una fila, solo emoji, `size="sm"`, gap 4px
+- **Container row**: nombre truncado (12→9+`...`), status truncado (20→17+`...`), flecha expand oculta
+- **Traefik link**: `Button` solo con `🔗` (no `Anchor` con texto)
+- **Policy section**: `Stack` vertical (Política + botón Configurar en dos filas)
+- **Check/Desmon buttons**: solo icono (texto en `Tooltip`)
+- **Tema**: switch en ConfigPage, no en header
+- **Login**: imagen `icon-512x512.jpg`
 
 ## API Routes
 
@@ -318,7 +335,8 @@ just gf-graph              # Mostrar árbol de ramas (últimos 30 commits)
 - No hay health checks HTTP/PING — se eliminaron en la limpieza masiva.
 - No hay terminal web ni logs en tiempo real por SSE — se eliminaron.
 - El frontend usa **Mantine UI** v7+ y cookies httponly para autenticación (no localStorage).
-- Tests: 44 tests backend (auth: 10, config: 12, models: 13, persistence: 4, workers: 5) + 4 tests frontend (Vitest + Testing Library).
+- El tema oscuro/claro se configura desde ConfigPage (no en header), persiste en `localStorage("color-scheme")`.
+- Tests: 44 tests backend (auth: 10, config: 12, models: 13, persistence: 4, workers: 5) + 18 tests frontend (Vitest + Testing Library).
 
 ## Estado Actual (julio 2026)
 
@@ -327,5 +345,5 @@ just gf-graph              # Mostrar árbol de ramas (últimos 30 commits)
 - **Frontend**: 5 tabs (Dashboard, History, Alerts, Schedule, Config)
 - **Auth**: Solo OIDC (PocketID), sin JWT simple
 - **Alertas**: Solo estado de contenedor, sin CPU/RAM
-- **Tests**: 44 backend + 4 frontend
+- **Tests**: 44 backend + 18 frontend
 - **Build**: Docker multi-stage, just + vampus
