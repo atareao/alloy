@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useMediaQuery } from '@mantine/hooks'
+import { useState } from "react";
+import { useMediaQuery } from "@mantine/hooks";
 import {
   Badge,
   Button,
@@ -10,21 +10,21 @@ import {
   Table,
   Text,
   Divider,
-} from '@mantine/core'
-import { apiFetch } from './api'
+} from "@mantine/core";
+import { apiFetch } from "./api";
 
 // ═══════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════
 
 interface HistoryEntry {
-  container: string
-  image: string
-  old_digest: string
-  new_digest: string
-  timestamp: string
-  status: string
-  duration_ms: number
+  container: string;
+  image: string;
+  old_digest: string;
+  new_digest: string;
+  timestamp: string;
+  status: string;
+  duration_ms: number;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -32,87 +32,111 @@ interface HistoryEntry {
 // ═══════════════════════════════════════════════════════════════
 
 interface HistoryPageProps {
-  history: HistoryEntry[]
-  setHistory: (h: HistoryEntry[]) => void
+  history: HistoryEntry[];
+  setHistory: (h: HistoryEntry[]) => void;
 }
 
 export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
-  const isMobile = useMediaQuery('(max-width: 768px)')
-  const [clearing, setClearing] = useState(false)
-  const [confirmClear, setConfirmClear] = useState(false)
+  const isMobile = useMediaQuery("(max-width: 768px)");
+  const [clearing, setClearing] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const handleClear = async () => {
-    setClearing(true)
+    setClearing(true);
     try {
-      await apiFetch('/api/history', { method: 'DELETE' })
-      setHistory([])
-    } catch { /* ignore */ }
-    setClearing(false)
-    setConfirmClear(false)
-  }
+      await apiFetch("/api/history", { method: "DELETE" });
+      setHistory([]);
+    } catch {
+      /* ignore */
+    }
+    setClearing(false);
+    setConfirmClear(false);
+  };
 
   const statusColor = (status: string) => {
     switch (status) {
-      case 'success': return 'green'
-      case 'failed': return 'red'
-      case 'skipped': return 'yellow'
-      default: return 'gray'
+      case "success":
+        return "green";
+      case "failed":
+        return "red";
+      case "skipped":
+        return "yellow";
+      default:
+        return "gray";
     }
-  }
+  };
 
   const formatDuration = (ms: number) => {
-    if (ms < 1000) return `${ms}ms`
-    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
-    return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
-  }
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+    return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+  };
 
   const formatDate = (ts: string) => {
     try {
-      return new Date(ts).toLocaleString()
+      return new Date(ts).toLocaleString();
     } catch {
-      return ts
+      return ts;
     }
-  }
+  };
 
   const shortDigest = (d: string | undefined) => {
-    if (!d) return '-'
-    return d.length > 20 ? d.substring(0, 20) + '...' : d
-  }
+    if (!d) return "-";
+    return d.length > 20 ? d.substring(0, 20) + "..." : d;
+  };
 
   // ── Mobile card ─────────────────────────────────────────────
   const renderMobileCard = (entry: HistoryEntry, i: number) => (
     <Paper key={i} shadow="sm" p="sm" withBorder>
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">
-          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>{entry.container}</Text>
-          <Badge size="sm" color={statusColor(entry.status)}>{entry.status}</Badge>
+          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>
+            {entry.container}
+          </Text>
+          <Badge size="sm" color={statusColor(entry.status)}>
+            {entry.status}
+          </Badge>
         </Group>
         <Divider />
         <Stack gap={2}>
           <Group gap="xs">
-            <Text size="xs" c="dimmed">Imagen:</Text>
+            <Text size="xs" c="dimmed">
+              Imagen:
+            </Text>
             <Text size="xs">{entry.image}</Text>
           </Group>
           <Group gap="xs">
-            <Text size="xs" c="dimmed">Anterior:</Text>
-            <Text size="xs" style={{ fontFamily: 'monospace' }}>{shortDigest(entry.old_digest)}</Text>
+            <Text size="xs" c="dimmed">
+              Anterior:
+            </Text>
+            <Text size="xs" style={{ fontFamily: "monospace" }}>
+              {shortDigest(entry.old_digest)}
+            </Text>
           </Group>
           <Group gap="xs">
-            <Text size="xs" c="dimmed">Nueva:</Text>
-            <Text size="xs" style={{ fontFamily: 'monospace' }}>{shortDigest(entry.new_digest)}</Text>
+            <Text size="xs" c="dimmed">
+              Nueva:
+            </Text>
+            <Text size="xs" style={{ fontFamily: "monospace" }}>
+              {shortDigest(entry.new_digest)}
+            </Text>
           </Group>
           <Group gap="xs">
-            <Text size="xs" c="dimmed">Duración:</Text>
+            <Text size="xs" c="dimmed">
+              Duración:
+            </Text>
             <Text size="xs">{formatDuration(entry.duration_ms)}</Text>
           </Group>
           <Group gap="xs">
-            <Text size="xs" c="dimmed">Fecha:</Text>
+            <Text size="xs" c="dimmed">
+              Fecha:
+            </Text>
             <Text size="xs">{formatDate(entry.timestamp)}</Text>
           </Group>
         </Stack>
       </Stack>
     </Paper>
-  )
+  );
 
   return (
     <Stack>
@@ -126,7 +150,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
               onClick={() => setConfirmClear(true)}
               variant="filled"
               color="red"
-              size={isMobile ? 'xs' : 'sm'}
+              size={isMobile ? "xs" : "sm"}
             >
               🗑️ Limpiar
             </Button>
@@ -141,8 +165,8 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
         size="sm"
       >
         <Text size="sm" mb="md">
-          ¿Estás seguro de que deseas eliminar todo el historial de actualizaciones?
-          Esta acción no se puede deshacer.
+          ¿Estás seguro de que deseas eliminar todo el historial de
+          actualizaciones? Esta acción no se puede deshacer.
         </Text>
         <Group justify="flex-end">
           <Button variant="default" onClick={() => setConfirmClear(false)}>
@@ -157,8 +181,8 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
       {history.length === 0 ? (
         <Paper shadow="sm" p="xl" withBorder>
           <Text ta="center" c="dimmed">
-            No hay historial de actualizaciones. Cuando se actualice un container,
-            aparecerá aquí.
+            No hay historial de actualizaciones. Cuando se actualice un
+            container, aparecerá aquí.
           </Text>
         </Paper>
       ) : isMobile ? (
@@ -184,18 +208,30 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
                 {history.map((entry, i) => (
                   <Table.Tr key={i}>
                     <Table.Td>
-                      <Text size="sm" fw={500}>{entry.container}</Text>
+                      <Text size="sm" fw={500}>
+                        {entry.container}
+                      </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" c="dimmed">{entry.image}</Text>
+                      <Text size="xs" c="dimmed">
+                        {entry.image}
+                      </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                      <Text
+                        size="xs"
+                        c="dimmed"
+                        style={{ fontFamily: "monospace" }}
+                      >
                         {shortDigest(entry.old_digest)}
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" c="dimmed" style={{ fontFamily: 'monospace' }}>
+                      <Text
+                        size="xs"
+                        c="dimmed"
+                        style={{ fontFamily: "monospace" }}
+                      >
                         {shortDigest(entry.new_digest)}
                       </Text>
                     </Table.Td>
@@ -205,10 +241,14 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
                       </Badge>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" c="dimmed">{formatDuration(entry.duration_ms)}</Text>
+                      <Text size="xs" c="dimmed">
+                        {formatDuration(entry.duration_ms)}
+                      </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" c="dimmed">{formatDate(entry.timestamp)}</Text>
+                      <Text size="xs" c="dimmed">
+                        {formatDate(entry.timestamp)}
+                      </Text>
                     </Table.Td>
                   </Table.Tr>
                 ))}
@@ -218,5 +258,5 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
         </Paper>
       )}
     </Stack>
-  )
+  );
 }

@@ -1,5 +1,13 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Container, Paper, Text, Title, Button, Stack, Code } from "@mantine/core";
+import {
+  Container,
+  Paper,
+  Text,
+  Title,
+  Button,
+  Stack,
+  Code,
+} from "@mantine/core";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -11,7 +19,10 @@ interface ErrorBoundaryState {
   errorInfo: ErrorInfo | null;
 }
 
-export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export default class ErrorBoundary extends Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null, errorInfo: null };
@@ -39,12 +50,27 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
                 {this.state.error?.message || "Error desconocido"}
               </Text>
               {this.state.error?.stack && (
-                <Code block style={{ whiteSpace: "pre-wrap", fontSize: "0.75rem", maxHeight: 300, overflow: "auto" }}>
+                <Code
+                  block
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    fontSize: "0.75rem",
+                    maxHeight: 300,
+                    overflow: "auto",
+                  }}
+                >
                   {this.state.error.stack}
                 </Code>
               )}
               {this.state.errorInfo?.componentStack && (
-                <Code block style={{ whiteSpace: "pre-wrap", fontSize: "0.7rem", color: "gray" }}>
+                <Code
+                  block
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    fontSize: "0.7rem",
+                    color: "gray",
+                  }}
+                >
                   {this.state.errorInfo.componentStack}
                 </Code>
               )}
@@ -52,7 +78,11 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
             <Button
               variant="light"
               onClick={() => {
-                this.setState({ hasError: false, error: null, errorInfo: null });
+                this.setState({
+                  hasError: false,
+                  error: null,
+                  errorInfo: null,
+                });
                 window.location.reload();
               }}
             >

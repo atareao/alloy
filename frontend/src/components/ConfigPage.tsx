@@ -1,19 +1,33 @@
 import { useEffect, useState } from "react";
 import {
-  Alert, Button, Group, Paper, PasswordInput, Stack, Text, Title, TextInput, Switch, Select,
+  Alert,
+  Button,
+  Group,
+  Paper,
+  PasswordInput,
+  Stack,
+  Text,
+  Title,
+  TextInput,
+  Switch,
+  Select,
 } from "@mantine/core";
-import type { AppConfig, DefaultUpdatePolicy, UpdateCheckConfig } from "../types";
+import type {
+  AppConfig,
+  DefaultUpdatePolicy,
+  UpdateCheckConfig,
+} from "../types";
 import { apiFetch } from "../api";
 
 const CRON_PRESETS = [
-  { value: '0 */6 * * *', label: 'Cada 6 horas' },
-  { value: '0 */12 * * *', label: 'Cada 12 horas' },
-  { value: '0 0 * * *', label: 'Cada día a medianoche' },
-  { value: '0 6 * * *', label: 'Cada día a las 6:00' },
-  { value: '0 0 * * 0', label: 'Cada domingo' },
-  { value: '0 0 1 * *', label: 'Cada 1 del mes' },
-  { value: '*/30 * * * *', label: 'Cada 30 minutos' },
-  { value: '0 */1 * * *', label: 'Cada hora' },
+  { value: "0 */6 * * *", label: "Cada 6 horas" },
+  { value: "0 */12 * * *", label: "Cada 12 horas" },
+  { value: "0 0 * * *", label: "Cada día a medianoche" },
+  { value: "0 6 * * *", label: "Cada día a las 6:00" },
+  { value: "0 0 * * 0", label: "Cada domingo" },
+  { value: "0 0 1 * *", label: "Cada 1 del mes" },
+  { value: "*/30 * * * *", label: "Cada 30 minutos" },
+  { value: "0 */1 * * *", label: "Cada hora" },
 ];
 
 interface ConfigPageProps {
@@ -21,7 +35,10 @@ interface ConfigPageProps {
   setConfig: (c: AppConfig) => void;
 }
 
-export default function ConfigPage({ config: configProp, setConfig: setConfigProp }: ConfigPageProps) {
+export default function ConfigPage({
+  config: configProp,
+  setConfig: setConfigProp,
+}: ConfigPageProps) {
   const [saving, setSaving] = useState<string | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,10 +65,12 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
   const [ucNotify, setUcNotify] = useState(false);
 
   // Update check config — fetched separately
-  const [_checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
+  const [_checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
+    null,
+  );
   useEffect(() => {
     fetch("/api/update-check/config", { credentials: "include" })
-      .then(res => res.json())
+      .then((res) => res.json())
       .then((data: UpdateCheckConfig) => {
         setCheckConfig(data);
         setUcCron(data.cron);
@@ -62,12 +81,12 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
   }, []);
 
   // Default update policy
-  const [defAction, setDefAction] = useState<string>('pull-restart');
+  const [defAction, setDefAction] = useState<string>("pull-restart");
   const [defCleanup, setDefCleanup] = useState(false);
   const [defRollback, setDefRollback] = useState(false);
   useEffect(() => {
     fetch("/api/update-policies/default", { credentials: "include" })
-      .then(res => res.json())
+      .then((res) => res.json())
       .then((data: DefaultUpdatePolicy) => {
         setDefAction(data.action);
         setDefCleanup(data.cleanup_old_image);
@@ -117,7 +136,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
         setConfigProp(data);
         setTgToken(data.telegram_token ?? "");
         setTgChatId(data.telegram_chat_id || "");
-        showSuccess(tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado");
+        showSuccess(
+          tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado",
+        );
       } else {
         setError("Error al guardar Telegram");
       }
@@ -152,7 +173,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
         setMxHomeserver(data.matrix_homeserver || "");
         setMxToken(data.matrix_token ?? "");
         setMxRoom(data.matrix_room || "");
-        showSuccess(mxEnabled ? "✅ Matrix configurado" : "❌ Matrix desactivado");
+        showSuccess(
+          mxEnabled ? "✅ Matrix configurado" : "❌ Matrix desactivado",
+        );
       } else {
         setError("Error al guardar Matrix");
       }
@@ -179,7 +202,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
         setConfigProp(data);
         setAuEnabled(data.auto_update_enabled);
         setAuInterval(data.auto_update_interval_hours);
-        showSuccess(auEnabled ? "✅ Auto-update activado" : "❌ Auto-update desactivado");
+        showSuccess(
+          auEnabled ? "✅ Auto-update activado" : "❌ Auto-update desactivado",
+        );
       } else {
         setError("Error al guardar Auto-update");
       }
@@ -196,7 +221,11 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
       const res = await apiFetch("/api/update-check/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cron: ucCron, enabled: ucEnabled, notify: ucNotify }),
+        body: JSON.stringify({
+          cron: ucCron,
+          enabled: ucEnabled,
+          notify: ucNotify,
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -204,7 +233,11 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
-        showSuccess(ucEnabled ? "✅ Revisión programada activada" : "❌ Revisión programada desactivada");
+        showSuccess(
+          ucEnabled
+            ? "✅ Revisión programada activada"
+            : "❌ Revisión programada desactivada",
+        );
       } else {
         setError("Error al guardar la revisión de actualizaciones");
       }
@@ -296,7 +329,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
                   if (res.ok) {
                     showSuccess("📤 Mensaje de prueba enviado a Telegram");
                   } else {
-                    const data = await res.json().catch(() => ({ error: "Error desconocido" }));
+                    const data = await res
+                      .json()
+                      .catch(() => ({ error: "Error desconocido" }));
                     setError(data.error || `Error HTTP ${res.status}`);
                   }
                 } catch {
@@ -375,7 +410,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
                   if (res.ok) {
                     showSuccess("📤 Mensaje de prueba enviado a Matrix");
                   } else {
-                    const data = await res.json().catch(() => ({ error: "Error desconocido" }));
+                    const data = await res
+                      .json()
+                      .catch(() => ({ error: "Error desconocido" }));
                     setError(data.error || `Error HTTP ${res.status}`);
                   }
                 } catch {
@@ -487,7 +524,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
 
       {/* ═══ Política de actualización por defecto ═══ */}
       <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">📋 Política de actualización por defecto</Title>
+        <Title order={4} mb="md">
+          📋 Política de actualización por defecto
+        </Title>
         <Text size="sm" c="dimmed" mb="md">
           Esta política se aplica a los contenedores que no tengan una política
           individual configurada. Puedes sobrescribirla para cada contenedor
@@ -497,10 +536,16 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
           <Select
             label="Acción por defecto"
             data={[
-              { value: 'none', label: '❌ No hacer nada' },
-              { value: 'pull', label: '⬇️ Pull imagen' },
-              { value: 'pull-restart', label: '🔄 Pull + reiniciar contenedor' },
-              { value: 'pull-restart-stack', label: '📦 Pull + reiniciar stack' },
+              { value: "none", label: "❌ No hacer nada" },
+              { value: "pull", label: "⬇️ Pull imagen" },
+              {
+                value: "pull-restart",
+                label: "🔄 Pull + reiniciar contenedor",
+              },
+              {
+                value: "pull-restart-stack",
+                label: "📦 Pull + reiniciar stack",
+              },
             ]}
             value={defAction}
             onChange={(v) => v && setDefAction(v)}
@@ -531,10 +576,12 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
 
       {/* ═══ Export / Import ═══ */}
       <Paper shadow="sm" p="md" withBorder>
-        <Title order={4} mb="md">📦 Exportar / Importar configuración</Title>
+        <Title order={4} mb="md">
+          📦 Exportar / Importar configuración
+        </Title>
         <Text size="sm" c="dimmed" mb="md">
-          Exporta alertas, programaciones y ajustes a un archivo JSON.
-          Puedes importarlo después para restaurar la configuración.
+          Exporta alertas, programaciones y ajustes a un archivo JSON. Puedes
+          importarlo después para restaurar la configuración.
         </Text>
         <Group>
           <Button
@@ -544,7 +591,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
               try {
                 const res = await apiFetch("/api/admin/export");
                 const data = await res.json();
-                const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+                const blob = new Blob([JSON.stringify(data, null, 2)], {
+                  type: "application/json",
+                });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement("a");
                 a.href = url;
@@ -582,7 +631,9 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
                     }),
                   });
                   if (res.ok) {
-                    showSuccess("✅ Configuración importada. Recarga la página.");
+                    showSuccess(
+                      "✅ Configuración importada. Recarga la página.",
+                    );
                     setTimeout(() => window.location.reload(), 1500);
                   } else {
                     const err = await res.text();
