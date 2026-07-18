@@ -314,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_notify_telegram_returns_early_no_token() {
-        notify_telegram(&empty_settings(), "test", "running").await;
+        let _ = notify_telegram(&empty_settings(), "test", "running").await;
     }
 
     #[tokio::test]
@@ -323,14 +323,14 @@ mod tests {
             telegram_token: Some("token".into()),
             ..Default::default()
         };
-        notify_telegram(&s, "test", "running").await;
+        let _ = notify_telegram(&s, "test", "running").await;
     }
 
     // ── Early return: notify_matrix ─────────────────────────
 
     #[tokio::test]
     async fn test_notify_matrix_returns_early_no_homeserver() {
-        notify_matrix(&empty_settings(), "test", "running").await;
+        let _ = notify_matrix(&empty_settings(), "test", "running").await;
     }
 
     #[tokio::test]
@@ -339,7 +339,7 @@ mod tests {
             matrix_homeserver: Some("https://hs.test".into()),
             ..Default::default()
         };
-        notify_matrix(&s, "test", "running").await;
+        let _ = notify_matrix(&s, "test", "running").await;
     }
 
     #[tokio::test]
@@ -349,7 +349,7 @@ mod tests {
             matrix_token: Some("tok".into()),
             ..Default::default()
         };
-        notify_matrix(&s, "test", "running").await;
+        let _ = notify_matrix(&s, "test", "running").await;
     }
 
     // ── notify_all ──────────────────────────────────────────

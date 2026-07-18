@@ -267,7 +267,7 @@ pub struct VersionCompare {
     pub error: Option<String>,
 }
 
-#[expect(dead_code)]
+#[allow(dead_code)]
 pub fn default_enabled() -> bool {
     true
 }
