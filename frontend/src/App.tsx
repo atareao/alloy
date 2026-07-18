@@ -98,7 +98,14 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     if (!authenticated) return;
     const evtSource = new EventSource("/api/events", { withCredentials: true });
     evtSource.addEventListener("containers", (e) => {
-      setContainers(JSON.parse(e.data).containers);
+      setContainers((prev) => {
+        const incoming: ContainerInfo[] = JSON.parse(e.data).containers;
+        const prevHasUpdate = new Map(prev.map((c) => [c.name, c.has_update]));
+        return incoming.map((c) => ({
+          ...c,
+          has_update: prevHasUpdate.get(c.name) ?? c.has_update,
+        }));
+      });
       setContainersLoaded(true);
     });
     evtSource.onerror = () => setContainersLoaded(true);
@@ -275,8 +282,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             containers={containers}
             setContainers={setContainers}
             progress={progress}
-            notifications={notifications}
-            setNotifications={setNotifications}
             containersLoaded={containersLoaded}
             config={config}
           />

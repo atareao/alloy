@@ -29,13 +29,12 @@ import { showNotification } from "@mantine/notifications";
 import type {
   ContainerInfo,
   UpdateProgress,
-  NotifEvent,
   InspectData,
   AppConfig,
   UpdatePolicy,
 } from "../types";
-import { apiFetch, truncate } from "../api";
-import NotifToast from "./NotifToast";
+import { apiFetch } from "../api";
+
 import PolicyActionButton from "./PolicyActionButton";
 
 // ── Props ────────────────────────────────────────────────────
@@ -43,8 +42,6 @@ interface DashboardPageProps {
   containers: ContainerInfo[];
   setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
   progress: Map<string, UpdateProgress>;
-  notifications: NotifEvent[];
-  setNotifications: React.Dispatch<React.SetStateAction<NotifEvent[]>>;
   containersLoaded: boolean;
   config: AppConfig | null;
 }
@@ -65,8 +62,6 @@ export default function DashboardPage({
   containers,
   setContainers,
   progress,
-  notifications,
-  setNotifications,
   config,
 }: DashboardPageProps) {
   const [inspectName, setInspectName] = useState<string | null>(null);
@@ -78,6 +73,8 @@ export default function DashboardPage({
   const [logs, setLogs] = useState<string[]>([]);
   const [logSearch, setLogSearch] = useState("");
   const [logWrap, setLogWrap] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
+  const [logTimeout, setLogTimeout] = useState(false);
   const [loadingActions, setLoadingActions] = useState<Record<string, string>>(
     {},
   );
@@ -91,6 +88,7 @@ export default function DashboardPage({
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchCurrentItem, setBatchCurrentItem] = useState("");
   const cancelBatchRef = useRef(false);
+  const pendingTotalRef = useRef(0);
   const [checkResults, setCheckResults] = useState<CheckAllResults>({
     total: 0,
     updated: 0,
@@ -108,6 +106,34 @@ export default function DashboardPage({
     uptodate: 0,
   });
   const [showSummary, setShowSummary] = useState(false);
+
+  // ── Track batch progress from SSE update events ──
+  useEffect(() => {
+    if (batchPhase !== "updating") return;
+
+    let doneCount = 0;
+    let currentItem = "";
+    progress.forEach((p) => {
+      if (p.done) doneCount++;
+      else if (currentItem === "") currentItem = p.status;
+    });
+
+    setBatchProgress((prev) => {
+      if (doneCount !== prev.current) {
+        return { ...prev, current: doneCount };
+      }
+      return prev;
+    });
+
+    if (currentItem) setBatchCurrentItem(currentItem);
+
+    if (doneCount > 0 && doneCount >= pendingTotalRef.current) {
+      setTimeout(() => {
+        setBatchPhase("idle");
+        setShowSummary(true);
+      }, 1500);
+    }
+  }, [progress, batchPhase]);
 
   const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
   useEffect(() => {
@@ -215,7 +241,6 @@ export default function DashboardPage({
   };
 
   const checkAll = async () => {
-    const initialContainers = containers;
     cancelBatchRef.current = false;
     setBatchPhase("checking");
     setCheckResults({
@@ -234,53 +259,35 @@ export default function DashboardPage({
       updated: 0,
       uptodate: 0,
     });
-    setBatchProgress({ current: 0, total: initialContainers.length });
-    setBatchCurrentItem("");
+    setBatchProgress({ current: 0, total: containers.length });
+    setBatchCurrentItem("🔍 Verificando...");
     setShowSummary(false);
 
-    const updatedUpdates: Record<string, boolean> = {};
     let updatedCount = 0;
     let uptodateCount = 0;
     let failedCount = 0;
     const errors: string[] = [];
 
-    for (let i = 0; i < initialContainers.length; i++) {
-      if (cancelBatchRef.current) break;
-
-      const c = initialContainers[i];
-      const imgLabel = truncate(`${c.image}:${c.image_tag}`);
-      setBatchCurrentItem(`🔍 ${c.name} — ${imgLabel}`);
-      setBatchProgress((prev) => ({ ...prev, current: i + 1 }));
-
-      try {
-        const res = await apiFetch(
-          `/api/check-update/${encodeURIComponent(c.name)}`,
-          { method: "POST" },
+    try {
+      const res = await apiFetch("/api/check-all", { method: "POST" });
+      if (res.ok) {
+        const updated: ContainerInfo[] = await res.json();
+        setContainers((prev) =>
+          prev.map((c) => updated.find((u) => u.name === c.name) || c),
         );
-        if (res.ok) {
-          const data = await res.json();
-          const hasUpdate = data.has_update === true;
-          if (hasUpdate) {
-            updatedUpdates[c.name] = true;
-            updatedCount++;
-          } else {
-            uptodateCount++;
-          }
-        } else {
-          failedCount++;
-          errors.push(`${c.name}: HTTP ${res.status}`);
-        }
-      } catch (e: any) {
-        failedCount++;
-        errors.push(`${c.name}: ${e.message || "unknown error"}`);
+        updatedCount = updated.filter((c) => c.has_update).length;
+        uptodateCount = updated.filter((c) => !c.has_update).length;
+      } else {
+        failedCount = containers.length;
+        errors.push(`HTTP ${res.status}`);
       }
+    } catch (e: any) {
+      failedCount = containers.length;
+      errors.push(`${e.message || "unknown error"}`);
     }
 
-    setContainers((prev) =>
-      prev.map((c) => ({ ...c, has_update: !!updatedUpdates[c.name] })),
-    );
     setCheckResults({
-      total: initialContainers.length,
+      total: containers.length,
       updated: updatedCount,
       uptodate: uptodateCount,
       failed: failedCount,
@@ -288,14 +295,22 @@ export default function DashboardPage({
       errors,
     });
     setBatchProgress({
-      current: initialContainers.length,
-      total: initialContainers.length,
+      current: containers.length,
+      total: containers.length,
     });
+    setBatchCurrentItem("");
 
-    setTimeout(() => {
-      setBatchPhase("idle");
-      setShowSummary(true);
-    }, 500);
+    if (updatedCount > 0) {
+      setBatchPhase("updating");
+      pendingTotalRef.current = updatedCount;
+      setBatchProgress({ current: 0, total: updatedCount });
+      setBatchCurrentItem("⬆️ Aplicando políticas...");
+    } else {
+      setTimeout(() => {
+        setBatchPhase("idle");
+        setShowSummary(true);
+      }, 500);
+    }
   };
 
   const handleCancelBatch = () => {
@@ -351,15 +366,34 @@ export default function DashboardPage({
   useEffect(() => {
     if (!logsContainer) return;
     setLogs([]);
+    setLogError(null);
+    setLogTimeout(false);
+
+    const timeoutId = setTimeout(() => {
+      if (logs.length === 0) {
+        setLogTimeout(true);
+      }
+    }, 5000);
+
     const evtSource = new EventSource(
       `/api/containers/${encodeURIComponent(logsContainer)}/logs`,
       { withCredentials: true },
     );
-    evtSource.addEventListener("log", (e) => {
-      setLogs((prev) => [...prev, e.data].slice(-500));
+    evtSource.addEventListener("log", (e: Event) => {
+      setLogs((prev) => [...prev, (e as MessageEvent).data].slice(-500));
     });
-    evtSource.onerror = () => evtSource.close();
-    return () => evtSource.close();
+    evtSource.addEventListener("error", (e: Event) => {
+      setLogError((e as MessageEvent).data || "Error del servidor");
+      evtSource.close();
+    });
+    evtSource.onerror = () => {
+      setLogError("Conexión perdida");
+      evtSource.close();
+    };
+    return () => {
+      clearTimeout(timeoutId);
+      evtSource.close();
+    };
   }, [logsContainer]);
 
   const filteredLogs = useMemo(() => {
@@ -870,23 +904,6 @@ export default function DashboardPage({
 
   return (
     <>
-      {notifications.length > 0 && (
-        <Paper mb="md" p="xs">
-          <Text size="xs" c="dimmed" mb="xs">
-            🔔 Notificaciones
-          </Text>
-          {notifications.slice(0, 4).map((n, i) => (
-            <NotifToast
-              key={i}
-              notif={n}
-              onDismiss={() =>
-                setNotifications((p) => p.filter((_, j) => j !== i))
-              }
-            />
-          ))}
-        </Paper>
-      )}
-
       {/* Stats bar */}
       <SimpleGrid cols={{ base: 4 }} mb="md">
         <Paper
@@ -1509,6 +1526,8 @@ export default function DashboardPage({
         onClose={() => {
           setLogsContainer(null);
           setLogs([]);
+          setLogError(null);
+          setLogTimeout(false);
         }}
         title={`📋 Logs: ${logsContainer || ""}`}
         size={isMobile ? "100%" : "xl"}
@@ -1560,9 +1579,13 @@ export default function DashboardPage({
             >
               {filteredLogs.length > 0
                 ? filteredLogs.join("")
-                : logs.length > 0
-                  ? "Sin resultados"
-                  : "Esperando logs..."}
+                : logError
+                  ? `❌ ${logError}`
+                  : logTimeout
+                    ? "No se recibieron logs (el contenedor puede no existir o estar detenido)"
+                    : logs.length > 0
+                      ? "Sin resultados"
+                      : "Esperando logs..."}
             </pre>
           </div>
           <Group justify="flex-end">

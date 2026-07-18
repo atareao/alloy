@@ -5,11 +5,11 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use bollard::container::LogOutput;
 use bollard::{
     container::{
-        InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
-        RestartContainerOptions, StartContainerOptions, StopContainerOptions,
+        InspectContainerOptions, ListContainersOptions, LogOutput, LogsOptions,
+        RemoveContainerOptions, RestartContainerOptions, StartContainerOptions,
+        StopContainerOptions,
     },
     image::CreateImageOptions,
     Docker,
@@ -18,6 +18,7 @@ use futures::{pin_mut, StreamExt};
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::config::Config;
 use crate::models::*;
@@ -486,8 +487,6 @@ async fn logs_container_h(
     State(docker): State<Docker>,
     Path(name): Path<String>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
-    use tokio_stream::wrappers::ReceiverStream;
-
     let options = LogsOptions::<String> {
         follow: true,
         stdout: true,
@@ -503,18 +502,26 @@ async fn logs_container_h(
 
     tokio::spawn(async move {
         while let Some(item) = stream.next().await {
-            let text = match item {
+            match item {
                 Ok(LogOutput::StdOut { message }) | Ok(LogOutput::StdErr { message }) => {
-                    String::from_utf8_lossy(&message).to_string()
+                    let text = String::from_utf8_lossy(&message).to_string();
+                    if tx
+                        .send(Ok(Event::default().event("log").data(text)))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
-                _ => continue,
-            };
-            if tx
-                .send(Ok(Event::default().event("log").data(text)))
-                .await
-                .is_err()
-            {
-                break;
+                Ok(_) => continue,
+                Err(e) => {
+                    let _ = tx
+                        .send(Ok(Event::default()
+                            .event("error")
+                            .data(format!("Docker error: {}", e))))
+                        .await;
+                    break;
+                }
             }
         }
     });

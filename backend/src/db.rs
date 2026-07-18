@@ -183,10 +183,18 @@ pub fn update_container_has_update(
     name: &str,
     has_update: bool,
 ) -> SqlResult<()> {
-    conn.execute(
+    let hu = has_update as i32;
+    let affected = conn.execute(
         "UPDATE containers SET has_update = ?1, updated_at = datetime('now') WHERE name = ?2",
-        params![has_update as i32, name],
+        params![hu, name],
     )?;
+    if affected == 0 {
+        conn.execute(
+            "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, has_update, registry_url, updated_at)
+             VALUES (?1, ?2, '', '', 0.0, '', '', '[]', ?3, '', datetime('now'))",
+            params![name, name, hu],
+        )?;
+    }
     Ok(())
 }
 
