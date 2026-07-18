@@ -201,6 +201,7 @@ pub struct UpdatePolicyReq {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
 pub enum UpdateAction {
     None,
     Pull,

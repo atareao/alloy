@@ -149,7 +149,10 @@ pub async fn update_check_worker(
                 Some(p) => p.clone(),
                 None => UpdatePolicy {
                     container: name.clone(),
-                    action: default_action.0.parse().unwrap_or(UpdateAction::PullRestart),
+                    action: default_action
+                        .0
+                        .parse()
+                        .unwrap_or(UpdateAction::PullRestart),
                     cleanup_old_image: default_action.1,
                     rollback_on_failure: default_action.2,
                 },

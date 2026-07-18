@@ -386,7 +386,10 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
             "update_check_notify",
             settings.update_check_notify.map(|v| v.to_string()),
         ),
-        ("default_update_action", settings.default_update_action.clone()),
+        (
+            "default_update_action",
+            settings.default_update_action.clone(),
+        ),
         (
             "default_cleanup_old_image",
             settings.default_cleanup_old_image.map(|v| v.to_string()),

@@ -85,6 +85,10 @@ pub async fn auto_update_worker(
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                 });
                 notify_all(&config, &settings, &name, "🤖 auto-actualizado").await;
+                {
+                    let conn = db::global().lock().await;
+                    let _ = db::update_container_has_update(&conn, &name, false);
+                }
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
                     image: image.clone(),
