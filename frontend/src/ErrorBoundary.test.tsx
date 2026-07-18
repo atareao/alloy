@@ -1,26 +1,32 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
-import { MantineProvider } from '@mantine/core'
-import ErrorBoundary from './components/ErrorBoundary'
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { MantineProvider } from "@mantine/core";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <MantineProvider>{children}</MantineProvider>
+  return <MantineProvider>{children}</MantineProvider>;
 }
 
-describe('ErrorBoundary', () => {
+describe("ErrorBoundary", () => {
   beforeEach(() => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-  })
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
 
-  it('renders children when no error', () => {
+  it("renders children when no error", () => {
     render(
-      <Wrapper><ErrorBoundary><div>Hello</div></ErrorBoundary></Wrapper>,
-    )
-    expect(screen.getByText('Hello')).toBeInTheDocument()
-  })
+      <Wrapper>
+        <ErrorBoundary>
+          <div>Hello</div>
+        </ErrorBoundary>
+      </Wrapper>,
+    );
+    expect(screen.getByText("Hello")).toBeInTheDocument();
+  });
 
-  it('renders fallback UI when child throws', () => {
-    const Bomb = () => { throw new Error('boom!') }
+  it("renders fallback UI when child throws", () => {
+    const Bomb = () => {
+      throw new Error("boom!");
+    };
 
     render(
       <Wrapper>
@@ -28,15 +34,17 @@ describe('ErrorBoundary', () => {
           <Bomb />
         </ErrorBoundary>
       </Wrapper>,
-    )
+    );
 
-    expect(screen.getByText('⚠️ Algo salió mal')).toBeInTheDocument()
-    expect(screen.getByText('boom!')).toBeInTheDocument()
-    expect(screen.getByText('Recargar página')).toBeInTheDocument()
-  })
+    expect(screen.getByText("⚠️ Algo salió mal")).toBeInTheDocument();
+    expect(screen.getByText("boom!")).toBeInTheDocument();
+    expect(screen.getByText("Recargar página")).toBeInTheDocument();
+  });
 
   it('renders "Error desconocido" when error has no message', () => {
-    const Bomb = () => { throw new Error() }
+    const Bomb = () => {
+      throw new Error();
+    };
 
     render(
       <Wrapper>
@@ -44,8 +52,8 @@ describe('ErrorBoundary', () => {
           <Bomb />
         </ErrorBoundary>
       </Wrapper>,
-    )
+    );
 
-    expect(screen.getByText('Error desconocido')).toBeInTheDocument()
-  })
-})
+    expect(screen.getByText("Error desconocido")).toBeInTheDocument();
+  });
+});

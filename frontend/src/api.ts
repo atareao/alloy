@@ -9,7 +9,7 @@ export function apiFetch(path: string, opts?: RequestInit) {
 
 export function truncate(str: string, max: number = 100): string {
   if (str.length <= max) return str;
-  return str.slice(0, max) + '…';
+  return str.slice(0, max) + "…";
 }
 
 export function formatBytes(bytes: number): string {

@@ -1,7 +1,21 @@
 import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
-import { ActionIcon, AppShell, Badge, Button, Container, Group, Stack, Title, Tooltip } from "@mantine/core";
-import type { ContainerInfo, UpdateProgress, NotifEvent, HistoryEntry, AppConfig } from "./types";
+import {
+  AppShell,
+  Button,
+  Container,
+  Group,
+  Stack,
+  Text,
+  Title,
+} from "@mantine/core";
+import type {
+  ContainerInfo,
+  UpdateProgress,
+  NotifEvent,
+  HistoryEntry,
+  AppConfig,
+} from "./types";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
@@ -26,7 +40,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [containersLoaded, setContainersLoaded] = useState(false);
   const [notifications, setNotifications] = useState<NotifEvent[]>([]);
-  const [progress, setProgress] = useState<Map<string, UpdateProgress>>(new Map());
+  const [progress, setProgress] = useState<Map<string, UpdateProgress>>(
+    new Map(),
+  );
   const [checking, setChecking] = useState(true);
 
   // Check auth status on mount
@@ -61,13 +77,20 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const api = useCallback(async (path: string) => {
-    try { return await (await fetch(path, { credentials: "include" })).json(); }
-    catch { return null; }
+    try {
+      return await (await fetch(path, { credentials: "include" })).json();
+    } catch {
+      return null;
+    }
   }, []);
   useEffect(() => {
     if (!authenticated) return;
-    api("/api/history").then((d) => { if (d) setHistory(d); });
-    api("/api/config").then((d) => { if (d) setConfig(d); });
+    api("/api/history").then((d) => {
+      if (d) setHistory(d);
+    });
+    api("/api/config").then((d) => {
+      if (d) setConfig(d);
+    });
   }, [authenticated, api]);
 
   // Connect to container events SSE — lives in App so state persists across tab switches
@@ -85,12 +108,16 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   // Connect to notifications SSE — lives in App so state persists across tab switches
   useEffect(() => {
     if (!authenticated) return;
-    const notifSource = new EventSource("/api/notifications", { withCredentials: true });
+    const notifSource = new EventSource("/api/notifications", {
+      withCredentials: true,
+    });
     notifSource.addEventListener("notification", (e) => {
       try {
         const notif: NotifEvent = JSON.parse(e.data);
         setNotifications((prev) => [notif, ...prev].slice(0, 50));
-      } catch { /* ignore malformed */ }
+      } catch {
+        /* ignore malformed */
+      }
     });
     return () => notifSource.close();
   }, [authenticated]);
@@ -98,7 +125,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   // Connect to update progress SSE — lives in App so state persists across tab switches
   useEffect(() => {
     if (!authenticated) return;
-    const evtSource = new EventSource("/api/updates", { withCredentials: true });
+    const evtSource = new EventSource("/api/updates", {
+      withCredentials: true,
+    });
     evtSource.addEventListener("update-progress", (e) => {
       try {
         const data: UpdateProgress = JSON.parse(e.data);
@@ -108,9 +137,19 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           return next;
         });
         if (data.done) {
-          setTimeout(() => setProgress((prev) => { const n = new Map(prev); n.delete(data.container); return n; }), 3000);
+          setTimeout(
+            () =>
+              setProgress((prev) => {
+                const n = new Map(prev);
+                n.delete(data.container);
+                return n;
+              }),
+            3000,
+          );
         }
-      } catch { /* ignore malformed */ }
+      } catch {
+        /* ignore malformed */
+      }
     });
     return () => evtSource.close();
   }, [authenticated]);
@@ -123,13 +162,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     window.location.href = "/api/auth/logout";
   };
 
-  const [view, setView] = useState<"dashboard" | "history" | "config">("dashboard");
-
-  const toggleColorScheme = () => {
-    const next = colorScheme === "dark" ? "light" : "dark";
-    localStorage.setItem("color-scheme", next);
-    setColorScheme(next);
-  };
+  const [view, setView] = useState<"dashboard" | "history" | "config">(
+    "dashboard",
+  );
 
   if (checking) return null;
   if (!authenticated) return <LoginScreen />;
@@ -139,69 +174,95 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       <Container size="lg" py="md">
         <Stack mb="lg" gap="xs">
           <Group justify="space-between" wrap="nowrap">
-            <Group gap="md" style={{ flex: 1 }}>
-              <Title order={2} style={{ whiteSpace: 'nowrap' }}>
-                <img src="/icon-48x48.png" width="28" height="28" style={{ verticalAlign: 'middle', marginRight: 8 }} alt="Alloy" />
-                Alloy
-              </Title>
-              <Group gap="xs" style={{ flex: 1 }} justify="center">
+            <Group gap="md" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ flexShrink: 0 }}>
+                <Title order={2} style={{ whiteSpace: "nowrap" }}>
+                  <img
+                    src="/icon-48x48.png"
+                    width="28"
+                    height="28"
+                    style={{ verticalAlign: "middle", marginRight: 8 }}
+                    alt="Alloy"
+                  />
+                  Alloy
+                </Title>
+                {user && (
+                  <Text size="sm" c="dimmed" ml={36}>
+                    {user.name}
+                  </Text>
+                )}
+              </div>
+              <Group gap={isMobile ? 4 : "xs"} wrap="nowrap" style={{ flex: 1 }} justify="center">
                 <Button
-                  size={isMobile ? "xs" : "sm"}
+                  size="sm"
                   variant={view === "dashboard" ? "filled" : "light"}
                   color={view === "dashboard" ? "blue" : "gray"}
                   onClick={() => setView("dashboard")}
                 >
-                  📊 Dashboard
+                  {isMobile ? "📊" : "📊 Dashboard"}
                 </Button>
                 <Button
-                  size={isMobile ? "xs" : "sm"}
+                  size="sm"
                   variant={view === "history" ? "filled" : "light"}
                   color={view === "history" ? "blue" : "gray"}
                   onClick={() => setView("history")}
                 >
-                  📜 Historial
+                  {isMobile ? "📜" : "📜 Historial"}
                 </Button>
                 <Button
-                  size={isMobile ? "xs" : "sm"}
+                  size="sm"
                   variant={view === "config" ? "filled" : "light"}
                   color={view === "config" ? "blue" : "gray"}
                   onClick={() => setView("config")}
                 >
-                  ⚙️ Config
+                  {isMobile ? "⚙️" : "⚙️ Config"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="light"
+                  color="gray"
+                  onClick={logout}
+                >
+                  {isMobile ? "🚪" : "🚪 Salir"}
                 </Button>
               </Group>
             </Group>
-            <Group gap="xs" wrap="nowrap">
-              {user && <Badge size={isMobile ? "sm" : "lg"} variant="light" color="gray">{user.name}</Badge>}
-              <Tooltip label={colorScheme === "dark" ? "☀️ Modo claro" : "🌙 Modo oscuro"}>
-                <ActionIcon variant="outline" color="gray" onClick={toggleColorScheme} size="lg" aria-label="Toggle color scheme">
-                  {colorScheme === "dark" ? "☀️" : "🌙"}
-                </ActionIcon>
-              </Tooltip>
-              <Button
-                size={isMobile ? "xs" : "sm"}
-                variant="outline"
-                color="gray"
-                onClick={logout}
-              >
-                {isMobile ? "🚪" : "🚪 Salir"}
-              </Button>
-            </Group>
-          </Group>
-          <Group justify="center" gap="xs">
-            <Badge size="sm" variant="light" color="blue">{containers.length} containers</Badge>
           </Group>
         </Stack>
 
         {/* Notification toasts */}
         {notifications.length > 0 && (
-          <div style={{ position: 'fixed', top: 16, right: 16, zIndex: 1000, maxWidth: 400, width: '100%' }}>
+          <div
+            style={{
+              position: "fixed",
+              top: 16,
+              right: 16,
+              zIndex: 1000,
+              maxWidth: 400,
+              width: "100%",
+            }}
+          >
             {notifications.map((notif, i) => (
-              <NotifToast key={`${notif.container}-${notif.timestamp}-${i}`} notif={notif} onDismiss={() => dismissNotif(i)} />
+              <NotifToast
+                key={`${notif.container}-${notif.timestamp}-${i}`}
+                notif={notif}
+                onDismiss={() => dismissNotif(i)}
+              />
             ))}
             {notifications.length > 3 && (
-              <div style={{ textAlign: 'center', marginTop: 4 }}>
-                <button onClick={() => setNotifications([])} style={{ background: 'rgba(0,0,0,0.7)', color: '#aaa', border: '1px solid #333', borderRadius: 4, padding: '2px 12px', fontSize: 12, cursor: 'pointer' }}>
+              <div style={{ textAlign: "center", marginTop: 4 }}>
+                <button
+                  onClick={() => setNotifications([])}
+                  style={{
+                    background: "rgba(0,0,0,0.7)",
+                    color: "#aaa",
+                    border: "1px solid #333",
+                    borderRadius: 4,
+                    padding: "2px 12px",
+                    fontSize: 12,
+                    cursor: "pointer",
+                  }}
+                >
                   Limpiar todas ({notifications.length})
                 </button>
               </div>
@@ -224,7 +285,12 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           <HistoryPage history={history} setHistory={setHistory} />
         )}
         {view === "config" && (
-          <ConfigPage config={config} setConfig={setConfig} />
+          <ConfigPage
+            config={config}
+            setConfig={setConfig}
+            colorScheme={colorScheme}
+            setColorScheme={setColorScheme}
+          />
         )}
       </Container>
     </AppShell>

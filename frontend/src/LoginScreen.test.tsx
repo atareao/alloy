@@ -1,34 +1,42 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
-import { MantineProvider } from '@mantine/core'
-import LoginScreen from './components/LoginScreen'
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import { MantineProvider } from "@mantine/core";
+import LoginScreen from "./components/LoginScreen";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <MantineProvider>{children}</MantineProvider>
+  return <MantineProvider>{children}</MantineProvider>;
 }
 
-describe('LoginScreen', () => {
+describe("LoginScreen", () => {
   beforeEach(() => {
-    vi.restoreAllMocks()
+    vi.restoreAllMocks();
     // Mock window.location.href
-    Object.defineProperty(window, 'location', {
-      value: { href: '' },
+    Object.defineProperty(window, "location", {
+      value: { href: "" },
       writable: true,
-    })
-  })
+    });
+  });
 
-  it('renders login button', () => {
-    render(<Wrapper><LoginScreen /></Wrapper>)
+  it("renders login button", () => {
+    render(
+      <Wrapper>
+        <LoginScreen />
+      </Wrapper>,
+    );
 
-    expect(screen.getByText('Alloy')).toBeInTheDocument()
-    expect(screen.getByText('🔑 Iniciar sesión con OIDC')).toBeInTheDocument()
-  })
+    expect(screen.getByText("Alloy")).toBeInTheDocument();
+    expect(screen.getByText("🔑 Iniciar sesión con OIDC")).toBeInTheDocument();
+  });
 
-  it('redirects to OIDC login on button click', () => {
-    render(<Wrapper><LoginScreen /></Wrapper>)
+  it("redirects to OIDC login on button click", () => {
+    render(
+      <Wrapper>
+        <LoginScreen />
+      </Wrapper>,
+    );
 
-    fireEvent.click(screen.getByText('🔑 Iniciar sesión con OIDC'))
+    fireEvent.click(screen.getByText("🔑 Iniciar sesión con OIDC"));
 
-    expect(window.location.href).toBe('/api/auth/login')
-  })
-})
+    expect(window.location.href).toBe("/api/auth/login");
+  });
+});
