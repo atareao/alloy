@@ -4,9 +4,9 @@ use axum::{
     routing::{get, put},
     Router,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use serde::{Deserialize, Serialize};
 
 use crate::db;
 use crate::models::*;

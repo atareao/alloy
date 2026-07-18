@@ -79,7 +79,32 @@ pub async fn fetch_containers(
         }
     }
 
-    // Step 2: Build ContainerInfo list (now all image names are resolved)
+    // Step 2: Read persisted has_update from DB
+    let has_update_map: std::collections::HashMap<String, bool> = {
+        let conn = crate::db::global().lock().await;
+        let prepare_result = conn.prepare("SELECT name, has_update FROM containers");
+        let mut stmt = match prepare_result {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("fetch_containers: DB prepare failed: {}", e);
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let hu: i32 = row.get(1)?;
+            Ok((name, hu != 0))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("fetch_containers: DB query failed: {}", e);
+                return Vec::new();
+            }
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // Step 3: Build ContainerInfo list (now all image names are resolved)
     containers
         .iter()
         .filter_map(|c| {
@@ -200,7 +225,7 @@ pub async fn fetch_containers(
                 status: c.status.as_deref().unwrap_or("unknown").to_string(),
                 state: c.state.as_deref().unwrap_or("unknown").to_string(),
                 size_mb: ((c.size_rw.unwrap_or(0) as f64 / 1_048_576.0) * 100.0).round() / 100.0,
-                has_update: false,
+                has_update: *has_update_map.get(&name).unwrap_or(&false),
                 monitored: monitored.contains(&name),
                 compose_project: c
                     .labels

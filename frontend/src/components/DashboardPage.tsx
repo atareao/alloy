@@ -3,7 +3,7 @@ import { useMediaQuery } from "@mantine/hooks";
 import {
   ActionIcon, Badge, Button, Container, Collapse, Group, Loader, Paper, Table, Text,
   Title, Tooltip, Code, Stack, Modal, Anchor, Tabs, ScrollArea, Progress, Divider,
-  SimpleGrid, TextInput, Chip, Switch, Select,
+  SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
 import { showNotification } from "@mantine/notifications";
 import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs, AppConfig, UpdatePolicy } from "../types";
@@ -48,7 +48,6 @@ export default function DashboardPage({
   containersLoaded,
   config,
 }: DashboardPageProps) {
-  const [updating, setUpdating] = useState<string | null>(null);
   const [inspectName, setInspectName] = useState<string | null>(null);
   const [inspectData, setInspectData] = useState<InspectData | null>(null);
   const [inspectLoading, setInspectLoading] = useState(false);
@@ -128,20 +127,6 @@ export default function DashboardPage({
         setContainers(prev => prev.map(c => updated.find(u => u.name === c.name) || c));
       }
     } catch { /* ignore */ }
-  };
-
-  // ── Single container actions ───────────────────────────────
-
-  const updateSingleContainer = async (name: string) => {
-    setUpdating(name);
-    try {
-      await apiFetch(`/api/update/${encodeURIComponent(name)}`, { method: "POST" });
-      setContainers(prev => prev.map(c => c.name === name ? { ...c, has_update: false } : c));
-      showToast(`⬆️ ${name} — actualizado ✅`, "green");
-    } catch {
-      showToast(`⬆️ ${name} — error al actualizar`, "red");
-    }
-    setUpdating(null);
   };
 
   // ── Check all ──────────────────────────────────────────────
@@ -482,11 +467,18 @@ export default function DashboardPage({
 
   // ── Expanded action buttons (icon + text) ────────────────────
   const renderActions = (c: ContainerInfo) => {
-    const isSingleUpdating = updating === c.name;
     const p = progress.get(c.name);
     const hasUpdate = c.has_update;
-    const busy = isSingleUpdating || isBusy;
+    const busy = isBusy;
     const btnSize = isMobile ? "sm" : "compact-sm";
+    const policy = getPolicy(c.name);
+    const policyAction = policy?.action || 'pull-restart';
+    const policyLabels: Record<string, string> = {
+      'none': '❌ No hacer nada',
+      'pull': '⬇️ Solo pull',
+      'pull-restart': '🔄 Pull + reiniciar',
+      'pull-restart-stack': '📦 Pull + reiniciar stack',
+    };
 
     return (
       <Stack gap="xs">
@@ -502,14 +494,13 @@ export default function DashboardPage({
           </Button>
           <PolicyActionButton
               containerName={c.name}
-              isSingleUpdating={isSingleUpdating}
-              updateSingleContainer={updateSingleContainer}
               getPolicy={getPolicy}
               setPolicies={setPolicies}
               btnSize={btnSize}
               busy={busy}
               hasUpdate={hasUpdate}
               showToast={showToast}
+              setContainers={setContainers}
           />
           <Button
             size={btnSize}
@@ -561,6 +552,9 @@ export default function DashboardPage({
             <Text size="xs" c="dimmed">{p.status}</Text>
           </Group>
         )}
+        <Text size="xs" c="dimmed">
+          Política: {policyLabels[policyAction] || policyAction}
+        </Text>
       </Stack>
     );
   };
@@ -585,7 +579,6 @@ export default function DashboardPage({
           </div>
           <Text size="sm" fw={500} truncate style={{ minWidth: 60 }}>{c.name}</Text>
           <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>{c.status}</Text>
-          <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>{`${c.image}:${c.image_tag}`}</Text>
           {c.traefik_url && (
             <Anchor href={c.traefik_url} target="_blank" rel="noopener noreferrer" size="xs" truncate style={{ maxWidth: 180 }} onClick={(e) => e.stopPropagation()}>
               🔗 {c.traefik_url.replace(/^https?:\/\//, "")}
@@ -732,43 +725,7 @@ export default function DashboardPage({
     );
   };
 
-// ── Default update policy ──────────────────────────────────
-  const [defaultPolicy, setDefaultPolicy] = useState<{
-    action: string;
-    cleanup_old_image: boolean;
-    rollback_on_failure: boolean;
-  }>({ action: 'pull-restart', cleanup_old_image: false, rollback_on_failure: false });
-  const [savingDefaultPolicy, setSavingDefaultPolicy] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/update-policies/default", { credentials: "include" })
-      .then(res => res.json())
-      .then((data) => {
-        if (data && data.action) setDefaultPolicy(data);
-      })
-      .catch(() => {});
-  }, []);
-
-  const saveDefaultPolicy = async () => {
-    setSavingDefaultPolicy(true);
-    try {
-      const res = await apiFetch("/api/update-policies/default", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(defaultPolicy),
-      });
-      if (res.ok) {
-        showToast("⚙️ Política global guardada ✅", "green");
-      } else {
-        showToast("⚙️ Error al guardar política global", "red");
-      }
-    } catch {
-      showToast("⚙️ Error de conexión", "red");
-    }
-    setSavingDefaultPolicy(false);
-  };
-
-  // ── Batch progress bar ──────────────────────────────────────
+// ── Batch progress bar ──────────────────────────────────────
   const renderBatchProgress = () => {
     const isUpdatePhase = batchPhase === 'updating';
     const total = isUpdatePhase
@@ -947,74 +904,6 @@ export default function DashboardPage({
           )}
         </Paper>
       )}
-
-      {/* Global update policy toolbar */}
-      <Paper shadow="sm" p="md" mb="md" withBorder>
-        <Group justify="space-between" mb="xs">
-          <Text size="sm" fw={500}>⚙️ Política global de actualización</Text>
-          <Button
-            size="xs"
-            onClick={saveDefaultPolicy}
-            loading={savingDefaultPolicy}
-            color="blue"
-          >
-            Guardar
-          </Button>
-        </Group>
-        <Text size="xs" c="dimmed" mb="sm">
-          Acción por defecto cuando un contenedor tenga una actualización pendiente y no tenga política individual configurada.
-        </Text>
-        {isMobile ? (
-          <Stack gap="sm">
-            <Select
-              label="Acción"
-              data={[
-                { value: 'none', label: '❌ No hacer nada' },
-                { value: 'pull', label: '⬇️ Pull imagen' },
-                { value: 'pull-restart', label: '🔄 Pull + reiniciar contenedor' },
-                { value: 'pull-restart-stack', label: '📦 Pull + reiniciar stack' },
-              ]}
-              value={defaultPolicy.action}
-              onChange={(v) => v && setDefaultPolicy(p => ({ ...p, action: v }))}
-            />
-            <Switch
-              label="🧹 Borrar imagen anterior"
-              checked={defaultPolicy.cleanup_old_image}
-              onChange={(e) => setDefaultPolicy(p => ({ ...p, cleanup_old_image: e.currentTarget.checked }))}
-            />
-            <Switch
-              label="↩️ Rollback si falla"
-              checked={defaultPolicy.rollback_on_failure}
-              onChange={(e) => setDefaultPolicy(p => ({ ...p, rollback_on_failure: e.currentTarget.checked }))}
-            />
-          </Stack>
-        ) : (
-          <Group gap="md" align="flex-end" wrap="wrap">
-            <Select
-              label="Acción por defecto"
-              data={[
-                { value: 'none', label: '❌ No hacer nada' },
-                { value: 'pull', label: '⬇️ Pull imagen' },
-                { value: 'pull-restart', label: '🔄 Pull + reiniciar contenedor' },
-                { value: 'pull-restart-stack', label: '📦 Pull + reiniciar stack' },
-              ]}
-              value={defaultPolicy.action}
-              onChange={(v) => v && setDefaultPolicy(p => ({ ...p, action: v }))}
-              style={{ minWidth: 220 }}
-            />
-            <Switch
-              label="🧹 Borrar imagen anterior"
-              checked={defaultPolicy.cleanup_old_image}
-              onChange={(e) => setDefaultPolicy(p => ({ ...p, cleanup_old_image: e.currentTarget.checked }))}
-            />
-            <Switch
-              label="↩️ Rollback si falla"
-              checked={defaultPolicy.rollback_on_failure}
-              onChange={(e) => setDefaultPolicy(p => ({ ...p, rollback_on_failure: e.currentTarget.checked }))}
-            />
-          </Group>
-        )}
-      </Paper>
 
       {/* Container groups — mobile vs desktop */}
       {isMobile ? (

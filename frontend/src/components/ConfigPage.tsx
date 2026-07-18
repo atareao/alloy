@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Alert, Button, Group, Paper, PasswordInput, Stack, Text, Title, TextInput, Switch, Select,
 } from "@mantine/core";
-import type { AppConfig, UpdateCheckConfig } from "../types";
+import type { AppConfig, DefaultUpdatePolicy, UpdateCheckConfig } from "../types";
 import { apiFetch } from "../api";
 
 const CRON_PRESETS = [
@@ -57,6 +57,21 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Default update policy
+  const [defAction, setDefAction] = useState<string>('pull-restart');
+  const [defCleanup, setDefCleanup] = useState(false);
+  const [defRollback, setDefRollback] = useState(false);
+  useEffect(() => {
+    fetch("/api/update-policies/default", { credentials: "include" })
+      .then(res => res.json())
+      .then((data: DefaultUpdatePolicy) => {
+        setDefAction(data.action);
+        setDefCleanup(data.cleanup_old_image);
+        setDefRollback(data.rollback_on_failure);
       })
       .catch(() => {});
   }, []);
@@ -192,6 +207,30 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
         showSuccess(ucEnabled ? "✅ Revisión programada activada" : "❌ Revisión programada desactivada");
       } else {
         setError("Error al guardar la revisión de actualizaciones");
+      }
+    } catch {
+      setError("Error de conexión");
+    }
+    setSaving(null);
+  };
+
+  const saveDefaultPolicy = async () => {
+    setSaving("default-policy");
+    setError(null);
+    try {
+      const res = await apiFetch("/api/update-policies/default", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: defAction,
+          cleanup_old_image: defCleanup,
+          rollback_on_failure: defRollback,
+        }),
+      });
+      if (res.ok) {
+        showSuccess("✅ Política por defecto actualizada");
+      } else {
+        setError("Error al guardar política por defecto");
       }
     } catch {
       setError("Error de conexión");
@@ -442,6 +481,50 @@ export default function ConfigPage({ config: configProp, setConfig: setConfigPro
             color={ucEnabled ? "blue" : "gray"}
           >
             {ucEnabled ? "Guardar revisión" : "Desactivar revisión"}
+          </Button>
+        </Group>
+      </Paper>
+
+      {/* ═══ Política de actualización por defecto ═══ */}
+      <Paper shadow="sm" p="md" withBorder>
+        <Title order={4} mb="md">📋 Política de actualización por defecto</Title>
+        <Text size="sm" c="dimmed" mb="md">
+          Esta política se aplica a los contenedores que no tengan una política
+          individual configurada. Puedes sobrescribirla para cada contenedor
+          desde el Dashboard con el botón ⚙️.
+        </Text>
+        <Stack>
+          <Select
+            label="Acción por defecto"
+            data={[
+              { value: 'none', label: '❌ No hacer nada' },
+              { value: 'pull', label: '⬇️ Pull imagen' },
+              { value: 'pull-restart', label: '🔄 Pull + reiniciar contenedor' },
+              { value: 'pull-restart-stack', label: '📦 Pull + reiniciar stack' },
+            ]}
+            value={defAction}
+            onChange={(v) => v && setDefAction(v)}
+          />
+          <Switch
+            label="🧹 Borrar imagen anterior"
+            description="Elimina la imagen anterior después de actualizar"
+            checked={defCleanup}
+            onChange={(e) => setDefCleanup(e.currentTarget.checked)}
+          />
+          <Switch
+            label="↩️ Rollback si falla"
+            description="Si el contenedor no arranca, restaura la imagen anterior"
+            checked={defRollback}
+            onChange={(e) => setDefRollback(e.currentTarget.checked)}
+          />
+        </Stack>
+        <Group justify="flex-end" mt="md">
+          <Button
+            onClick={saveDefaultPolicy}
+            loading={saving === "default-policy"}
+            color="blue"
+          >
+            Guardar política por defecto
           </Button>
         </Group>
       </Paper>
