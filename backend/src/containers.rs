@@ -1,18 +1,21 @@
 use axum::{
     extract::{Path, State},
+    response::sse::{Event, KeepAlive, Sse},
     response::Json,
     routing::{get, post, put},
     Router,
 };
+use bollard::container::LogOutput;
 use bollard::{
     container::{
-        InspectContainerOptions, ListContainersOptions, RemoveContainerOptions,
+        InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
         RestartContainerOptions, StartContainerOptions, StopContainerOptions,
     },
     image::CreateImageOptions,
     Docker,
 };
 use futures::{pin_mut, StreamExt};
+use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -479,6 +482,46 @@ async fn remove_container_h(
     Ok(Json(serde_json::json!({"status": "ok"})))
 }
 
+async fn logs_container_h(
+    State(docker): State<Docker>,
+    Path(name): Path<String>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    use tokio_stream::wrappers::ReceiverStream;
+
+    let options = LogsOptions::<String> {
+        follow: true,
+        stdout: true,
+        stderr: true,
+        tail: "100".to_string(),
+        ..Default::default()
+    };
+
+    let stream = docker.logs(&name, Some(options));
+    let mut stream = Box::pin(stream);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(100);
+
+    tokio::spawn(async move {
+        while let Some(item) = stream.next().await {
+            let text = match item {
+                Ok(LogOutput::StdOut { message }) | Ok(LogOutput::StdErr { message }) => {
+                    String::from_utf8_lossy(&message).to_string()
+                }
+                _ => continue,
+            };
+            if tx
+                .send(Ok(Event::default().event("log").data(text)))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/containers", get(list_containers_h))
@@ -487,6 +530,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/containers/{name}/stop", post(stop_container_h))
         .route("/api/containers/{name}/restart", post(restart_container_h))
         .route("/api/containers/{name}/remove", post(remove_container_h))
+        .route("/api/containers/{name}/logs", get(logs_container_h))
         .route("/api/containers/{name}/monitor", put(monitor_container_h))
         .route("/api/containers/monitor-all", put(monitor_all_h))
 }

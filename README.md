@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./frontend/public/favicon.svg" width="64" alt="Alloy logo">
+  <img src="./frontend/public/icon-512x512.png" width="128" alt="Alloy logo">
 
   # Alloy
   *A full-featured Docker management dashboard*
