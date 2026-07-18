@@ -5,8 +5,11 @@
 # Rust build artifacts
 backend/target/
 
-# Frontend (only node_modules excluded — src and dist needed for frontend build stage)
-frontend/node_modules/
+# Frontend build artifacts (local)
+frontend/dist/
+
+# npm lock (proyecto usa pnpm — se excluye para evitar contexto innecesario)
+frontend/package-lock.json
 
 # Persistence files (generated at runtime)
 *.json
