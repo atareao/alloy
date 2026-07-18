@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
-use crate::config::Config;
 use crate::containers::fetch_containers;
 use crate::models::*;
 use crate::notifications::notify_all;
@@ -40,7 +39,6 @@ pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String
 
 async fn refresh(
     docker: &Docker,
-    config: &Config,
     settings: &Arc<Mutex<Settings>>,
     tx: &broadcast::Sender<StateEvent>,
     cache: &CachedContainers,
@@ -48,7 +46,7 @@ async fn refresh(
     previous_states: &mut HashMap<String, String>,
 ) {
     let monitored = settings.lock().await.monitored_containers.clone();
-    let containers = fetch_containers(docker, &config.allowed_containers, &monitored).await;
+    let containers = fetch_containers(docker, &None, &monitored).await;
     *cache.write().await = Some(containers.clone());
     let _ = tx.send(StateEvent {
         containers: containers.clone(),
@@ -79,7 +77,7 @@ async fn refresh(
                 status: status_msg.to_string(),
                 timestamp: now.clone(),
             });
-            notify_all(config, &settings_arc, &c.name, status_msg).await;
+            notify_all(&settings_arc, &c.name, status_msg).await;
         }
     }
     // Update previous states
@@ -94,7 +92,6 @@ async fn refresh(
 
 pub async fn state_worker(
     docker: Docker,
-    config: Config,
     settings: Arc<Mutex<Settings>>,
     tx: broadcast::Sender<StateEvent>,
     cached_containers: CachedContainers,
@@ -109,7 +106,6 @@ pub async fn state_worker(
 
     refresh(
         &docker,
-        &config,
         &settings,
         &tx,
         &cached_containers,
@@ -137,7 +133,7 @@ pub async fn state_worker(
                                             if let Some(ref action) = evt.action {
                                                 if relevant_actions.contains(&action.as_str()) {
                                                     tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
-            refresh(&docker, &config, &settings, &tx, &cached_containers, &notif_tx, &mut previous_states).await;
+            refresh(&docker,  &settings, &tx, &cached_containers, &notif_tx, &mut previous_states).await;
                                                 }
                                             }
                                         }
@@ -153,7 +149,7 @@ pub async fn state_worker(
                                 }
                             }
                             _ = fallback.tick() => {
-                                refresh(&docker, &config, &settings, &tx, &cached_containers, &notif_tx, &mut previous_states).await;
+                                refresh(&docker,  &settings, &tx, &cached_containers, &notif_tx, &mut previous_states).await;
                             }
                         }
         }

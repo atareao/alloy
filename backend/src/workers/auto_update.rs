@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::Config;
 use crate::containers::{find_container_by_name, pull_image};
 use crate::db;
 use crate::models::*;
@@ -14,22 +13,15 @@ use crate::workers::state::docker_list_running;
 /// Auto-update worker: periodic pull + restart
 pub async fn auto_update_worker(
     docker: Docker,
-    config: Config,
     settings: Arc<Mutex<Settings>>,
     notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
 ) {
-    let enabled = {
-        settings
-            .lock()
-            .await
-            .auto_update_enabled
-            .unwrap_or_else(|| config.auto_update())
-    };
+    let enabled = { settings.lock().await.auto_update_enabled.unwrap_or(false) };
     if !enabled {
         return;
     }
-    let hours = config.auto_update_interval();
+    let hours = 6;
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(hours * 3600));
     loop {
         interval.tick().await;
@@ -84,7 +76,7 @@ pub async fn auto_update_worker(
                     status: "🤖 auto-updated".into(),
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                 });
-                notify_all(&config, &settings, &name, "🤖 auto-actualizado").await;
+                notify_all(&settings, &name, "🤖 auto-actualizado").await;
                 {
                     let conn = db::global().lock().await;
                     let _ = db::update_container_has_update(&conn, &name, false);

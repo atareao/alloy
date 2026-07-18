@@ -176,8 +176,6 @@ Cargada desde `config.yaml` (YAML) con override de variables de entorno. Soporta
 
 - `HOST`, `PORT`, `SCAN_INTERVAL_SECS`, `ALLOWED_CONTAINERS`
 - `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`
-- `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`, `MATRIX_HOMESERVER`, `MATRIX_TOKEN`, `MATRIX_ROOM`
-- `AUTO_UPDATE_ENABLED`, `AUTO_UPDATE_INTERVAL_HOURS`
 - `ALERTS` (inline en YAML), `SCHEDULE` (inline en YAML)
 
 ### 10. Frontend Components
