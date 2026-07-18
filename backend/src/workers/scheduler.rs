@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::Config;
 use crate::containers::pull_image;
 use crate::db;
 use crate::models::*;
@@ -19,7 +18,6 @@ use crate::workers::auto_update::{rollback_container, tag_backup_image, verify_c
 /// 4. Ejecuta las acciones configuradas (pull, pull+restart, etc.) para cada contenedor.
 pub async fn update_check_worker(
     docker: Docker,
-    config: Config,
     settings: Arc<Mutex<Settings>>,
     update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
     update_tx: broadcast::Sender<UpdateProgress>,
@@ -296,7 +294,7 @@ pub async fn update_check_worker(
             // Notificar si está configurado
             if notify {
                 let msg = format!("🔄 '{}' → {} (update-check)", name, policy.action);
-                let _ = notify_all(&config, &settings, name, &msg).await;
+                let _ = notify_all(&settings, name, &msg).await;
             }
         }
     }

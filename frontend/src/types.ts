@@ -40,7 +40,6 @@ export interface AppConfig {
   matrix_homeserver: string | null;
   matrix_room: string | null;
   webhook_configured: boolean;
-  allowed_containers: string[] | null;
 }
 
 export interface StackService {

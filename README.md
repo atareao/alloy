@@ -113,7 +113,7 @@ The backend is organized into **13 modules** (~4,235 lines):
 | Module | Lines | Responsibility |
 |---|---|---|
 | `workers.rs` | 756 | Background workers: state, auto-update, alerts, scheduler |
-| `updates.rs` | 524 | Image pull, update, digest compare, version check |
+| `updates/` (3 files) | 588 | Image pull, update, digest compare, version check, history |
 | `auth.rs` | 480 | OIDC auth code flow, session middleware, SPA fallback |
 | `containers.rs` | 410 | Container CRUD, inspect, fetch, pull |
 | `models.rs` | 402 | Data types, constants, AppError |
@@ -135,6 +135,73 @@ The backend is organized into **13 modules** (~4,235 lines):
 | `alerts_worker` | 30s | Monitors container state transitions |
 | `scheduler_worker` | 60s | Evaluates cron expressions, executes scheduled actions |
 | `oidc_states_cleanup` | 5 min | Cleans expired OIDC CSRF states (>10 min) |
+
+### Update Flow (`check-all` → policy apply → restart)
+
+The bulk update flow (`POST /api/check-all`) is a two-phase process:
+
+**Phase 1 — Check (blocking, returns response):**
+
+```
+Frontend                        Backend
+   │                               │
+   ├── POST /api/check-all ────────┤
+   │                               ├── fetch_containers()
+   │                               ├── for each container (parallel):
+   │                               │     ├── parse_image_ref(image) → (repo, tag)
+   │                               │     ├── check_remote_digest(repo, tag) → Docker Hub
+   │                               │     │     ├── GET auth.docker.io/token (Bearer token)
+   │                               │     │     ├── GET registry-1.docker.io/v2/{repo}/manifests/{tag}
+   │                               │     │     └── extract config.digest from manifest
+   │                               │     └── compare short_digest(local) vs short_digest(remote)
+   │                               ├── persist has_update to SQLite
+   │                               ├── build pending list (containers with has_update)
+   │                               ├── tokio::spawn(apply_policies_background) ────┐
+   │                               └── return Json(containers) with has_update ✔────┤
+   │                                                                                │
+   ├── receives response ──────────┤                                                │
+   │   updates container list      │                                                │
+   │   if has_update > 0:          │                                                │
+   │     shows progress bar ───────┼── SSE /api/updates ◄───────────────────────────┘
+   │                               │     (update-progress events)
+```
+
+**Phase 2 — Policy apply (background, non-blocking):**
+
+```
+Backend (tokio::spawn)
+   │
+   ├── for each pending container:
+   │     ├── resolve policy (per-container or default)
+   │     │
+   │     ├── [PullRestart] ──────────────────────────────────┐
+   │     │     ├── tag_backup_image()  (if rollback enabled) │
+   │     │     ├── pull_image() → docker.create_image()      │
+   │     │     ├── restart_container() → docker.restart()    │
+   │     │     ├── verify_container_healthy() (if rollback)  │
+   │     │     │     ├── OK → continue                       │
+   │     │     │     └── FAIL → rollback_container()         │
+   │     │     └── cleanup_old_image() (if configured)       │
+   │     │                                                   │
+   │     ├── [PullRestartStack] ─────────────────────────────┤
+   │     │     ├── resolve_compose_file() → docker labels    │
+   │     │     ├── docker compose -f <file> pull             │
+   │     │     └── docker compose -f <file> up -d            │
+   │     │                                                   │
+   │     └── [Pull] → pull_image() only                 ◄───┘
+   │
+   ├── SSE update-progress (done, status)
+   ├── SSE notification (updated ✅)
+   ├── notify_all() → Telegram / Matrix / Webhook
+   ├── persist has_update = false to SQLite
+   └── append to UpdateHistoryEntry (SQLite)
+```
+
+**Single container update** (`POST /api/update/{name}`) follows the same pull + restart logic synchronously, returning the result directly.
+
+**Auto-update worker** (`auto_update_worker` in `workers/auto_update.rs`) runs periodically (default 6h) and applies the same digest comparison + pull + restart cycle to all running containers, with a final `docker.prune_images()` to clean up unused images.
+
+**Key files:** `backend/src/updates/handlers.rs` (check_all_h, update_container_h, apply_policies_background), `backend/src/updates/digest.rs` (check_remote_digest, parse_image_ref, short_digest), `backend/src/workers/auto_update.rs` (auto_update_worker, rollback_container, verify_container_healthy), `frontend/src/components/DashboardPage.tsx` (checkAll, SSE progress tracking, summary dialog).
 
 ## Quick start
 
@@ -202,15 +269,6 @@ oidc_redirect_url: "https://alloy.example.com/api/auth/callback"
 | `OIDC_CLIENT_ID` | — | **Yes** | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | — | **Yes** | OIDC client secret |
 | `OIDC_REDIRECT_URL` | — | **Yes** | OIDC callback URL |
-| `SCAN_INTERVAL_SECS` | `30` | No | Container state polling interval |
-| `ALLOWED_CONTAINERS` | `*` | No | Comma-separated container allowlist |
-| `TELEGRAM_TOKEN` | — | No | Telegram bot token |
-| `TELEGRAM_CHAT_ID` | — | No | Telegram chat ID |
-| `MATRIX_HOMESERVER` | — | No | Matrix homeserver URL |
-| `MATRIX_TOKEN` | — | No | Matrix access token |
-| `MATRIX_ROOM` | — | No | Matrix room ID |
-| `AUTO_UPDATE_ENABLED` | `false` | No | Enable auto-update worker |
-| `AUTO_UPDATE_INTERVAL_HOURS` | `6` | No | Auto-update interval in hours |
 
 ## API
 

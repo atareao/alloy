@@ -9,26 +9,6 @@ pub struct Config {
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default)]
-    pub scan_interval_secs: Option<u64>,
-    #[serde(default)]
-    pub allowed_containers: Option<Vec<String>>,
-    #[serde(default)]
-    pub auto_update_enabled: Option<bool>,
-    #[serde(default)]
-    pub auto_update_interval_hours: Option<u64>,
-    #[serde(default)]
-    pub telegram_token: Option<String>,
-    #[serde(default)]
-    pub telegram_chat_id: Option<String>,
-    #[serde(default)]
-    pub matrix_homeserver: Option<String>,
-    #[serde(default)]
-    pub matrix_token: Option<String>,
-    #[serde(default)]
-    pub matrix_room: Option<String>,
-    #[serde(default)]
-    pub webhook_url: Option<String>,
-    #[serde(default)]
     pub oidc_issuer_url: Option<String>,
     #[serde(default)]
     pub oidc_client_id: Option<String>,
@@ -73,21 +53,6 @@ impl Config {
         if let Ok(v) = std::env::var("OIDC_REDIRECT_URL") {
             cfg.oidc_redirect_url = Some(v);
         }
-        // Telegram: prioridad a secretos de Podman, fallback a env vars
-        cfg.telegram_token =
-            read_secret("telegram_token").or_else(|| std::env::var("TELEGRAM_TOKEN").ok());
-        if let Ok(v) = std::env::var("TELEGRAM_CHAT_ID") {
-            cfg.telegram_chat_id = Some(v);
-        }
-        // Matrix: prioridad a secretos de Podman, fallback a env vars
-        cfg.matrix_token =
-            read_secret("matrix_token").or_else(|| std::env::var("MATRIX_TOKEN").ok());
-        if let Ok(v) = std::env::var("MATRIX_HOMESERVER") {
-            cfg.matrix_homeserver = Some(v);
-        }
-        if let Ok(v) = std::env::var("MATRIX_ROOM") {
-            cfg.matrix_room = Some(v);
-        }
         cfg
     }
 
@@ -97,16 +62,6 @@ impl Config {
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(3066)
     }
-    pub fn scan_interval(&self) -> u64 {
-        self.scan_interval_secs.unwrap_or(5)
-    }
-    pub fn auto_update(&self) -> bool {
-        self.auto_update_enabled.unwrap_or(false)
-    }
-    pub fn auto_update_interval(&self) -> u64 {
-        self.auto_update_interval_hours.unwrap_or(6)
-    }
-
     pub fn oidc_issuer(&self) -> &str {
         self.oidc_issuer_url
             .as_deref()
@@ -143,46 +98,25 @@ use crate::db;
 use crate::models::{PublicConfig, Settings, UpdateSettingsReq};
 use crate::state::AppState;
 
-async fn config_handler(
-    State(config): State<Config>,
-    State(settings): State<Arc<Mutex<Settings>>>,
-) -> Json<PublicConfig> {
+async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<PublicConfig> {
     let s = settings.lock().await;
-    let tg_token = s.telegram_token.as_ref().or(config.telegram_token.as_ref());
-    let tg_chat_id = s
-        .telegram_chat_id
-        .clone()
-        .or_else(|| config.telegram_chat_id.clone());
-    let mx_homeserver = s
-        .matrix_homeserver
-        .clone()
-        .or_else(|| config.matrix_homeserver.clone());
-    let mx_token = s.matrix_token.as_ref().or(config.matrix_token.as_ref());
-    let mx_room = s.matrix_room.clone().or_else(|| config.matrix_room.clone());
-    let wh_url = s.webhook_url.clone().or_else(|| config.webhook_url.clone());
     Json(PublicConfig {
         oidc_configured: true,
-        port: config.port(),
-        auto_update_enabled: s
-            .auto_update_enabled
-            .unwrap_or_else(|| config.auto_update()),
-        auto_update_interval_hours: s
-            .auto_update_interval_hours
-            .unwrap_or_else(|| config.auto_update_interval()),
-        telegram_configured: tg_token.is_some(),
-        telegram_token: tg_token.map(|s| s.to_string()),
-        telegram_chat_id: tg_chat_id,
-        matrix_configured: mx_homeserver.is_some(),
-        matrix_token: mx_token.map(|s| s.to_string()),
-        matrix_homeserver: mx_homeserver,
-        matrix_room: mx_room,
-        webhook_configured: wh_url.is_some(),
-        allowed_containers: config.allowed_containers.clone(),
+        port: 3066,
+        auto_update_enabled: s.auto_update_enabled.unwrap_or(false),
+        auto_update_interval_hours: s.auto_update_interval_hours.unwrap_or(6),
+        telegram_configured: s.telegram_token.is_some(),
+        telegram_token: s.telegram_token.clone(),
+        telegram_chat_id: s.telegram_chat_id.clone(),
+        matrix_configured: s.matrix_homeserver.is_some(),
+        matrix_token: s.matrix_token.clone(),
+        matrix_homeserver: s.matrix_homeserver.clone(),
+        matrix_room: s.matrix_room.clone(),
+        webhook_configured: s.webhook_url.is_some(),
     })
 }
 
 async fn update_config_h(
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
     Json(body): Json<UpdateSettingsReq>,
 ) -> Json<PublicConfig> {
@@ -239,7 +173,7 @@ async fn update_config_h(
         let conn = db::global().lock().await;
         let _ = db::save_settings(&conn, &s);
     }
-    config_handler(State(config), State(settings)).await
+    config_handler(State(settings)).await
 }
 
 pub fn routes() -> Router<AppState> {
@@ -283,51 +217,6 @@ mod tests {
     }
 
     #[test]
-    fn test_default_scan_interval() {
-        let cfg = Config::default();
-        assert_eq!(cfg.scan_interval(), 5);
-    }
-
-    #[test]
-    fn test_custom_scan_interval() {
-        let cfg = Config {
-            scan_interval_secs: Some(10),
-            ..Default::default()
-        };
-        assert_eq!(cfg.scan_interval(), 10);
-    }
-
-    #[test]
-    fn test_default_auto_update_disabled() {
-        let cfg = Config::default();
-        assert!(!cfg.auto_update());
-    }
-
-    #[test]
-    fn test_auto_update_enabled() {
-        let cfg = Config {
-            auto_update_enabled: Some(true),
-            ..Default::default()
-        };
-        assert!(cfg.auto_update());
-    }
-
-    #[test]
-    fn test_default_auto_update_interval() {
-        let cfg = Config::default();
-        assert_eq!(cfg.auto_update_interval(), 6);
-    }
-
-    #[test]
-    fn test_custom_auto_update_interval() {
-        let cfg = Config {
-            auto_update_interval_hours: Some(12),
-            ..Default::default()
-        };
-        assert_eq!(cfg.auto_update_interval(), 12);
-    }
-
-    #[test]
     #[should_panic(expected = "OIDC_ISSUER_URL is required")]
     fn test_oidc_issuer_panics_when_empty() {
         let cfg = Config::default();
@@ -339,13 +228,9 @@ mod tests {
         let yaml = r#"
 host: "127.0.0.1"
 port: 8080
-scan_interval_secs: 10
-auto_update_enabled: true
 "#;
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.host(), "127.0.0.1");
         assert_eq!(cfg.port(), 8080);
-        assert_eq!(cfg.scan_interval(), 10);
-        assert!(cfg.auto_update());
     }
 }

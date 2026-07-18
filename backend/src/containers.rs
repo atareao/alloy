@@ -20,7 +20,6 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::config::Config;
 use crate::models::*;
 use crate::state::AppState;
 use crate::workers::CachedContainers;
@@ -264,7 +263,6 @@ pub async fn pull_image(docker: &Docker, image: &str) -> bool {
 async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
 ) -> Json<Vec<ContainerInfo>> {
     let cached = cache.read().await;
@@ -273,13 +271,12 @@ async fn list_containers_h(
     } else {
         drop(cached);
         let monitored = settings.lock().await.monitored_containers.clone();
-        Json(fetch_containers(&docker, &config.allowed_containers, &monitored).await)
+        Json(fetch_containers(&docker, &None, &monitored).await)
     }
 }
 
 async fn monitor_container_h(
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
     Path(name): Path<String>,
     Json(body): Json<serde_json::Value>,
@@ -298,17 +295,16 @@ async fn monitor_container_h(
         let _ = crate::db::save_settings(&conn, &s);
     }
     let monitored_list = settings.lock().await.monitored_containers.clone();
-    Json(fetch_containers(&docker, &config.allowed_containers, &monitored_list).await)
+    Json(fetch_containers(&docker, &None, &monitored_list).await)
 }
 
 async fn monitor_all_h(
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
     Json(body): Json<serde_json::Value>,
 ) -> Json<Vec<ContainerInfo>> {
     let monitored = body["monitored"].as_bool().unwrap_or(false);
-    let containers = fetch_containers(&docker, &config.allowed_containers, &[]).await;
+    let containers = fetch_containers(&docker, &None, &[]).await;
     {
         let mut s = settings.lock().await;
         if monitored {
@@ -324,7 +320,7 @@ async fn monitor_all_h(
         let _ = crate::db::save_settings(&conn, &s);
     }
     let monitored_list = settings.lock().await.monitored_containers.clone();
-    Json(fetch_containers(&docker, &config.allowed_containers, &monitored_list).await)
+    Json(fetch_containers(&docker, &None, &monitored_list).await)
 }
 
 async fn inspect_container_h(

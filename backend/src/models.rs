@@ -47,7 +47,6 @@ pub struct PublicConfig {
     pub telegram_configured: bool,
     pub matrix_configured: bool,
     pub webhook_configured: bool,
-    pub allowed_containers: Option<Vec<String>>,
     pub telegram_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub matrix_homeserver: Option<String>,
