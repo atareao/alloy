@@ -11,9 +11,9 @@ export default function LoginScreen() {
       <Title order={2} mb="lg" ta="center">
         <img
           src="/icon-512x512.png"
-          width="32"
-          height="32"
-          style={{ verticalAlign: "middle", marginRight: 8 }}
+          width="512"
+          height="512"
+          style={{ verticalAlign: "middle", marginRight: 8, maxWidth: "100%", height: "auto" }}
           alt="Alloy"
         />
         Alloy

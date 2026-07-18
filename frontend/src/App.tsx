@@ -200,30 +200,30 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                   </Text>
                 )}
               </div>
-              <Group gap="xs" style={{ flex: 1 }} justify="center">
+              <Group gap="xs" style={{ flex: 1 }} justify="center" wrap="nowrap">
                 <Button
-                  size={isMobile ? "xs" : "sm"}
+                  size={isMobile ? "md" : "sm"}
                   variant={view === "dashboard" ? "filled" : "light"}
                   color={view === "dashboard" ? "blue" : "gray"}
                   onClick={() => setView("dashboard")}
                 >
-                  📊 Dashboard
+                  {isMobile ? "📊" : "📊 Dashboard"}
                 </Button>
                 <Button
-                  size={isMobile ? "xs" : "sm"}
+                  size={isMobile ? "md" : "sm"}
                   variant={view === "history" ? "filled" : "light"}
                   color={view === "history" ? "blue" : "gray"}
                   onClick={() => setView("history")}
                 >
-                  📜 Historial
+                  {isMobile ? "📜" : "📜 Historial"}
                 </Button>
                 <Button
-                  size={isMobile ? "xs" : "sm"}
+                  size={isMobile ? "md" : "sm"}
                   variant={view === "config" ? "filled" : "light"}
                   color={view === "config" ? "blue" : "gray"}
                   onClick={() => setView("config")}
                 >
-                  ⚙️ Config
+                  {isMobile ? "⚙️" : "⚙️ Config"}
                 </Button>
               </Group>
             </Group>
