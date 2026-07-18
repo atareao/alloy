@@ -74,6 +74,10 @@ export default function DashboardPage({
   const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [logsContainer, setLogsContainer] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [logSearch, setLogSearch] = useState("");
+  const [logWrap, setLogWrap] = useState(false);
   const [loadingActions, setLoadingActions] = useState<Record<string, string>>(
     {},
   );
@@ -339,6 +343,32 @@ export default function DashboardPage({
     setInspectLoading(false);
   };
 
+  const handleLogs = (name: string) => {
+    setLogsContainer(name);
+    setLogs([]);
+  };
+
+  useEffect(() => {
+    if (!logsContainer) return;
+    setLogs([]);
+    const evtSource = new EventSource(
+      `/api/containers/${encodeURIComponent(logsContainer)}/logs`,
+      { withCredentials: true },
+    );
+    evtSource.addEventListener("log", (e) => {
+      setLogs((prev) => [...prev, e.data].slice(-500));
+    });
+    evtSource.onerror = () => evtSource.close();
+    return () => evtSource.close();
+  }, [logsContainer]);
+
+  const filteredLogs = useMemo(() => {
+    if (!logSearch) return logs;
+    return logs.filter((l) =>
+      l.toLowerCase().includes(logSearch.toLowerCase()),
+    );
+  }, [logs, logSearch]);
+
   const handleRemove = async (name: string) => {
     setConfirmDelete(null);
     try {
@@ -556,6 +586,16 @@ export default function DashboardPage({
           <Button
             size={btnSize}
             variant="light"
+            color="grape"
+            leftSection="📋"
+            onClick={() => handleLogs(c.name)}
+            disabled={busy}
+          >
+            Logs
+          </Button>
+          <Button
+            size={btnSize}
+            variant="light"
             color="gray"
             leftSection="🗑"
             onClick={() => setConfirmDelete(c.name)}
@@ -572,21 +612,7 @@ export default function DashboardPage({
             </Text>
           </Group>
         )}
-        {isMobile ? (
-          <Stack gap="xs">
-            <Text size="xs" c="dimmed">
-              Política: {policyLabels[policyAction] || policyAction}
-            </Text>
-            <PolicyActionButton
-              containerName={c.name}
-              getPolicy={getPolicy}
-              setPolicies={setPolicies}
-              busy={busy}
-              showToast={showToast}
-            />
-          </Stack>
-        ) : (
-          <Group gap="xs" justify="space-between" wrap="nowrap">
+        <Group gap="xs" wrap="wrap" justify="flex-start">
             <Text size="xs" c="dimmed">
               Política: {policyLabels[policyAction] || policyAction}
             </Text>
@@ -598,7 +624,6 @@ export default function DashboardPage({
               showToast={showToast}
             />
           </Group>
-        )}
       </Stack>
     );
   };
@@ -1474,6 +1499,82 @@ export default function DashboardPage({
 
           <Group justify="flex-end">
             <Button onClick={() => setShowSummary(false)}>Cerrar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Logs modal */}
+      <Modal
+        opened={logsContainer !== null}
+        onClose={() => {
+          setLogsContainer(null);
+          setLogs([]);
+        }}
+        title={`📋 Logs: ${logsContainer || ""}`}
+        size={isMobile ? "100%" : "xl"}
+      >
+        <Stack>
+          <Group gap="sm" wrap="nowrap" align="center">
+            <TextInput
+              placeholder="Buscar en logs..."
+              value={logSearch}
+              onChange={(e) => setLogSearch(e.currentTarget.value)}
+              leftSection="🔍"
+              size="sm"
+              style={{ flex: 1 }}
+            />
+            <Switch
+              size="xs"
+              label="Wrap"
+              checked={logWrap}
+              onChange={(e) => setLogWrap(e.currentTarget.checked)}
+              flex="none"
+            />
+          </Group>
+          {logSearch && (
+            <Text size="xs" c="dimmed" ta="right">
+              {filteredLogs.length} de {logs.length} líneas
+            </Text>
+          )}
+          <div
+            style={{
+              height: isMobile ? 300 : 500,
+              overflowX: "auto",
+              overflowY: "auto",
+              border: "1px solid var(--mantine-color-dark-4)",
+              borderRadius: "var(--mantine-radius-sm)",
+              backgroundColor: "#0d0d0d",
+            }}
+          >
+            <pre
+              style={{
+                fontSize: 12,
+                whiteSpace: logWrap ? "pre-wrap" : "pre",
+                backgroundColor: "transparent",
+                color: "#e0e0e0",
+                padding: "var(--mantine-spacing-sm)",
+                margin: 0,
+                overflow: "visible",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              }}
+            >
+              {filteredLogs.length > 0
+                ? filteredLogs.join("")
+                : logs.length > 0
+                  ? "Sin resultados"
+                  : "Esperando logs..."}
+            </pre>
+          </div>
+          <Group justify="flex-end">
+            <Button
+              variant="light"
+              onClick={() => {
+                setLogsContainer(null);
+                setLogs([]);
+              }}
+            >
+              Aceptar
+            </Button>
           </Group>
         </Stack>
       </Modal>
