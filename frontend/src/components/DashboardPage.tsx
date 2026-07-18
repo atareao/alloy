@@ -29,13 +29,12 @@ import { showNotification } from "@mantine/notifications";
 import type {
   ContainerInfo,
   UpdateProgress,
-  NotifEvent,
   InspectData,
   AppConfig,
   UpdatePolicy,
 } from "../types";
-import { apiFetch, truncate } from "../api";
-import NotifToast from "./NotifToast";
+import { apiFetch } from "../api";
+
 import PolicyActionButton from "./PolicyActionButton";
 
 // ── Props ────────────────────────────────────────────────────
@@ -43,8 +42,6 @@ interface DashboardPageProps {
   containers: ContainerInfo[];
   setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
   progress: Map<string, UpdateProgress>;
-  notifications: NotifEvent[];
-  setNotifications: React.Dispatch<React.SetStateAction<NotifEvent[]>>;
   containersLoaded: boolean;
   config: AppConfig | null;
 }
@@ -65,8 +62,6 @@ export default function DashboardPage({
   containers,
   setContainers,
   progress,
-  notifications,
-  setNotifications,
   config,
 }: DashboardPageProps) {
   const [inspectName, setInspectName] = useState<string | null>(null);
@@ -74,6 +69,12 @@ export default function DashboardPage({
   const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [logsContainer, setLogsContainer] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [logSearch, setLogSearch] = useState("");
+  const [logWrap, setLogWrap] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
+  const [logTimeout, setLogTimeout] = useState(false);
   const [loadingActions, setLoadingActions] = useState<Record<string, string>>(
     {},
   );
@@ -87,6 +88,7 @@ export default function DashboardPage({
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchCurrentItem, setBatchCurrentItem] = useState("");
   const cancelBatchRef = useRef(false);
+  const pendingTotalRef = useRef(0);
   const [checkResults, setCheckResults] = useState<CheckAllResults>({
     total: 0,
     updated: 0,
@@ -104,6 +106,34 @@ export default function DashboardPage({
     uptodate: 0,
   });
   const [showSummary, setShowSummary] = useState(false);
+
+  // ── Track batch progress from SSE update events ──
+  useEffect(() => {
+    if (batchPhase !== "updating") return;
+
+    let doneCount = 0;
+    let currentItem = "";
+    progress.forEach((p) => {
+      if (p.done) doneCount++;
+      else if (currentItem === "") currentItem = p.status;
+    });
+
+    setBatchProgress((prev) => {
+      if (doneCount !== prev.current) {
+        return { ...prev, current: doneCount };
+      }
+      return prev;
+    });
+
+    if (currentItem) setBatchCurrentItem(currentItem);
+
+    if (doneCount > 0 && doneCount >= pendingTotalRef.current) {
+      setTimeout(() => {
+        setBatchPhase("idle");
+        setShowSummary(true);
+      }, 1500);
+    }
+  }, [progress, batchPhase]);
 
   const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
   useEffect(() => {
@@ -211,7 +241,6 @@ export default function DashboardPage({
   };
 
   const checkAll = async () => {
-    const initialContainers = containers;
     cancelBatchRef.current = false;
     setBatchPhase("checking");
     setCheckResults({
@@ -230,53 +259,35 @@ export default function DashboardPage({
       updated: 0,
       uptodate: 0,
     });
-    setBatchProgress({ current: 0, total: initialContainers.length });
-    setBatchCurrentItem("");
+    setBatchProgress({ current: 0, total: containers.length });
+    setBatchCurrentItem("🔍 Verificando...");
     setShowSummary(false);
 
-    const updatedUpdates: Record<string, boolean> = {};
     let updatedCount = 0;
     let uptodateCount = 0;
     let failedCount = 0;
     const errors: string[] = [];
 
-    for (let i = 0; i < initialContainers.length; i++) {
-      if (cancelBatchRef.current) break;
-
-      const c = initialContainers[i];
-      const imgLabel = truncate(`${c.image}:${c.image_tag}`);
-      setBatchCurrentItem(`🔍 ${c.name} — ${imgLabel}`);
-      setBatchProgress((prev) => ({ ...prev, current: i + 1 }));
-
-      try {
-        const res = await apiFetch(
-          `/api/check-update/${encodeURIComponent(c.name)}`,
-          { method: "POST" },
+    try {
+      const res = await apiFetch("/api/check-all", { method: "POST" });
+      if (res.ok) {
+        const updated: ContainerInfo[] = await res.json();
+        setContainers((prev) =>
+          prev.map((c) => updated.find((u) => u.name === c.name) || c),
         );
-        if (res.ok) {
-          const data = await res.json();
-          const hasUpdate = data.has_update === true;
-          if (hasUpdate) {
-            updatedUpdates[c.name] = true;
-            updatedCount++;
-          } else {
-            uptodateCount++;
-          }
-        } else {
-          failedCount++;
-          errors.push(`${c.name}: HTTP ${res.status}`);
-        }
-      } catch (e: any) {
-        failedCount++;
-        errors.push(`${c.name}: ${e.message || "unknown error"}`);
+        updatedCount = updated.filter((c) => c.has_update).length;
+        uptodateCount = updated.filter((c) => !c.has_update).length;
+      } else {
+        failedCount = containers.length;
+        errors.push(`HTTP ${res.status}`);
       }
+    } catch (e: any) {
+      failedCount = containers.length;
+      errors.push(`${e.message || "unknown error"}`);
     }
 
-    setContainers((prev) =>
-      prev.map((c) => ({ ...c, has_update: !!updatedUpdates[c.name] })),
-    );
     setCheckResults({
-      total: initialContainers.length,
+      total: containers.length,
       updated: updatedCount,
       uptodate: uptodateCount,
       failed: failedCount,
@@ -284,14 +295,22 @@ export default function DashboardPage({
       errors,
     });
     setBatchProgress({
-      current: initialContainers.length,
-      total: initialContainers.length,
+      current: containers.length,
+      total: containers.length,
     });
+    setBatchCurrentItem("");
 
-    setTimeout(() => {
-      setBatchPhase("idle");
-      setShowSummary(true);
-    }, 500);
+    if (updatedCount > 0) {
+      setBatchPhase("updating");
+      pendingTotalRef.current = updatedCount;
+      setBatchProgress({ current: 0, total: updatedCount });
+      setBatchCurrentItem("⬆️ Aplicando políticas...");
+    } else {
+      setTimeout(() => {
+        setBatchPhase("idle");
+        setShowSummary(true);
+      }, 500);
+    }
   };
 
   const handleCancelBatch = () => {
@@ -338,6 +357,51 @@ export default function DashboardPage({
     }
     setInspectLoading(false);
   };
+
+  const handleLogs = (name: string) => {
+    setLogsContainer(name);
+    setLogs([]);
+  };
+
+  useEffect(() => {
+    if (!logsContainer) return;
+    setLogs([]);
+    setLogError(null);
+    setLogTimeout(false);
+
+    const timeoutId = setTimeout(() => {
+      if (logs.length === 0) {
+        setLogTimeout(true);
+      }
+    }, 5000);
+
+    const evtSource = new EventSource(
+      `/api/containers/${encodeURIComponent(logsContainer)}/logs`,
+      { withCredentials: true },
+    );
+    evtSource.addEventListener("log", (e: Event) => {
+      setLogs((prev) => [...prev, (e as MessageEvent).data].slice(-500));
+    });
+    evtSource.addEventListener("error", (e: Event) => {
+      setLogError((e as MessageEvent).data || "Error del servidor");
+      evtSource.close();
+    });
+    evtSource.onerror = () => {
+      setLogError("Conexión perdida");
+      evtSource.close();
+    };
+    return () => {
+      clearTimeout(timeoutId);
+      evtSource.close();
+    };
+  }, [logsContainer]);
+
+  const filteredLogs = useMemo(() => {
+    if (!logSearch) return logs;
+    return logs.filter((l) =>
+      l.toLowerCase().includes(logSearch.toLowerCase()),
+    );
+  }, [logs, logSearch]);
 
   const handleRemove = async (name: string) => {
     setConfirmDelete(null);
@@ -556,6 +620,16 @@ export default function DashboardPage({
           <Button
             size={btnSize}
             variant="light"
+            color="grape"
+            leftSection="📋"
+            onClick={() => handleLogs(c.name)}
+            disabled={busy}
+          >
+            Logs
+          </Button>
+          <Button
+            size={btnSize}
+            variant="light"
             color="gray"
             leftSection="🗑"
             onClick={() => setConfirmDelete(c.name)}
@@ -572,21 +646,7 @@ export default function DashboardPage({
             </Text>
           </Group>
         )}
-        {isMobile ? (
-          <Stack gap="xs">
-            <Text size="xs" c="dimmed">
-              Política: {policyLabels[policyAction] || policyAction}
-            </Text>
-            <PolicyActionButton
-              containerName={c.name}
-              getPolicy={getPolicy}
-              setPolicies={setPolicies}
-              busy={busy}
-              showToast={showToast}
-            />
-          </Stack>
-        ) : (
-          <Group gap="xs" justify="space-between" wrap="nowrap">
+        <Group gap="xs" wrap="wrap" justify="flex-start">
             <Text size="xs" c="dimmed">
               Política: {policyLabels[policyAction] || policyAction}
             </Text>
@@ -598,7 +658,6 @@ export default function DashboardPage({
               showToast={showToast}
             />
           </Group>
-        )}
       </Stack>
     );
   };
@@ -845,23 +904,6 @@ export default function DashboardPage({
 
   return (
     <>
-      {notifications.length > 0 && (
-        <Paper mb="md" p="xs">
-          <Text size="xs" c="dimmed" mb="xs">
-            🔔 Notificaciones
-          </Text>
-          {notifications.slice(0, 4).map((n, i) => (
-            <NotifToast
-              key={i}
-              notif={n}
-              onDismiss={() =>
-                setNotifications((p) => p.filter((_, j) => j !== i))
-              }
-            />
-          ))}
-        </Paper>
-      )}
-
       {/* Stats bar */}
       <SimpleGrid cols={{ base: 4 }} mb="md">
         <Paper
@@ -1474,6 +1516,88 @@ export default function DashboardPage({
 
           <Group justify="flex-end">
             <Button onClick={() => setShowSummary(false)}>Cerrar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      {/* Logs modal */}
+      <Modal
+        opened={logsContainer !== null}
+        onClose={() => {
+          setLogsContainer(null);
+          setLogs([]);
+          setLogError(null);
+          setLogTimeout(false);
+        }}
+        title={`📋 Logs: ${logsContainer || ""}`}
+        size={isMobile ? "100%" : "xl"}
+      >
+        <Stack>
+          <Group gap="sm" wrap="nowrap" align="center">
+            <TextInput
+              placeholder="Buscar en logs..."
+              value={logSearch}
+              onChange={(e) => setLogSearch(e.currentTarget.value)}
+              leftSection="🔍"
+              size="sm"
+              style={{ flex: 1 }}
+            />
+            <Switch
+              size="xs"
+              label="Wrap"
+              checked={logWrap}
+              onChange={(e) => setLogWrap(e.currentTarget.checked)}
+              flex="none"
+            />
+          </Group>
+          {logSearch && (
+            <Text size="xs" c="dimmed" ta="right">
+              {filteredLogs.length} de {logs.length} líneas
+            </Text>
+          )}
+          <div
+            style={{
+              height: isMobile ? 300 : 500,
+              overflowX: "auto",
+              overflowY: "auto",
+              border: "1px solid var(--mantine-color-dark-4)",
+              borderRadius: "var(--mantine-radius-sm)",
+              backgroundColor: "#0d0d0d",
+            }}
+          >
+            <pre
+              style={{
+                fontSize: 12,
+                whiteSpace: logWrap ? "pre-wrap" : "pre",
+                backgroundColor: "transparent",
+                color: "#e0e0e0",
+                padding: "var(--mantine-spacing-sm)",
+                margin: 0,
+                overflow: "visible",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+              }}
+            >
+              {filteredLogs.length > 0
+                ? filteredLogs.join("")
+                : logError
+                  ? `❌ ${logError}`
+                  : logTimeout
+                    ? "No se recibieron logs (el contenedor puede no existir o estar detenido)"
+                    : logs.length > 0
+                      ? "Sin resultados"
+                      : "Esperando logs..."}
+            </pre>
+          </div>
+          <Group justify="flex-end">
+            <Button
+              variant="light"
+              onClick={() => {
+                setLogsContainer(null);
+                setLogs([]);
+              }}
+            >
+              Aceptar
+            </Button>
           </Group>
         </Stack>
       </Modal>

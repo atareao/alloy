@@ -302,7 +302,7 @@ pub async fn update_check_worker(
     }
 }
 
-async fn resolve_compose_file(docker: &Docker, project: &str) -> Option<String> {
+pub async fn resolve_compose_file(docker: &Docker, project: &str) -> Option<String> {
     let containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
