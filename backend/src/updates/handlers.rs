@@ -83,6 +83,10 @@ pub async fn update_container_h(
                 timestamp: ts,
             });
             notify_all(&config, &settings, &name, "✅ actualizado y reiniciado").await;
+            {
+                let conn = db::global().lock().await;
+                let _ = db::update_container_has_update(&conn, &name, false);
+            }
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.to_string(),
@@ -172,6 +176,10 @@ pub async fn update_all_h(
                     timestamp: ts,
                 });
                 notify_all(&config, &settings, &name, "✅ actualizado").await;
+                {
+                    let conn = db::global().lock().await;
+                    let _ = db::update_container_has_update(&conn, &name, false);
+                }
                 results.push(UpdateProgress {
                     container: name.clone(),
                     status: "ok".into(),

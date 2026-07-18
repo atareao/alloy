@@ -123,12 +123,22 @@ pub async fn update_check_worker(
             );
         }
 
-        // 4. Obtener políticas de actualización
+        // 4. Obtener políticas de actualización + política global por defecto
         let policies = update_policies.lock().await.clone();
         let policy_map: HashMap<String, UpdatePolicy> = policies
             .into_iter()
             .map(|p| (p.container.clone(), p))
             .collect();
+        let default_action = {
+            let s = settings.lock().await;
+            (
+                s.default_update_action
+                    .clone()
+                    .unwrap_or_else(|| "pull-restart".into()),
+                s.default_cleanup_old_image.unwrap_or(false),
+                s.default_rollback_on_failure.unwrap_or(false),
+            )
+        };
 
         // 5. Ejecutar acciones para contenedores con actualizaciones pendientes
         for (name, has_update) in &results {
@@ -136,8 +146,16 @@ pub async fn update_check_worker(
                 continue;
             }
             let policy = match policy_map.get(name) {
-                Some(p) => p,
-                None => continue, // sin política → no hacer nada
+                Some(p) => p.clone(),
+                None => UpdatePolicy {
+                    container: name.clone(),
+                    action: default_action
+                        .0
+                        .parse()
+                        .unwrap_or(UpdateAction::PullRestart),
+                    cleanup_old_image: default_action.1,
+                    rollback_on_failure: default_action.2,
+                },
             };
             if policy.action == UpdateAction::None {
                 continue;

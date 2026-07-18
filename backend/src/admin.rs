@@ -4,6 +4,7 @@ use axum::{
     routing::{get, put},
     Router,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -88,6 +89,40 @@ async fn delete_update_policy_h(
     Json(serde_json::json!({"status": "deleted", "container": name}))
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DefaultUpdatePolicy {
+    action: String,
+    cleanup_old_image: bool,
+    rollback_on_failure: bool,
+}
+
+async fn get_default_update_policy_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+) -> Json<DefaultUpdatePolicy> {
+    let s = settings.lock().await;
+    Json(DefaultUpdatePolicy {
+        action: s
+            .default_update_action
+            .clone()
+            .unwrap_or_else(|| "pull-restart".into()),
+        cleanup_old_image: s.default_cleanup_old_image.unwrap_or(false),
+        rollback_on_failure: s.default_rollback_on_failure.unwrap_or(false),
+    })
+}
+
+async fn put_default_update_policy_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+    Json(body): Json<DefaultUpdatePolicy>,
+) -> Json<DefaultUpdatePolicy> {
+    let mut s = settings.lock().await;
+    s.default_update_action = Some(body.action.clone());
+    s.default_cleanup_old_image = Some(body.cleanup_old_image);
+    s.default_rollback_on_failure = Some(body.rollback_on_failure);
+    let conn = db::global().lock().await;
+    let _ = db::save_settings(&conn, &s);
+    Json(body)
+}
+
 // ── Export / Import ──────────────────────────────────────────
 
 async fn export_config_h(
@@ -131,6 +166,10 @@ pub fn routes() -> Router<AppState> {
             get(get_update_check_config_h).put(put_update_check_config_h),
         )
         .route("/api/update-policies", get(get_update_policies_h))
+        .route(
+            "/api/update-policies/default",
+            get(get_default_update_policy_h).put(put_default_update_policy_h),
+        )
         .route(
             "/api/update-policies/{name}",
             put(put_update_policy_h).delete(delete_update_policy_h),

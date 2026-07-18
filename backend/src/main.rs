@@ -175,8 +175,9 @@ async fn main() {
         docker.clone(),
         config.clone(),
         settings.clone(),
-        tx,
+        tx.clone(),
         cached_containers,
+        notif_tx.clone(),
     ));
     tokio::spawn(auto_update_worker(
         docker.clone(),

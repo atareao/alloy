@@ -107,3 +107,9 @@ export interface UpdateCheckConfig {
   enabled: boolean;
   notify: boolean;
 }
+
+export interface DefaultUpdatePolicy {
+  action: UpdateAction;
+  cleanup_old_image: boolean;
+  rollback_on_failure: boolean;
+}
