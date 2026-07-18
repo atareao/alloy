@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::Config;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::state::AppState;
@@ -94,7 +93,6 @@ async fn list_stacks_h(State(docker): State<Docker>) -> Json<Vec<StackInfo>> {
 
 async fn update_stack_h(
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
@@ -222,7 +220,6 @@ async fn update_stack_h(
                             timestamp: ts,
                         });
                         notify_all(
-                            &config,
                             &settings,
                             &format!("{}/{}", project, service),
                             "✅ actualizado via stack",

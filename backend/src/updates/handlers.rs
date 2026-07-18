@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
-use crate::config::Config;
 use crate::containers::{fetch_containers, find_container_by_name, pull_image};
 use crate::db;
 use crate::models::*;
@@ -29,7 +28,6 @@ struct PendingUpdate {
 
 pub async fn update_container_h(
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
@@ -92,7 +90,7 @@ pub async fn update_container_h(
                 status: "updated ✅".into(),
                 timestamp: ts,
             });
-            notify_all(&config, &settings, &name, "✅ actualizado y reiniciado").await;
+            notify_all(&settings, &name, "✅ actualizado y reiniciado").await;
             {
                 let conn = db::global().lock().await;
                 let _ = db::update_container_has_update(&conn, &name, false);
@@ -144,7 +142,6 @@ pub async fn update_container_h(
 
 pub async fn update_all_h(
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
@@ -185,7 +182,7 @@ pub async fn update_all_h(
                     status: "updated ✅".into(),
                     timestamp: ts,
                 });
-                notify_all(&config, &settings, &name, "✅ actualizado").await;
+                notify_all(&settings, &name, "✅ actualizado").await;
                 {
                     let conn = db::global().lock().await;
                     let _ = db::update_container_has_update(&conn, &name, false);
@@ -273,7 +270,6 @@ pub async fn check_update_h(
 #[allow(clippy::too_many_arguments)]
 pub async fn check_all_h(
     State(docker): State<Docker>,
-    State(config): State<Config>,
     State(db_pool): State<db::DbPool>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(settings): State<Arc<Mutex<Settings>>>,
@@ -281,7 +277,7 @@ pub async fn check_all_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(update_policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
 ) -> Json<Vec<ContainerInfo>> {
-    let mut containers = fetch_containers(&docker, &config.allowed_containers, &[]).await;
+    let mut containers = fetch_containers(&docker, &None, &[]).await;
     let raw_containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
@@ -377,7 +373,7 @@ pub async fn check_all_h(
 
     if !pending.is_empty() {
         let docker = docker.clone();
-        let config = config.clone();
+
         let settings = settings.clone();
         let update_tx = update_tx.clone();
         let notif_tx = notif_tx.clone();
@@ -386,7 +382,6 @@ pub async fn check_all_h(
         tokio::spawn(async move {
             apply_policies_background(
                 &docker,
-                &config,
                 &settings,
                 &update_tx,
                 &notif_tx,
@@ -404,7 +399,7 @@ pub async fn check_all_h(
 #[allow(clippy::too_many_arguments)]
 async fn apply_policies_background(
     docker: &Docker,
-    config: &Config,
+
     settings: &Arc<Mutex<Settings>>,
     update_tx: &broadcast::Sender<UpdateProgress>,
     notif_tx: &broadcast::Sender<NotifEvent>,
@@ -570,7 +565,7 @@ async fn apply_policies_background(
                 status: "updated ✅".into(),
                 timestamp: Local::now().format("%H:%M:%S").to_string(),
             });
-            notify_all(config, settings, &p.name, "✅ actualizado y reiniciado").await;
+            notify_all(settings, &p.name, "✅ actualizado y reiniciado").await;
             {
                 let conn = db::global().lock().await;
                 let _ = db::update_container_has_update(&conn, &p.name, false);

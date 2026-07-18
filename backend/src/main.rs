@@ -173,7 +173,6 @@ async fn main() {
     // Spawn workers
     tokio::spawn(state_worker(
         docker.clone(),
-        config.clone(),
         settings.clone(),
         tx.clone(),
         cached_containers,
@@ -181,14 +180,12 @@ async fn main() {
     ));
     tokio::spawn(auto_update_worker(
         docker.clone(),
-        config.clone(),
         settings.clone(),
         notif_tx.clone(),
         update_history.clone(),
     ));
     tokio::spawn(update_check_worker(
         docker.clone(),
-        config.clone(),
         settings.clone(),
         update_policies.clone(),
         update_tx.clone(),
