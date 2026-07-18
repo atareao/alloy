@@ -6,7 +6,7 @@ import {
   SimpleGrid, TextInput, Chip, Switch,
 } from "@mantine/core";
 import { showNotification } from "@mantine/notifications";
-import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, StackLogs, AppConfig, UpdatePolicy } from "../types";
+import type { ContainerInfo, UpdateProgress, NotifEvent, InspectData, AppConfig, UpdatePolicy } from "../types";
 import { apiFetch, truncate } from "../api";
 import NotifToast from "./NotifToast";
 import PolicyActionButton from "./PolicyActionButton";
@@ -324,40 +324,6 @@ export default function DashboardPage({
 
   // ── Stack-level actions ────────────────────────────────────
 
-  const [stackUpdating, setStackUpdating] = useState<string | null>(null);
-  const [stackInspect, setStackInspect] = useState<string | null>(null);
-  const [stackConfirmDelete, setStackConfirmDelete] = useState<string | null>(null);
-  const [stackLogs, setStackLogs] = useState<StackLogs | null>(null);
-  const [stackLogsLoading, setStackLogsLoading] = useState(false);
-
-  const handleStackCheckUpdates = async (project: string, items: ContainerInfo[]) => {
-    for (const c of items) {
-      try {
-        const res = await apiFetch(`/api/check-update/${encodeURIComponent(c.name)}`, { method: "POST" });
-        if (res.ok) {
-          const data = await res.json();
-          setContainers(prev => prev.map(pc => pc.name === c.name ? { ...pc, has_update: data.has_update === true } : pc));
-        }
-      } catch { /* ignore */ }
-    }
-    showToast(`📦 ${project} — check completado ✅`, "green");
-  };
-
-  const handleStackUpdate = async (project: string) => {
-    setStackUpdating(project);
-    try {
-      const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/update`, { method: "POST" });
-      if (res.ok) {
-        showToast(`📦 ${project} — stack actualizado ✅`, "green");
-      } else {
-        showToast(`📦 ${project} — error HTTP ${res.status}`, "red");
-      }
-    } catch (e: any) {
-      showToast(`📦 ${project} — ${e.message}`, "red");
-    }
-    setStackUpdating(null);
-  };
-
   const handleStackAction = async (project: string, items: ContainerInfo[], action: string) => {
     for (const c of items) {
       try {
@@ -366,35 +332,6 @@ export default function DashboardPage({
     }
     const labels: Record<string, string> = { start: "iniciados", stop: "parados", restart: "reiniciados" };
     showToast(`📦 ${project} — todos ${labels[action] || action} ✅`, "green");
-  };
-
-  const handleStackRemove = async (project: string) => {
-    setStackConfirmDelete(null);
-    try {
-      const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/down`, { method: "POST" });
-      if (res.ok) {
-        showToast(`📦 ${project} — stack eliminado ✅`, "green");
-      } else {
-        const err = await res.text();
-        showToast(`📦 ${project} — error: ${err}`, "red");
-      }
-    } catch (e: any) {
-      showToast(`📦 ${project} — ${e.message}`, "red");
-    }
-  };
-
-  const handleStackLogs = async (project: string) => {
-    setStackLogs(null);
-    setStackLogsLoading(true);
-    try {
-      const res = await apiFetch(`/api/stacks/${encodeURIComponent(project)}/logs`);
-      const data: StackLogs = await res.json();
-      setStackLogs(data);
-    } catch {
-      setStackLogs(null);
-    } finally {
-      setStackLogsLoading(false);
-    }
   };
 
   // ── Derived data ───────────────────────────────────────────
@@ -468,7 +405,6 @@ export default function DashboardPage({
   // ── Expanded action buttons (icon + text) ────────────────────
   const renderActions = (c: ContainerInfo) => {
     const p = progress.get(c.name);
-    const hasUpdate = c.has_update;
     const busy = isBusy;
     const btnSize = isMobile ? "sm" : "compact-sm";
     const policy = getPolicy(c.name);
@@ -479,6 +415,9 @@ export default function DashboardPage({
       'pull-restart': '🔄 Pull + reiniciar',
       'pull-restart-stack': '📦 Pull + reiniciar stack',
     };
+
+    const stackContainers = c.compose_project ? containers.filter(cc => cc.compose_project === c.compose_project) : [];
+    const isMultiStack = stackContainers.length > 1;
 
     return (
       <Stack gap="xs">
@@ -492,16 +431,29 @@ export default function DashboardPage({
           >
             Inspeccionar
           </Button>
-          <PolicyActionButton
-              containerName={c.name}
-              getPolicy={getPolicy}
-              setPolicies={setPolicies}
-              btnSize={btnSize}
-              busy={busy}
-              hasUpdate={hasUpdate}
-              showToast={showToast}
-              setContainers={setContainers}
-          />
+          <Button
+            size={btnSize}
+            variant="light"
+            color="cyan"
+            leftSection="🔍"
+            onClick={async () => {
+              try {
+                const res = await apiFetch(`/api/check-update/${encodeURIComponent(c.name)}`, { method: "POST" });
+                if (res.ok) {
+                  const data = await res.json();
+                  setContainers(prev => prev.map(pc => pc.name === c.name ? { ...pc, has_update: data.has_update === true } : pc));
+                  showToast(data.has_update ? `📦 ${c.name} — actualización disponible ⬆️` : `✅ ${c.name} — ya está actualizado`, data.has_update ? "yellow" : "green");
+                } else {
+                  showToast(`🔍 ${c.name} — error al revisar`, "red");
+                }
+              } catch {
+                showToast(`🔍 ${c.name} — error de conexión`, "red");
+              }
+            }}
+            disabled={busy}
+          >
+            Revisar
+          </Button>
           <Button
             size={btnSize}
             variant="light"
@@ -535,6 +487,30 @@ export default function DashboardPage({
               Iniciar
             </Button>
           )}
+          {isMultiStack && (
+            <>
+              <Button
+                size={btnSize}
+                variant="light"
+                color="red"
+                leftSection="⏹"
+                onClick={() => handleStackAction(c.compose_project!, stackContainers, "stop")}
+                disabled={busy || !stackContainers.some(sc => sc.state === "running")}
+              >
+                Parar todos
+              </Button>
+              <Button
+                size={btnSize}
+                variant="light"
+                color="orange"
+                leftSection="🔄"
+                onClick={() => handleStackAction(c.compose_project!, stackContainers, "restart")}
+                disabled={busy}
+              >
+                Reiniciar todos
+              </Button>
+            </>
+          )}
           <Button
             size={btnSize}
             variant="light"
@@ -552,9 +528,18 @@ export default function DashboardPage({
             <Text size="xs" c="dimmed">{p.status}</Text>
           </Group>
         )}
-        <Text size="xs" c="dimmed">
-          Política: {policyLabels[policyAction] || policyAction}
-        </Text>
+        <Group gap="xs" justify="space-between" wrap="nowrap">
+          <Text size="xs" c="dimmed">
+            Política: {policyLabels[policyAction] || policyAction}
+          </Text>
+          <PolicyActionButton
+            containerName={c.name}
+            getPolicy={getPolicy}
+            setPolicies={setPolicies}
+            busy={busy}
+            showToast={showToast}
+          />
+        </Group>
       </Stack>
     );
   };
@@ -649,9 +634,6 @@ export default function DashboardPage({
   const renderStackHeader = (project: string, items: ContainerInfo[]) => {
     const { running, total } = groupStats(items);
     const isExpanded = !!expandedStacks[project];
-    const hasRunning = items.some(c => c.state === "running");
-    const isBusyStack = stackUpdating === project;
-    const btnSize = isMobile ? "sm" : "compact-sm";
 
     return (
       <Stack gap="xs">
@@ -664,33 +646,6 @@ export default function DashboardPage({
             {isExpanded ? "▲" : "▼"}
           </ActionIcon>
         </Group>
-        <Collapse expanded={isExpanded}>
-          <Paper p="sm" withBorder style={{ background: 'var(--mantine-color-dark-6)' }}>
-            <Group gap={isMobile ? 8 : 6} wrap="wrap">
-              <Button size={btnSize} variant="light" color="gray" leftSection="🔍" onClick={() => setStackInspect(project)}>
-                Ver servicios
-              </Button>
-              <Button size={btnSize} variant="light" color="cyan" leftSection="🔄" onClick={() => handleStackCheckUpdates(project, items)} disabled={isBusyStack}>
-                Check updates
-              </Button>
-              <Button size={btnSize} variant="light" color="yellow" leftSection="⬆" onClick={() => handleStackUpdate(project)} loading={isBusyStack}>
-                Actualizar
-              </Button>
-              <Button size={btnSize} variant="light" color="green" leftSection="▶" onClick={() => handleStackAction(project, items, "start")} disabled={hasRunning}>
-                Iniciar todos
-              </Button>
-              <Button size={btnSize} variant="light" color="red" leftSection="⏹" onClick={() => handleStackAction(project, items, "stop")} disabled={!hasRunning}>
-                Parar todos
-              </Button>
-              <Button size={btnSize} variant="light" color="orange" leftSection="🔄" onClick={() => handleStackAction(project, items, "restart")}>
-                Reiniciar todos
-              </Button>
-              <Button size={btnSize} variant="light" color="gray" leftSection="🗑" onClick={() => setStackConfirmDelete(project)}>
-                Borrar
-              </Button>
-            </Group>
-          </Paper>
-        </Collapse>
       </Stack>
     );
   };
@@ -852,7 +807,7 @@ export default function DashboardPage({
                 <Button onClick={checkAll} variant="light" color="cyan" size="xs" flex={1}>🔍 Check</Button>
                 <Button onClick={updateAll} variant="light" color="yellow" size="xs" flex={1}>⬆️ Update</Button>
                 {monitoringEnabled && (
-                  <Button onClick={() => toggleAllMonitor(true)} variant="light" color="green" size="xs" flex={1}>🔔 Mon. todos</Button>
+                  <Button onClick={() => toggleAllMonitor(!containers.every(c => c.monitored))} variant="light" color="green" size="xs" flex={1}>{containers.every(c => c.monitored) ? '🔕 Desmon. todos' : '🔔 Mon. todos'}</Button>
                 )}
               </Group>
             </Stack>
@@ -875,8 +830,8 @@ export default function DashboardPage({
                   <Button onClick={updateAll} variant="light" color="yellow" size="sm">⬆️ Update</Button>
                 </Tooltip>
                 {monitoringEnabled && (
-                  <Tooltip label="Monitorizar todos los contenedores">
-                    <Button onClick={() => toggleAllMonitor(true)} variant="light" color="green" size="sm">🔔 Mon. todos</Button>
+                  <Tooltip label={containers.every(c => c.monitored) ? "Desmonitorizar todos los contenedores" : "Monitorizar todos los contenedores"}>
+                    <Button onClick={() => toggleAllMonitor(!containers.every(c => c.monitored))} variant="light" color="green" size="sm">{containers.every(c => c.monitored) ? '🔕 Desmon. todos' : '🔔 Mon. todos'}</Button>
                   </Tooltip>
                 )}
               </Group>
@@ -1096,108 +1051,6 @@ export default function DashboardPage({
         </Stack>
       </Modal>
 
-      {/* Stack inspect modal */}
-      <Modal opened={stackInspect !== null} onClose={() => { setStackInspect(null); setStackLogs(null); }} title={`📦 Inspeccionar stack: ${stackInspect || ""}`} size={isMobile ? "100%" : "lg"}>
-        {stackInspect && (() => {
-          const project = stackInspect;
-          const stackContainers = containers.filter(c => c.compose_project === project);
-          const running = stackContainers.filter(c => c.state === "running").length;
-          return (
-            <Stack gap="md">
-              <Paper p="md" withBorder>
-                <Group gap="lg">
-                  <Stack gap="0" align="center">
-                    <Text size="xl" fw={700}>{stackContainers.length}</Text>
-                    <Text size="xs" c="dimmed">Servicios</Text>
-                  </Stack>
-                  <Stack gap="0" align="center">
-                    <Text size="xl" fw={700} c="green">{running}</Text>
-                    <Text size="xs" c="dimmed">En ejecución</Text>
-                  </Stack>
-                  <Stack gap="0" align="center">
-                    <Text size="xl" fw={700} c="red">{stackContainers.length - running}</Text>
-                    <Text size="xs" c="dimmed">Parados</Text>
-                  </Stack>
-                  <Button
-                    size="xs"
-                    variant="light"
-                    color="gray"
-                    loading={stackLogsLoading}
-                    onClick={() => handleStackLogs(project)}
-                  >
-                    📋 Logs
-                  </Button>
-                </Group>
-              </Paper>
-              <Table.ScrollContainer minWidth={400}>
-                <Table striped highlightOnHover>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Servicio</Table.Th>
-                      <Table.Th>Container</Table.Th>
-                      <Table.Th>Imagen</Table.Th>
-                      <Table.Th>Estado</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {stackContainers.map(c => (
-                      <Table.Tr key={c.id}>
-                        <Table.Td><Text size="sm" fw={500}>{c.name}</Text></Table.Td>
-                        <Table.Td><Text size="xs" c="dimmed">{truncate(c.id)}</Text></Table.Td>
-                        <Table.Td><Text size="xs" c="dimmed">{truncate(`${c.image}:${c.image_tag}`)}</Text></Table.Td>
-                        <Table.Td>
-                          <Badge color={c.status.includes("healthy") ? "green" : c.state === "running" ? "blue" : "red"}>
-                            {c.status.includes("healthy") ? "healthy" : c.state}
-                          </Badge>
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              </Table.ScrollContainer>
-
-              {stackLogs && (
-                <Stack gap="sm">
-                  <Divider label="Logs" labelPosition="center" />
-                  {stackLogs.services.length === 0 && (
-                    <Text c="dimmed" ta="center" size="sm">No hay servicios con logs disponibles</Text>
-                  )}
-                  {stackLogs.services.map((svc) => (
-                    <Paper key={svc.service} shadow="xs" p="sm" withBorder>
-                      <Group justify="space-between" mb="xs">
-                        <Text fw={500} size="sm">{svc.service}</Text>
-                        <Text size="xs" c="dimmed">{svc.container}</Text>
-                      </Group>
-                      {svc.lines.length === 0 ? (
-                        <Text size="xs" c="dimmed" fs="italic">Sin logs</Text>
-                      ) : (
-                        <ScrollArea.Autosize mah={300}>
-                          <Stack gap={2}>
-                            {svc.lines.map((line, i) => (
-                              <Text key={i} size="xs" style={{ fontFamily: "monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                                {line}
-                              </Text>
-                            ))}
-                          </Stack>
-                        </ScrollArea.Autosize>
-                      )}
-                    </Paper>
-                  ))}
-                </Stack>
-              )}
-            </Stack>
-          );
-        })()}
-      </Modal>
-
-      {/* Stack confirm delete modal */}
-      <Modal opened={stackConfirmDelete !== null} onClose={() => setStackConfirmDelete(null)} title="🗑️ Confirmar Eliminación de Stack" size="sm">
-        <Text mb="md">¿Seguro que quieres eliminar el stack <b>{stackConfirmDelete}</b>? Se ejecutará <Code>docker compose down</Code>. Esta acción no se puede deshacer.</Text>
-        <Group justify="flex-end">
-          <Button variant="default" onClick={() => setStackConfirmDelete(null)}>Cancelar</Button>
-          <Button color="red" onClick={() => stackConfirmDelete && handleStackRemove(stackConfirmDelete)}>Eliminar stack</Button>
-        </Group>
-      </Modal>
-    </>
+      </>
   );
 }

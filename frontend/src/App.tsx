@@ -188,10 +188,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
               </Button>
             </Group>
           </Group>
-          <Group justify="center" gap="xs">
-            <Badge size="sm" variant="light" color="blue">{containers.length} containers</Badge>
-          </Group>
-        </Stack>
+          </Stack>
 
         {/* Notification toasts */}
         {notifications.length > 0 && (

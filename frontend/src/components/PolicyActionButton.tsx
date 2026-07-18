@@ -1,68 +1,26 @@
 import { useState } from "react";
-import { ActionIcon, Button, Group, Modal, Select, Stack, Switch, Text, Tooltip } from "@mantine/core";
+import { Button, Group, Modal, Select, Stack, Switch, Text } from "@mantine/core";
 import { apiFetch } from "../api";
-import type { ContainerInfo, UpdatePolicy } from "../types";
+import type { UpdatePolicy } from "../types";
 
 interface PolicyActionButtonProps {
   containerName: string;
   getPolicy: (name: string) => UpdatePolicy | undefined;
   setPolicies: React.Dispatch<React.SetStateAction<UpdatePolicy[]>>;
-  btnSize: string;
   busy: boolean;
-  hasUpdate: boolean;
   showToast: (message: string, color: string) => void;
-  setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
 }
 
 export default function PolicyActionButton({
-  containerName, btnSize, busy, showToast, setContainers, getPolicy, setPolicies, hasUpdate,
+  containerName, busy, showToast, getPolicy, setPolicies,
 }: PolicyActionButtonProps) {
-  const [checking, setChecking] = useState(false);
   const [showPolicyModal, setShowPolicyModal] = useState(false);
   const [editAction, setEditAction] = useState<string>('pull-restart');
   const [editCleanup, setEditCleanup] = useState(false);
   const [editRollback, setEditRollback] = useState(false);
   const [savingPolicy, setSavingPolicy] = useState(false);
-  const [updating, setUpdating] = useState(false);
 
   const policy = getPolicy(containerName);
-
-  const handleCheck = async () => {
-    setChecking(true);
-    try {
-      const res = await apiFetch(`/api/check-update/${encodeURIComponent(containerName)}`, { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        setContainers((prev: ContainerInfo[]) => prev.map((c: ContainerInfo) => c.name === containerName ? { ...c, has_update: data.has_update === true } : c));
-        if (data.has_update) {
-          showToast(`📦 ${containerName} — actualización disponible ⬆️`, "yellow");
-        } else {
-          showToast(`✅ ${containerName} — ya está actualizado`, "green");
-        }
-      } else {
-        showToast(`🔍 ${containerName} — error al revisar`, "red");
-      }
-    } catch {
-      showToast(`🔍 ${containerName} — error de conexión`, "red");
-    }
-    setChecking(false);
-  };
-
-  const handleUpdate = async () => {
-    setUpdating(true);
-    try {
-      const res = await apiFetch(`/api/update/${encodeURIComponent(containerName)}`, { method: "POST" });
-      if (res.ok) {
-        setContainers((prev: ContainerInfo[]) => prev.map((c: ContainerInfo) => c.name === containerName ? { ...c, has_update: false } : c));
-        showToast(`⬆️ ${containerName} — actualizado ✅`, "green");
-      } else {
-        showToast(`⬆️ ${containerName} — error al actualizar`, "red");
-      }
-    } catch {
-      showToast(`⬆️ ${containerName} — error de conexión`, "red");
-    }
-    setUpdating(false);
-  };
 
   const openConfig = () => {
     setEditAction(policy?.action || 'pull-restart');
@@ -104,44 +62,16 @@ export default function PolicyActionButton({
 
   return (
     <>
-      <Tooltip label="Revisar actualizaciones">
-        <Button
-          size={btnSize}
-          variant="light"
-          color="cyan"
-          leftSection="🔍"
-          onClick={handleCheck}
-          loading={checking}
-          disabled={busy}
-        >
-          Revisar
-        </Button>
-      </Tooltip>
-      {hasUpdate && (
-        <Button
-          size={btnSize}
-          variant="filled"
-          color="yellow"
-          leftSection="⬆️"
-          onClick={handleUpdate}
-          loading={updating}
-          disabled={busy}
-        >
-          Actualizar
-        </Button>
-      )}
-      <Tooltip label="Configurar política de actualización">
-        <ActionIcon
-          size={btnSize === "sm" ? "lg" : "md"}
-          variant="light"
-          color="gray"
-          onClick={openConfig}
-          disabled={busy}
-          aria-label="Configurar política de actualización"
-        >
-          ⚙️
-        </ActionIcon>
-      </Tooltip>
+      <Button
+        size="compact-xs"
+        variant="light"
+        color="gray"
+        leftSection="⚙️"
+        onClick={openConfig}
+        disabled={busy}
+      >
+        Configurar política
+      </Button>
       <Modal opened={showPolicyModal} onClose={() => setShowPolicyModal(false)} title={`⚙️ Política: ${containerName}`} size="md">
         <Stack>
           <Text size="sm" c="dimmed" mb="xs">
