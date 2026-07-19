@@ -6,6 +6,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::containers::{find_container_by_name, pull_image};
 use crate::db;
+use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::workers::state::docker_list_running;
@@ -16,6 +17,7 @@ pub async fn auto_update_worker(
     settings: Arc<Mutex<Settings>>,
     notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
+    db_pool: DbPool,
 ) {
     let enabled = { settings.lock().await.auto_update_enabled.unwrap_or(false) };
     if !enabled {
@@ -78,8 +80,8 @@ pub async fn auto_update_worker(
                 });
                 notify_all(&settings, &name, "🤖 auto-actualizado").await;
                 {
-                    let conn = db::global().lock().await;
-                    let _ = db::update_container_has_update(&conn, &name, false);
+                    let obj = db_pool.get().await.unwrap();
+                    let _ = db::update_container_has_update(&obj.lock().unwrap(), &name, false);
                 }
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
@@ -92,8 +94,8 @@ pub async fn auto_update_worker(
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
-                let conn = db::global().lock().await;
-                let _ = db::append_update_history(&conn, hist.last().unwrap());
+                let obj = db_pool.get().await.unwrap();
+                let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
             }
         }
         let _ = docker

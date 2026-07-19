@@ -7,7 +7,7 @@ export interface ContainerInfo {
   status: string;
   state: string;
   has_update: boolean;
-  monitored: boolean;
+  updating: boolean;
   compose_project?: string;
   ports: string[];
   traefik_url: string | null;
@@ -103,6 +103,7 @@ export interface UpdatePolicy {
   action: UpdateAction;
   cleanup_old_image: boolean;
   rollback_on_failure: boolean;
+  notify_events: boolean;
 }
 
 export interface UpdateCheckConfig {

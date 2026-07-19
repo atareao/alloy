@@ -1,66 +1,15 @@
+use deadpool_sqlite::{Config as PoolConfig, Runtime};
 use rusqlite::{params, Connection, Result as SqlResult};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::models::*;
 
-pub type DbPool = Arc<Mutex<Connection>>;
+pub type DbPool = deadpool_sqlite::Pool;
 
-static GLOBAL_DB: std::sync::OnceLock<DbPool> = std::sync::OnceLock::new();
-
-/// Initialize the global database pool. Must be called once at startup.
-pub fn init_global(pool: DbPool) {
-    GLOBAL_DB
-        .set(pool)
-        .unwrap_or_else(|_| panic!("db::init_global called more than once"));
-}
-
-/// Initialize a temporary in-memory database for testing.
-/// Returns a pool that can be used for test assertions.
-pub fn init_test_db() -> DbPool {
-    let conn = Connection::open_in_memory().expect("Failed to create test database");
-    // Run schema creation
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS containers (
-            id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT NOT NULL DEFAULT '',
-            image_tag TEXT NOT NULL DEFAULT '', size_mb REAL NOT NULL DEFAULT 0.0,
-            state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
-            ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
-            has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        CREATE TABLE IF NOT EXISTS update_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, container TEXT NOT NULL,
-            image TEXT NOT NULL, old_digest TEXT NOT NULL DEFAULT '',
-            new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS update_policies (
-            container TEXT PRIMARY KEY, action TEXT NOT NULL DEFAULT 'none',
-            cleanup_old_image INTEGER NOT NULL DEFAULT 0,
-            rollback_on_failure INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY, value TEXT NOT NULL
-        );",
-    )
-    .expect("Failed to create test schema");
-    let pool: DbPool = Arc::new(Mutex::new(conn));
-    pool
-}
-
-/// Get the global database pool.
-/// If not initialized yet (e.g. in tests), initializes an in-memory database automatically.
-pub fn global() -> &'static DbPool {
-    GLOBAL_DB.get_or_init(|| {
-        tracing::warn!("db::global() called before init_global — using in-memory fallback");
-        init_test_db()
-    })
-}
-
-/// Initialize database: create tables, set WAL mode
-pub fn init_db(path: &str) -> SqlResult<Connection> {
-    let conn = Connection::open(path)?;
+/// Initialize database: create tables, set WAL mode, return async connection pool
+pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
+    let pool = PoolConfig::new(path).create_pool(Runtime::Tokio1)?;
+    let obj = pool.get().await?;
+    let conn = obj.lock().unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
     conn.execute_batch(
@@ -104,17 +53,74 @@ pub fn init_db(path: &str) -> SqlResult<Connection> {
             container TEXT PRIMARY KEY,
             action TEXT NOT NULL DEFAULT 'none',
             cleanup_old_image INTEGER NOT NULL DEFAULT 0,
-            rollback_on_failure INTEGER NOT NULL DEFAULT 0
+            rollback_on_failure INTEGER NOT NULL DEFAULT 0,
+            notify_events INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS container_updating (
+            container TEXT PRIMARY KEY
+        );
         ",
     )?;
 
-    Ok(conn)
+    let _ = conn.execute_batch(
+        "ALTER TABLE update_policies ADD COLUMN notify_events INTEGER NOT NULL DEFAULT 0;",
+    );
+
+    Ok(pool)
+}
+
+#[cfg(test)]
+pub fn test_pool() -> DbPool {
+    let pool = PoolConfig::new(":memory:")
+        .create_pool(Runtime::Tokio1)
+        .expect("Failed to create test pool");
+    let conn = std::thread::spawn({
+        let pool = pool.clone();
+        move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let obj = pool.get().await.unwrap();
+                let conn = obj.lock().unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS containers (
+                        id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT NOT NULL DEFAULT '',
+                        image_tag TEXT NOT NULL DEFAULT '', size_mb REAL NOT NULL DEFAULT 0.0,
+                        state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+                        ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
+                        has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
+                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                    );
+                    CREATE TABLE IF NOT EXISTS update_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, container TEXT NOT NULL,
+                        image TEXT NOT NULL, old_digest TEXT NOT NULL DEFAULT '',
+                        new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE IF NOT EXISTS update_policies (
+                        container TEXT PRIMARY KEY, action TEXT NOT NULL DEFAULT 'none',
+                        cleanup_old_image INTEGER NOT NULL DEFAULT 0,
+                        rollback_on_failure INTEGER NOT NULL DEFAULT 0,
+                        notify_events INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY, value TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS container_updating (
+                        container TEXT PRIMARY KEY
+                    );",
+                )
+                .expect("Failed to create test schema");
+            });
+        }
+    });
+    conn.join().unwrap();
+    pool
 }
 
 // ── Containers ───────────────────────────────────────────────
@@ -153,7 +159,6 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
     let rows = stmt.query_map([], |row| {
         let ports_str: String = row.get(7)?;
         let ports: Vec<String> = serde_json::from_str(&ports_str).unwrap_or_default();
-        let has_update_int: i32 = row.get(10)?;
         Ok(ContainerInfo {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -165,8 +170,8 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
             ports,
             traefik_url: row.get(8)?,
             compose_project: row.get(9)?,
-            has_update: has_update_int != 0,
-            monitored: false,
+            has_update: row.get::<_, i32>(10)? != 0,
+            updating: false,
             registry_url: row.get(11)?,
         })
     })?;
@@ -177,25 +182,50 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
     Ok(result)
 }
 
-#[allow(dead_code)]
 pub fn update_container_has_update(
     conn: &Connection,
     name: &str,
     has_update: bool,
 ) -> SqlResult<()> {
-    let hu = has_update as i32;
-    let affected = conn.execute(
+    conn.execute(
         "UPDATE containers SET has_update = ?1, updated_at = datetime('now') WHERE name = ?2",
-        params![hu, name],
+        params![has_update as i32, name],
     )?;
-    if affected == 0 {
-        conn.execute(
-            "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, has_update, registry_url, updated_at)
-             VALUES (?1, ?2, '', '', 0.0, '', '', '[]', ?3, '', datetime('now'))",
-            params![name, name, hu],
-        )?;
-    }
     Ok(())
+}
+
+// ── Container Updating ─────────────────────────────────────
+
+#[allow(dead_code)]
+pub fn set_updating(conn: &Connection, name: &str) -> SqlResult<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO container_updating (container) VALUES (?1)",
+        params![name],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn clear_updating(conn: &Connection, name: &str) -> SqlResult<()> {
+    conn.execute(
+        "DELETE FROM container_updating WHERE container = ?1",
+        params![name],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn list_updating(conn: &Connection) -> SqlResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT container FROM container_updating")?;
+    let rows = stmt.query_map([], |row| {
+        let name: String = row.get(0)?;
+        Ok(name)
+    })?;
+    let mut result = Vec::new();
+    for r in rows {
+        result.push(r?);
+    }
+    Ok(result)
 }
 
 // ── Update History ───────────────────────────────────────────
@@ -215,7 +245,7 @@ pub fn save_update_history(conn: &Connection, entries: &[UpdateHistoryEntry]) ->
             e.new_digest,
             e.timestamp,
             e.status,
-            e.duration_ms,
+            e.duration_ms as i64,
         ])?;
     }
     Ok(())
@@ -233,7 +263,7 @@ pub fn load_update_history(conn: &Connection) -> SqlResult<Vec<UpdateHistoryEntr
             new_digest: row.get(3)?,
             timestamp: row.get(4)?,
             status: row.get(5)?,
-            duration_ms: row.get(6)?,
+            duration_ms: row.get::<_, i64>(6)? as u64,
         })
     })?;
     let mut result = Vec::new();
@@ -254,7 +284,7 @@ pub fn append_update_history(conn: &Connection, entry: &UpdateHistoryEntry) -> S
             entry.new_digest,
             entry.timestamp,
             entry.status,
-            entry.duration_ms,
+            entry.duration_ms as i64,
         ],
     )?;
     Ok(())
@@ -269,7 +299,7 @@ pub fn clear_update_history(conn: &Connection) -> SqlResult<()> {
 
 pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
     let mut stmt = conn.prepare(
-        "SELECT container, action, cleanup_old_image, rollback_on_failure FROM update_policies",
+        "SELECT container, action, cleanup_old_image, rollback_on_failure, notify_events FROM update_policies",
     )?;
     let rows = stmt.query_map([], |row| {
         let action_str: String = row.get(1)?;
@@ -278,6 +308,7 @@ pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
             action: action_str.parse().unwrap_or(UpdateAction::None),
             cleanup_old_image: row.get::<_, i32>(2)? != 0,
             rollback_on_failure: row.get::<_, i32>(3)? != 0,
+            notify_events: row.get::<_, i32>(4)? != 0,
         })
     })?;
     let mut result = Vec::new();
@@ -289,13 +320,14 @@ pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
 
 pub fn save_update_policy(conn: &Connection, policy: &UpdatePolicy) -> SqlResult<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO update_policies (container, action, cleanup_old_image, rollback_on_failure)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT OR REPLACE INTO update_policies (container, action, cleanup_old_image, rollback_on_failure, notify_events)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             policy.container,
             policy.action.to_string(),
             policy.cleanup_old_image as i32,
             policy.rollback_on_failure as i32,
+            policy.notify_events as i32,
         ],
     )?;
     Ok(())
@@ -342,10 +374,6 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
         matrix_token: map.get("matrix_token").cloned().filter(|s| !s.is_empty()),
         matrix_room: map.get("matrix_room").cloned().filter(|s| !s.is_empty()),
         webhook_url: map.get("webhook_url").cloned().filter(|s| !s.is_empty()),
-        monitored_containers: serde_json::from_str(
-            &map.get("monitored_containers").cloned().unwrap_or_default(),
-        )
-        .unwrap_or_default(),
         update_check_cron: map
             .get("update_check_cron")
             .cloned()
@@ -381,10 +409,6 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         ("matrix_token", settings.matrix_token.clone()),
         ("matrix_room", settings.matrix_room.clone()),
         ("webhook_url", settings.webhook_url.clone()),
-        (
-            "monitored_containers",
-            Some(serde_json::to_string(&settings.monitored_containers).unwrap_or_default()),
-        ),
         ("update_check_cron", settings.update_check_cron.clone()),
         (
             "update_check_enabled",
@@ -418,4 +442,267 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         };
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS containers (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT NOT NULL DEFAULT '',
+                image_tag TEXT NOT NULL DEFAULT '', size_mb REAL NOT NULL DEFAULT 0.0,
+                state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+                ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
+                has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS update_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, container TEXT NOT NULL,
+                image TEXT NOT NULL, old_digest TEXT NOT NULL DEFAULT '',
+                new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS update_policies (
+                container TEXT PRIMARY KEY, action TEXT NOT NULL DEFAULT 'none',
+                cleanup_old_image INTEGER NOT NULL DEFAULT 0,
+                rollback_on_failure INTEGER NOT NULL DEFAULT 0,
+                notify_events INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS container_updating (
+                container TEXT PRIMARY KEY
+            );",
+        )
+        .expect("Failed to create test schema");
+        conn
+    }
+
+    #[test]
+    fn test_save_and_load_containers() {
+        let conn = test_conn();
+        let containers = vec![ContainerInfo {
+            id: "abc123".into(),
+            name: "nginx".into(),
+            image: "nginx:latest".into(),
+            image_tag: "latest".into(),
+            size_mb: 10.5,
+            state: "running".into(),
+            status: "Up 2 hours".into(),
+            ports: vec!["0.0.0.0:80:80".into()],
+            traefik_url: Some("http://nginx.local".into()),
+            compose_project: None,
+            has_update: false,
+            registry_url: "https://hub.docker.com/_/nginx".into(),
+            updating: false,
+        }];
+        save_containers(&conn, &containers).unwrap();
+        let loaded = load_containers(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "nginx");
+    }
+
+    #[test]
+    fn test_save_containers_overwrites() {
+        let conn = test_conn();
+        let c1 = vec![ContainerInfo {
+            id: "id1".into(),
+            name: "web".into(),
+            image: "nginx:1.0".into(),
+            image_tag: "1.0".into(),
+            size_mb: 5.0,
+            state: "running".into(),
+            status: "Up".into(),
+            ports: vec![],
+            traefik_url: None,
+            compose_project: None,
+            has_update: false,
+            registry_url: String::new(),
+            updating: false,
+        }];
+        save_containers(&conn, &c1).unwrap();
+        let c2 = vec![ContainerInfo {
+            id: "id2".into(),
+            name: "web".into(),
+            image: "nginx:2.0".into(),
+            image_tag: "2.0".into(),
+            size_mb: 6.0,
+            state: "running".into(),
+            status: "Up".into(),
+            ports: vec![],
+            traefik_url: None,
+            compose_project: None,
+            has_update: false,
+            registry_url: String::new(),
+            updating: false,
+        }];
+        save_containers(&conn, &c2).unwrap();
+        let loaded = load_containers(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].image, "nginx:2.0");
+    }
+
+    #[test]
+    fn test_load_containers_empty() {
+        let conn = test_conn();
+        let loaded = load_containers(&conn).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_update_container_has_update() {
+        let conn = test_conn();
+        let containers = vec![ContainerInfo {
+            id: "abc".into(),
+            name: "test".into(),
+            image: "test:latest".into(),
+            image_tag: "latest".into(),
+            size_mb: 0.0,
+            state: "".into(),
+            status: "".into(),
+            ports: vec![],
+            traefik_url: None,
+            compose_project: None,
+            has_update: false,
+            registry_url: String::new(),
+            updating: false,
+        }];
+        save_containers(&conn, &containers).unwrap();
+        update_container_has_update(&conn, "test", true).unwrap();
+        let loaded = load_containers(&conn).unwrap();
+        assert!(loaded[0].has_update);
+    }
+
+    #[test]
+    fn test_set_and_clear_updating() {
+        let conn = test_conn();
+        set_updating(&conn, "nginx").unwrap();
+        let list = list_updating(&conn).unwrap();
+        assert!(list.contains(&"nginx".to_string()));
+        clear_updating(&conn, "nginx").unwrap();
+        let list = list_updating(&conn).unwrap();
+        assert!(!list.contains(&"nginx".to_string()));
+    }
+
+    #[test]
+    fn test_list_updating_multiple() {
+        let conn = test_conn();
+        set_updating(&conn, "a").unwrap();
+        set_updating(&conn, "b").unwrap();
+        let list = list_updating(&conn).unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_save_and_load_update_history() {
+        let conn = test_conn();
+        let entries = vec![UpdateHistoryEntry {
+            container: "nginx".into(),
+            image: "nginx:latest".into(),
+            old_digest: "abc".into(),
+            new_digest: "def".into(),
+            timestamp: "2024-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 1000,
+        }];
+        save_update_history(&conn, &entries).unwrap();
+        let loaded = load_update_history(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].container, "nginx");
+    }
+
+    #[test]
+    fn test_append_update_history() {
+        let conn = test_conn();
+        let entry = UpdateHistoryEntry {
+            container: "redis".into(),
+            image: "redis:7".into(),
+            old_digest: "old".into(),
+            new_digest: "new".into(),
+            timestamp: "2024-06-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 500,
+        };
+        append_update_history(&conn, &entry).unwrap();
+        let loaded = load_update_history(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].container, "redis");
+    }
+
+    #[test]
+    fn test_clear_update_history() {
+        let conn = test_conn();
+        let entry = UpdateHistoryEntry {
+            container: "c".into(),
+            image: "img".into(),
+            old_digest: "".into(),
+            new_digest: "".into(),
+            timestamp: "now".into(),
+            status: "ok".into(),
+            duration_ms: 0,
+        };
+        append_update_history(&conn, &entry).unwrap();
+        clear_update_history(&conn).unwrap();
+        let loaded = load_update_history(&conn).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_policies_crud() {
+        let conn = test_conn();
+        let policy = UpdatePolicy {
+            container: "nginx".into(),
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: true,
+            rollback_on_failure: false,
+            notify_events: true,
+        };
+        save_update_policy(&conn, &policy).unwrap();
+        let loaded = load_update_policies(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].action, UpdateAction::PullRestart);
+        assert!(loaded[0].notify_events);
+    }
+
+    #[test]
+    fn test_delete_update_policy() {
+        let conn = test_conn();
+        let policy = UpdatePolicy {
+            container: "nginx".into(),
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: false,
+            rollback_on_failure: false,
+            notify_events: false,
+        };
+        save_update_policy(&conn, &policy).unwrap();
+        delete_update_policy(&conn, "nginx").unwrap();
+        let loaded = load_update_policies(&conn).unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_settings_save_load() {
+        let conn = test_conn();
+        let mut settings = Settings::default();
+        settings.auto_update_enabled = Some(true);
+        settings.auto_update_interval_hours = Some(12);
+        settings.telegram_token = Some("bot123".into());
+        settings.telegram_chat_id = Some("chat456".into());
+        save_settings(&conn, &settings).unwrap();
+        let loaded = load_settings(&conn).unwrap();
+        assert_eq!(loaded.auto_update_enabled, Some(true));
+        assert_eq!(loaded.auto_update_interval_hours, Some(12));
+        assert_eq!(loaded.telegram_token.as_deref(), Some("bot123"));
+    }
+
+    #[test]
+    fn test_load_settings_defaults() {
+        let conn = test_conn();
+        let settings = load_settings(&conn).unwrap();
+        assert_eq!(settings.auto_update_enabled, None);
+    }
 }

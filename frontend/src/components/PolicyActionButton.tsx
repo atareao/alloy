@@ -17,6 +17,7 @@ interface PolicyActionButtonProps {
   setPolicies: React.Dispatch<React.SetStateAction<UpdatePolicy[]>>;
   busy: boolean;
   showToast: (message: string, color: string) => void;
+  size?: string;
 }
 
 export default function PolicyActionButton({
@@ -25,6 +26,7 @@ export default function PolicyActionButton({
   showToast,
   getPolicy,
   setPolicies,
+  size = "compact-xs",
 }: PolicyActionButtonProps) {
   const [showPolicyModal, setShowPolicyModal] = useState(false);
   const [editAction, setEditAction] = useState<string>("pull-restart");
@@ -78,14 +80,14 @@ export default function PolicyActionButton({
   return (
     <>
       <Button
-        size="compact-xs"
+        size={size}
         variant="light"
         color="gray"
         leftSection="⚙️"
         onClick={openConfig}
         disabled={busy}
       >
-        Configurar política
+        Configurar
       </Button>
       <Modal
         opened={showPolicyModal}

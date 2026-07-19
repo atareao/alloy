@@ -6,6 +6,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::containers::pull_image;
 use crate::db;
+use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
@@ -22,6 +23,7 @@ pub async fn update_check_worker(
     update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
     update_tx: broadcast::Sender<UpdateProgress>,
     _notif_tx: broadcast::Sender<NotifEvent>,
+    db_pool: DbPool,
 ) {
     let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
     loop {
@@ -106,10 +108,10 @@ pub async fn update_check_worker(
 
         // 3. Persistir has_update en DB
         {
-            let conn = db::global().lock().await;
+            let obj = db_pool.get().await.unwrap();
             let mut updated_count = 0u32;
             for (name, has_update) in &results {
-                let _ = db::update_container_has_update(&conn, name, *has_update);
+                let _ = db::update_container_has_update(&obj.lock().unwrap(), name, *has_update);
                 if *has_update {
                     updated_count += 1;
                 }
@@ -153,6 +155,7 @@ pub async fn update_check_worker(
                         .unwrap_or(UpdateAction::PullRestart),
                     cleanup_old_image: default_action.1,
                     rollback_on_failure: default_action.2,
+                    notify_events: false,
                 },
             };
             if policy.action == UpdateAction::None {

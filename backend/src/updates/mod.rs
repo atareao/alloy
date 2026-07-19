@@ -1,3 +1,4 @@
+pub mod common;
 pub mod digest;
 pub mod handlers;
 pub mod history;

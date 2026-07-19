@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::containers::fetch_containers;
+use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 
@@ -37,16 +38,18 @@ pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn refresh(
     docker: &Docker,
     settings: &Arc<Mutex<Settings>>,
+    update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
     tx: &broadcast::Sender<StateEvent>,
     cache: &CachedContainers,
     notif_tx: &broadcast::Sender<NotifEvent>,
     previous_states: &mut HashMap<String, String>,
+    db_pool: &DbPool,
 ) {
-    let monitored = settings.lock().await.monitored_containers.clone();
-    let containers = fetch_containers(docker, &None, &monitored).await;
+    let containers = fetch_containers(docker, &None, db_pool).await;
     *cache.write().await = Some(containers.clone());
     let _ = tx.send(StateEvent {
         containers: containers.clone(),
@@ -55,6 +58,7 @@ async fn refresh(
     // Detect state changes and send notifications
     let now = chrono::Local::now().format("%H:%M:%S").to_string();
     let settings_arc = settings.clone();
+    let policies = update_policies.lock().await;
     for c in &containers {
         let prev = previous_states
             .get(&c.name)
@@ -62,24 +66,32 @@ async fn refresh(
             .unwrap_or("");
         let curr = c.state.as_str();
         if !prev.is_empty() && prev != curr {
-            let status_msg = match curr {
-                "running" => "▶️ en ejecución",
-                "exited" => "⏹️ detenido",
-                "paused" => "⏸️ pausado",
-                "restarting" => "🔄 reiniciando",
-                "dead" => "💀 finalizado",
-                "created" => "🆕 creado",
-                "removing" => "🗑️ eliminando",
-                _ => curr,
-            };
-            let _ = notif_tx.send(NotifEvent {
-                container: c.name.clone(),
-                status: status_msg.to_string(),
-                timestamp: now.clone(),
-            });
-            notify_all(&settings_arc, &c.name, status_msg).await;
+            let should_notify = policies
+                .iter()
+                .find(|p| p.container == c.name)
+                .map(|p| p.notify_events)
+                .unwrap_or(false);
+            if should_notify {
+                let status_msg = match curr {
+                    "running" => "▶️ en ejecución",
+                    "exited" => "⏹️ detenido",
+                    "paused" => "⏸️ pausado",
+                    "restarting" => "🔄 reiniciando",
+                    "dead" => "💀 finalizado",
+                    "created" => "🆕 creado",
+                    "removing" => "🗑️ eliminando",
+                    _ => curr,
+                };
+                let _ = notif_tx.send(NotifEvent {
+                    container: c.name.clone(),
+                    status: status_msg.to_string(),
+                    timestamp: now.clone(),
+                });
+                notify_all(&settings_arc, &c.name, status_msg).await;
+            }
         }
     }
+    drop(policies);
     // Update previous states
     for c in &containers {
         previous_states.insert(c.name.clone(), c.state.clone());
@@ -93,9 +105,11 @@ async fn refresh(
 pub async fn state_worker(
     docker: Docker,
     settings: Arc<Mutex<Settings>>,
+    update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
     tx: broadcast::Sender<StateEvent>,
     cached_containers: CachedContainers,
     notif_tx: broadcast::Sender<NotifEvent>,
+    db_pool: DbPool,
 ) {
     let relevant_actions = [
         "start", "stop", "die", "kill", "pause", "unpause", "restart", "create", "destroy",
@@ -107,10 +121,12 @@ pub async fn state_worker(
     refresh(
         &docker,
         &settings,
+        &update_policies,
         &tx,
         &cached_containers,
         &notif_tx,
         &mut previous_states,
+        &db_pool,
     )
     .await;
 
@@ -133,7 +149,7 @@ pub async fn state_worker(
                                             if let Some(ref action) = evt.action {
                                                 if relevant_actions.contains(&action.as_str()) {
                                                     tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
-            refresh(&docker,  &settings, &tx, &cached_containers, &notif_tx, &mut previous_states).await;
+            refresh(&docker,  &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool).await;
                                                 }
                                             }
                                         }
@@ -149,7 +165,7 @@ pub async fn state_worker(
                                 }
                             }
                             _ = fallback.tick() => {
-                                refresh(&docker,  &settings, &tx, &cached_containers, &notif_tx, &mut previous_states).await;
+                                refresh(&docker,  &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool).await;
                             }
                         }
         }

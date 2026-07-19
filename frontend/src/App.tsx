@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
+import { showNotification } from "@mantine/notifications";
 import {
   AppShell,
   Button,
@@ -19,7 +20,6 @@ import type {
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
-import NotifToast from "./components/NotifToast";
 import HistoryPage from "./HistoryPage";
 
 interface AppProps {
@@ -39,7 +39,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [containersLoaded, setContainersLoaded] = useState(false);
-  const [notifications, setNotifications] = useState<NotifEvent[]>([]);
   const [progress, setProgress] = useState<Map<string, UpdateProgress>>(
     new Map(),
   );
@@ -121,7 +120,12 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     notifSource.addEventListener("notification", (e) => {
       try {
         const notif: NotifEvent = JSON.parse(e.data);
-        setNotifications((prev) => [notif, ...prev].slice(0, 50));
+        showNotification({
+          title: notif.container,
+          message: notif.status,
+          color: "blue",
+          autoClose: 5000,
+        });
       } catch {
         /* ignore malformed */
       }
@@ -160,10 +164,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     });
     return () => evtSource.close();
   }, [authenticated]);
-
-  const dismissNotif = (index: number) => {
-    setNotifications((prev) => prev.filter((_, i) => i !== index));
-  };
 
   const logout = () => {
     window.location.href = "/api/auth/logout";
@@ -237,53 +237,12 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </Group>
         </Stack>
 
-        {/* Notification toasts */}
-        {notifications.length > 0 && (
-          <div
-            style={{
-              position: "fixed",
-              top: 16,
-              right: 16,
-              zIndex: 1000,
-              maxWidth: 400,
-              width: "100%",
-            }}
-          >
-            {notifications.map((notif, i) => (
-              <NotifToast
-                key={`${notif.container}-${notif.timestamp}-${i}`}
-                notif={notif}
-                onDismiss={() => dismissNotif(i)}
-              />
-            ))}
-            {notifications.length > 3 && (
-              <div style={{ textAlign: "center", marginTop: 4 }}>
-                <button
-                  onClick={() => setNotifications([])}
-                  style={{
-                    background: "rgba(0,0,0,0.7)",
-                    color: "#aaa",
-                    border: "1px solid #333",
-                    borderRadius: 4,
-                    padding: "2px 12px",
-                    fontSize: 12,
-                    cursor: "pointer",
-                  }}
-                >
-                  Limpiar todas ({notifications.length})
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
         {view === "dashboard" && (
           <DashboardPage
             containers={containers}
             setContainers={setContainers}
             progress={progress}
             containersLoaded={containersLoaded}
-            config={config}
           />
         )}
         {view === "history" && (

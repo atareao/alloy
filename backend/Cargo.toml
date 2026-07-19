@@ -25,7 +25,8 @@ base64 = "0.22.1"
 tokio-util = { version = "0.7", features = ["io"] }
 async-stream = "0.3"
 cron = "0.15"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+deadpool-sqlite = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
