@@ -13,6 +13,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::containers::{fetch_containers, find_container_by_name, pull_image};
 use crate::db;
+use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
@@ -32,6 +33,7 @@ pub async fn update_container_h(
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+    State(db_pool): State<DbPool>,
     Path(name): Path<String>,
 ) -> Result<Json<UpdateProgress>, AppError> {
     let container = find_container_by_name(&docker, &name).await?;
@@ -62,8 +64,8 @@ pub async fn update_container_h(
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
-        let conn = db::global().lock().await;
-        let _ = db::append_update_history(&conn, hist.last().unwrap());
+        let conn = db_pool.get().await.unwrap();
+        let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
         drop(conn);
         return Err(AppError::Internal("pull failed".into()));
     }
@@ -92,8 +94,8 @@ pub async fn update_container_h(
             });
             notify_all(&settings, &name, "✅ actualizado y reiniciado").await;
             {
-                let conn = db::global().lock().await;
-                let _ = db::update_container_has_update(&conn, &name, false);
+                let conn = db_pool.get().await.unwrap();
+                let _ = db::update_container_has_update(&conn.lock().unwrap(), &name, false);
             }
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
@@ -106,8 +108,8 @@ pub async fn update_container_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            let conn = db::global().lock().await;
-            let _ = db::append_update_history(&conn, hist.last().unwrap());
+            let conn = db_pool.get().await.unwrap();
+            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             Ok(Json(UpdateProgress {
                 container: name,
                 status: "ok".into(),
@@ -133,8 +135,8 @@ pub async fn update_container_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            let conn = db::global().lock().await;
-            let _ = db::append_update_history(&conn, hist.last().unwrap());
+            let conn = db_pool.get().await.unwrap();
+            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             Err(AppError::Docker(format!("restart: {}", e)))
         }
     }
@@ -145,6 +147,7 @@ pub async fn update_all_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+    State(db_pool): State<DbPool>,
 ) -> Json<Vec<UpdateProgress>> {
     let mut results = vec![];
     for (name, image, cid, _) in crate::workers::docker_list_running(&docker).await {
@@ -167,8 +170,8 @@ pub async fn update_all_h(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            let conn = db::global().lock().await;
-            let _ = db::append_update_history(&conn, hist.last().unwrap());
+            let conn = db_pool.get().await.unwrap();
+            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             continue;
         }
         match docker
@@ -184,8 +187,8 @@ pub async fn update_all_h(
                 });
                 notify_all(&settings, &name, "✅ actualizado").await;
                 {
-                    let conn = db::global().lock().await;
-                    let _ = db::update_container_has_update(&conn, &name, false);
+                    let conn = db_pool.get().await.unwrap();
+                    let _ = db::update_container_has_update(&conn.lock().unwrap(), &name, false);
                 }
                 results.push(UpdateProgress {
                     container: name.clone(),
@@ -204,8 +207,8 @@ pub async fn update_all_h(
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
-                let conn = db::global().lock().await;
-                let _ = db::append_update_history(&conn, hist.last().unwrap());
+                let conn = db_pool.get().await.unwrap();
+                let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             }
             Err(e) => {
                 results.push(UpdateProgress {
@@ -248,8 +251,8 @@ pub async fn check_update_h(
     };
     // Persist has_update to database
     if let Some(hu) = has_update {
-        let conn = db_pool.lock().await;
-        let _ = db::update_container_has_update(&conn, &name, hu);
+        let conn = db_pool.get().await.unwrap();
+        let _ = db::update_container_has_update(&conn.lock().unwrap(), &name, hu);
         drop(conn);
     }
     let local_digest = container
@@ -270,14 +273,14 @@ pub async fn check_update_h(
 #[allow(clippy::too_many_arguments)]
 pub async fn check_all_h(
     State(docker): State<Docker>,
-    State(db_pool): State<db::DbPool>,
+    State(db_pool): State<DbPool>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(update_policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
 ) -> Json<Vec<ContainerInfo>> {
-    let mut containers = fetch_containers(&docker, &None, &[]).await;
+    let mut containers = fetch_containers(&docker, &None, &db_pool).await;
     let raw_containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
@@ -338,9 +341,9 @@ pub async fn check_all_h(
     for c in &mut containers {
         c.has_update = *update_map.get(&c.name).unwrap_or(&false);
     }
-    let conn = db_pool.lock().await;
+    let conn = db_pool.get().await.unwrap();
     for c in &containers {
-        let _ = db::update_container_has_update(&conn, &c.name, c.has_update);
+        let _ = db::update_container_has_update(&conn.lock().unwrap(), &c.name, c.has_update);
     }
     drop(conn);
 
@@ -387,6 +390,7 @@ pub async fn check_all_h(
                 &notif_tx,
                 &update_history,
                 &update_policies,
+                &db_pool,
                 &pending,
             )
             .await;
@@ -399,12 +403,12 @@ pub async fn check_all_h(
 #[allow(clippy::too_many_arguments)]
 async fn apply_policies_background(
     docker: &Docker,
-
     settings: &Arc<Mutex<Settings>>,
     update_tx: &broadcast::Sender<UpdateProgress>,
     notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
+    db_pool: &DbPool,
     pending: &[PendingUpdate],
 ) {
     let policies = update_policies.lock().await.clone();
@@ -431,6 +435,7 @@ async fn apply_policies_background(
                 action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
                 cleanup_old_image: default_cleanup,
                 rollback_on_failure: default_rollback,
+                notify_events: false,
             },
         };
         if policy.action == UpdateAction::None {
@@ -567,8 +572,8 @@ async fn apply_policies_background(
             });
             notify_all(settings, &p.name, "✅ actualizado y reiniciado").await;
             {
-                let conn = db::global().lock().await;
-                let _ = db::update_container_has_update(&conn, &p.name, false);
+                let conn = db_pool.get().await.unwrap();
+                let _ = db::update_container_has_update(&conn.lock().unwrap(), &p.name, false);
             }
             let entry = UpdateHistoryEntry {
                 container: p.name.clone(),
@@ -581,8 +586,8 @@ async fn apply_policies_background(
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
-            let conn = db::global().lock().await;
-            let _ = db::append_update_history(&conn, hist.last().unwrap());
+            let conn = db_pool.get().await.unwrap();
+            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
         }
     }
 }

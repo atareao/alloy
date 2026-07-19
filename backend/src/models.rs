@@ -11,7 +11,7 @@ pub struct ContainerInfo {
     pub status: String,
     pub state: String,
     pub has_update: bool,
-    pub monitored: bool,
+    pub updating: bool,
     pub compose_project: Option<String>,
     pub ports: Vec<String>,
     pub traefik_url: Option<String>,
@@ -168,8 +168,7 @@ pub struct Settings {
     pub matrix_room: Option<String>,
     #[serde(default)]
     pub webhook_url: Option<String>,
-    #[serde(default)]
-    pub monitored_containers: Vec<String>,
+
     #[serde(default)]
     pub update_check_cron: Option<String>,
     #[serde(default)]
@@ -190,6 +189,8 @@ pub struct UpdatePolicy {
     pub action: UpdateAction,
     pub cleanup_old_image: bool,
     pub rollback_on_failure: bool,
+    #[serde(default = "default_notify_events")]
+    pub notify_events: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,6 +198,12 @@ pub struct UpdatePolicyReq {
     pub action: UpdateAction,
     pub cleanup_old_image: bool,
     pub rollback_on_failure: bool,
+    #[serde(default = "default_notify_events")]
+    pub notify_events: bool,
+}
+
+const fn default_notify_events() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

@@ -86,8 +86,8 @@ mod tests {
                 compose_project: None,
                 ports: vec!["0.0.0.0:80:80".into()],
                 traefik_url: None,
+                updating: false,
                 registry_url: "https://hub.docker.com/_/nginx".into(),
-                monitored: false,
             }],
         };
 
@@ -117,8 +117,8 @@ mod tests {
                     compose_project: None,
                     ports: vec![],
                     traefik_url: None,
+                    updating: false,
                     registry_url: String::new(),
-                    monitored: false,
                 },
                 ContainerInfo {
                     id: "2".into(),
@@ -132,8 +132,8 @@ mod tests {
                     compose_project: Some("myapp".into()),
                     ports: vec![],
                     traefik_url: None,
+                    updating: false,
                     registry_url: String::new(),
-                    monitored: false,
                 },
             ],
         };
@@ -169,8 +169,8 @@ mod tests {
                 compose_project: None,
                 ports: vec![],
                 traefik_url: None,
+                updating: false,
                 registry_url: String::new(),
-                monitored: false,
             }],
         };
 
@@ -201,8 +201,8 @@ mod tests {
                     compose_project: None,
                     ports: vec![],
                     traefik_url: None,
+                    updating: false,
                     registry_url: String::new(),
-                    monitored: false,
                 }],
             })
             .unwrap();

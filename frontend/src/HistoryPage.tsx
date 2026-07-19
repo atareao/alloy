@@ -90,7 +90,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
     <Paper key={i} shadow="sm" p="sm" withBorder>
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">
-          <Text size="sm" fw={500} truncate style={{ flex: 1 }}>
+          <Text size="sm" fw={500} truncate flex="1">
             {entry.container}
           </Text>
           <Badge size="sm" color={statusColor(entry.status)}>
@@ -109,7 +109,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             <Text size="xs" c="dimmed">
               Anterior:
             </Text>
-            <Text size="xs" style={{ fontFamily: "monospace" }}>
+            <Text size="xs" ff="monospace">
               {shortDigest(entry.old_digest)}
             </Text>
           </Group>
@@ -117,7 +117,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             <Text size="xs" c="dimmed">
               Nueva:
             </Text>
-            <Text size="xs" style={{ fontFamily: "monospace" }}>
+            <Text size="xs" ff="monospace">
               {shortDigest(entry.new_digest)}
             </Text>
           </Group>
@@ -221,7 +221,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
                       <Text
                         size="xs"
                         c="dimmed"
-                        style={{ fontFamily: "monospace" }}
+                        ff="monospace"
                       >
                         {shortDigest(entry.old_digest)}
                       </Text>
@@ -230,7 +230,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
                       <Text
                         size="xs"
                         c="dimmed"
-                        style={{ fontFamily: "monospace" }}
+                        ff="monospace"
                       >
                         {shortDigest(entry.new_digest)}
                       </Text>

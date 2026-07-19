@@ -52,28 +52,28 @@ async fn main() {
     // Initialize SQLite database
     let config = Config::load();
 
-    let db_pool = {
-        let conn = database::init_db("data/alloy.db").expect("❌ Failed to initialize database");
-        let pool: database::DbPool = Arc::new(Mutex::new(conn));
-        database::init_global(pool.clone());
-        pool
-    };
+    let db_pool = database::init_db("data/alloy.db")
+        .await
+        .expect("❌ Failed to initialize database");
 
     // Load persistent state from database
     let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = {
-        let conn = db_pool.lock().await;
+        let obj = db_pool.get().await.expect("db pool get");
+        let conn = obj.lock().unwrap();
         Arc::new(Mutex::new(
             database::load_update_history(&conn).unwrap_or_default(),
         ))
     };
     let update_policies: Arc<Mutex<Vec<UpdatePolicy>>> = {
-        let conn = db_pool.lock().await;
+        let obj = db_pool.get().await.expect("db pool get");
+        let conn = obj.lock().unwrap();
         Arc::new(Mutex::new(
             database::load_update_policies(&conn).unwrap_or_default(),
         ))
     };
     let settings: Arc<Mutex<Settings>> = {
-        let conn = db_pool.lock().await;
+        let obj = db_pool.get().await.expect("db pool get");
+        let conn = obj.lock().unwrap();
         Arc::new(Mutex::new(
             database::load_settings(&conn).unwrap_or_default(),
         ))
@@ -174,15 +174,18 @@ async fn main() {
     tokio::spawn(state_worker(
         docker.clone(),
         settings.clone(),
+        update_policies.clone(),
         tx.clone(),
         cached_containers,
         notif_tx.clone(),
+        db_pool.clone(),
     ));
     tokio::spawn(auto_update_worker(
         docker.clone(),
         settings.clone(),
         notif_tx.clone(),
         update_history.clone(),
+        db_pool.clone(),
     ));
     tokio::spawn(update_check_worker(
         docker.clone(),
@@ -190,6 +193,7 @@ async fn main() {
         update_policies.clone(),
         update_tx.clone(),
         notif_tx.clone(),
+        db_pool.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
 

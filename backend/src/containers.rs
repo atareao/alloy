@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
     response::Json,
-    routing::{get, post, put},
+    routing::{get, post},
     Router,
 };
 use bollard::{
@@ -16,10 +16,9 @@ use bollard::{
 };
 use futures::{pin_mut, StreamExt};
 use std::convert::Infallible;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::db::DbPool;
 use crate::models::*;
 use crate::state::AppState;
 use crate::workers::CachedContainers;
@@ -49,7 +48,7 @@ pub async fn find_container_by_name(
 pub async fn fetch_containers(
     docker: &Docker,
     allowed: &Option<Vec<String>>,
-    monitored: &[String],
+    db_pool: &DbPool,
 ) -> Vec<ContainerInfo> {
     let containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
@@ -84,8 +83,9 @@ pub async fn fetch_containers(
 
     // Step 2: Read persisted has_update from DB
     let has_update_map: std::collections::HashMap<String, bool> = {
-        let conn = crate::db::global().lock().await;
-        let prepare_result = conn.prepare("SELECT name, has_update FROM containers");
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        let prepare_result = guard.prepare("SELECT name, has_update FROM containers");
         let mut stmt = match prepare_result {
             Ok(s) => s,
             Err(e) => {
@@ -229,7 +229,7 @@ pub async fn fetch_containers(
                 state: c.state.as_deref().unwrap_or("unknown").to_string(),
                 size_mb: ((c.size_rw.unwrap_or(0) as f64 / 1_048_576.0) * 100.0).round() / 100.0,
                 has_update: *has_update_map.get(&name).unwrap_or(&false),
-                monitored: monitored.contains(&name),
+                updating: false,
                 compose_project: c
                     .labels
                     .as_ref()
@@ -263,64 +263,15 @@ pub async fn pull_image(docker: &Docker, image: &str) -> bool {
 async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
-    State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
 ) -> Json<Vec<ContainerInfo>> {
     let cached = cache.read().await;
     if let Some(containers) = cached.as_ref() {
         Json(containers.clone())
     } else {
         drop(cached);
-        let monitored = settings.lock().await.monitored_containers.clone();
-        Json(fetch_containers(&docker, &None, &monitored).await)
+        Json(fetch_containers(&docker, &None, &db_pool).await)
     }
-}
-
-async fn monitor_container_h(
-    State(docker): State<Docker>,
-    State(settings): State<Arc<Mutex<Settings>>>,
-    Path(name): Path<String>,
-    Json(body): Json<serde_json::Value>,
-) -> Json<Vec<ContainerInfo>> {
-    let monitored = body["monitored"].as_bool().unwrap_or(false);
-    {
-        let mut s = settings.lock().await;
-        if monitored {
-            if !s.monitored_containers.contains(&name) {
-                s.monitored_containers.push(name.clone());
-            }
-        } else {
-            s.monitored_containers.retain(|c| c != &name);
-        }
-        let conn = crate::db::global().lock().await;
-        let _ = crate::db::save_settings(&conn, &s);
-    }
-    let monitored_list = settings.lock().await.monitored_containers.clone();
-    Json(fetch_containers(&docker, &None, &monitored_list).await)
-}
-
-async fn monitor_all_h(
-    State(docker): State<Docker>,
-    State(settings): State<Arc<Mutex<Settings>>>,
-    Json(body): Json<serde_json::Value>,
-) -> Json<Vec<ContainerInfo>> {
-    let monitored = body["monitored"].as_bool().unwrap_or(false);
-    let containers = fetch_containers(&docker, &None, &[]).await;
-    {
-        let mut s = settings.lock().await;
-        if monitored {
-            for c in &containers {
-                if !s.monitored_containers.contains(&c.name) {
-                    s.monitored_containers.push(c.name.clone());
-                }
-            }
-        } else {
-            s.monitored_containers.clear();
-        }
-        let conn = crate::db::global().lock().await;
-        let _ = crate::db::save_settings(&conn, &s);
-    }
-    let monitored_list = settings.lock().await.monitored_containers.clone();
-    Json(fetch_containers(&docker, &None, &monitored_list).await)
 }
 
 async fn inspect_container_h(
@@ -534,13 +485,12 @@ pub fn routes() -> Router<AppState> {
         .route("/api/containers/{name}/restart", post(restart_container_h))
         .route("/api/containers/{name}/remove", post(remove_container_h))
         .route("/api/containers/{name}/logs", get(logs_container_h))
-        .route("/api/containers/{name}/monitor", put(monitor_container_h))
-        .route("/api/containers/monitor-all", put(monitor_all_h))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_pool;
 
     /// Crea un cliente Bollard conectado al socket de Podman.
     /// Usa DOCKER_HOST si está configurado, o el socket rootless por defecto.
@@ -565,7 +515,8 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let result = fetch_containers(&docker, &None, &[]).await;
+        let pool = test_pool();
+        let result = fetch_containers(&docker, &None, &pool).await;
         assert!(!result.is_empty(), "Should have at least one container");
     }
 
@@ -576,7 +527,8 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let containers = fetch_containers(&docker, &None, &[]).await;
+        let pool = test_pool();
+        let containers = fetch_containers(&docker, &None, &pool).await;
         let c = containers
             .iter()
             .find(|c| c.name == "alloy")
@@ -599,7 +551,8 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let containers = fetch_containers(&docker, &None, &[]).await;
+        let pool = test_pool();
+        let containers = fetch_containers(&docker, &None, &pool).await;
         for c in &containers {
             // Every container must have these basic fields
             assert!(!c.id.is_empty(), "ID should not be empty for {}", c.name);
@@ -637,8 +590,9 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
+        let pool = test_pool();
         let allowed = Some(vec!["alloy".into(), "oxinbox".into()]);
-        let containers = fetch_containers(&docker, &allowed, &[]).await;
+        let containers = fetch_containers(&docker, &allowed, &pool).await;
         for c in &containers {
             assert!(
                 c.name == "alloy" || c.name == "oxinbox",
@@ -655,8 +609,9 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
+        let pool = test_pool();
         let allowed = Some(Vec::new());
-        let containers = fetch_containers(&docker, &allowed, &[]).await;
+        let containers = fetch_containers(&docker, &allowed, &pool).await;
         assert!(
             containers.is_empty(),
             "Empty allowed list should return nothing"
@@ -743,7 +698,8 @@ mod tests {
             return;
         }
         let docker = podman_client().await;
-        let containers = fetch_containers(&docker, &None, &[]).await;
+        let pool = test_pool();
+        let containers = fetch_containers(&docker, &None, &pool).await;
 
         // Check that containers with ports have valid port strings
         for c in &containers {

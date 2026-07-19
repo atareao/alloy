@@ -95,6 +95,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db;
+use crate::db::DbPool;
 use crate::models::{PublicConfig, Settings, UpdateSettingsReq};
 use crate::state::AppState;
 
@@ -118,6 +119,7 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
 
 async fn update_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
     Json(body): Json<UpdateSettingsReq>,
 ) -> Json<PublicConfig> {
     {
@@ -170,8 +172,8 @@ async fn update_config_h(
                 s.webhook_url = Some(v);
             }
         }
-        let conn = db::global().lock().await;
-        let _ = db::save_settings(&conn, &s);
+        let conn = db_pool.get().await.unwrap();
+        let _ = db::save_settings(&conn.lock().unwrap(), &s);
     }
     config_handler(State(settings)).await
 }

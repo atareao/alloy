@@ -31,8 +31,8 @@ build:
         --tag={{user}}/{{name}}:latest .
 
 push:
-    @podman image push {{user}}/{{name}}:{{version}}
-    @podman image push {{user}}/{{name}}:latest
+    @podman image push --authfile ~/.podman-auth.json {{user}}/{{name}}:{{version}}
+    @podman image push --authfile ~/.podman-auth.json {{user}}/{{name}}:latest
 
 # ═══════════════════════════════════════════════════════════════
 # GitFlow recipes

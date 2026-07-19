@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db;
+use crate::db::DbPool;
 use crate::models::*;
 use crate::state::AppState;
 
@@ -30,14 +31,15 @@ async fn get_update_check_config_h(
 
 async fn put_update_check_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
     Json(body): Json<UpdateCheckConfig>,
 ) -> Json<UpdateCheckConfig> {
     let mut s = settings.lock().await;
     s.update_check_cron = Some(body.cron.clone());
     s.update_check_enabled = Some(body.enabled);
     s.update_check_notify = Some(body.notify);
-    let conn = db::global().lock().await;
-    let _ = db::save_settings(&conn, &s);
+    let conn = db_pool.get().await.unwrap();
+    let _ = db::save_settings(&conn.lock().unwrap(), &s);
     Json(body)
 }
 
@@ -52,6 +54,7 @@ async fn get_update_policies_h(
 
 async fn put_update_policy_h(
     State(policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
+    State(db_pool): State<DbPool>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(body): Json<UpdatePolicyReq>,
 ) -> Json<UpdatePolicy> {
@@ -60,6 +63,7 @@ async fn put_update_policy_h(
         action: body.action,
         cleanup_old_image: body.cleanup_old_image,
         rollback_on_failure: body.rollback_on_failure,
+        notify_events: false,
     };
     {
         let mut list = policies.lock().await;
@@ -71,21 +75,22 @@ async fn put_update_policy_h(
             list.push(policy.clone());
         }
     }
-    let conn = db::global().lock().await;
-    let _ = db::save_update_policy(&conn, &policy);
+    let conn = db_pool.get().await.unwrap();
+    let _ = db::save_update_policy(&conn.lock().unwrap(), &policy);
     Json(policy)
 }
 
 async fn delete_update_policy_h(
     State(policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
+    State(db_pool): State<DbPool>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<serde_json::Value> {
     {
         let mut list = policies.lock().await;
         list.retain(|p| p.container != name);
     }
-    let conn = db::global().lock().await;
-    let _ = db::delete_update_policy(&conn, &name);
+    let conn = db_pool.get().await.unwrap();
+    let _ = db::delete_update_policy(&conn.lock().unwrap(), &name);
     Json(serde_json::json!({"status": "deleted", "container": name}))
 }
 
@@ -112,14 +117,15 @@ async fn get_default_update_policy_h(
 
 async fn put_default_update_policy_h(
     State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
     Json(body): Json<DefaultUpdatePolicy>,
 ) -> Json<DefaultUpdatePolicy> {
     let mut s = settings.lock().await;
     s.default_update_action = Some(body.action.clone());
     s.default_cleanup_old_image = Some(body.cleanup_old_image);
     s.default_rollback_on_failure = Some(body.rollback_on_failure);
-    let conn = db::global().lock().await;
-    let _ = db::save_settings(&conn, &s);
+    let conn = db_pool.get().await.unwrap();
+    let _ = db::save_settings(&conn.lock().unwrap(), &s);
     Json(body)
 }
 
@@ -128,11 +134,12 @@ async fn put_default_update_policy_h(
 async fn export_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+    State(db_pool): State<DbPool>,
 ) -> Json<serde_json::Value> {
     let sett = settings.lock().await;
     let hist = update_history.lock().await;
-    let conn = db::global().lock().await;
-    let _ = db::save_settings(&conn, &sett);
+    let conn = db_pool.get().await.unwrap();
+    let _ = db::save_settings(&conn.lock().unwrap(), &sett);
     Json(serde_json::json!({
         "version": 1,
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -148,13 +155,14 @@ struct ImportPayload {
 
 async fn import_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
     Json(body): Json<ImportPayload>,
 ) -> Json<serde_json::Value> {
     {
         let mut st = settings.lock().await;
         *st = body.settings;
-        let conn = db::global().lock().await;
-        let _ = db::save_settings(&conn, &st);
+        let conn = db_pool.get().await.unwrap();
+        let _ = db::save_settings(&conn.lock().unwrap(), &st);
     }
     Json(serde_json::json!({"status": "imported"}))
 }
@@ -198,6 +206,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_update_check_config() {
+        let db_pool = db::test_pool();
         let settings = Arc::new(Mutex::new(Settings::default()));
         let config = UpdateCheckConfig {
             cron: "0 0 * * *".into(),
@@ -205,7 +214,7 @@ mod tests {
             notify: true,
         };
         let result: Json<UpdateCheckConfig> =
-            put_update_check_config_h(State(settings.clone()), Json(config)).await;
+            put_update_check_config_h(State(settings.clone()), State(db_pool), Json(config)).await;
         assert_eq!(result.0.cron, "0 0 * * *");
         assert!(result.0.enabled);
         assert!(result.0.notify);
@@ -225,14 +234,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_update_policy() {
+        let db_pool = db::test_pool();
         let policies = Arc::new(Mutex::new(Vec::new()));
         let req = UpdatePolicyReq {
             action: UpdateAction::PullRestart,
             cleanup_old_image: true,
             rollback_on_failure: true,
+            notify_events: false,
         };
         let result: Json<UpdatePolicy> = put_update_policy_h(
             State(policies.clone()),
+            State(db_pool),
             axum::extract::Path("nginx".into()),
             Json(req),
         )
@@ -248,19 +260,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_update_policy_overwrites() {
+        let db_pool = db::test_pool();
         let policies = Arc::new(Mutex::new(vec![UpdatePolicy {
             container: "nginx".into(),
             action: UpdateAction::None,
             cleanup_old_image: false,
             rollback_on_failure: false,
+            notify_events: false,
         }]));
         let req = UpdatePolicyReq {
             action: UpdateAction::Pull,
             cleanup_old_image: false,
             rollback_on_failure: false,
+            notify_events: false,
         };
         let result: Json<UpdatePolicy> = put_update_policy_h(
             State(policies.clone()),
+            State(db_pool),
             axum::extract::Path("nginx".into()),
             Json(req),
         )
@@ -273,15 +289,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_update_policy() {
+        let db_pool = db::test_pool();
         let policies = Arc::new(Mutex::new(vec![UpdatePolicy {
             container: "nginx".into(),
             action: UpdateAction::PullRestart,
             cleanup_old_image: true,
             rollback_on_failure: false,
+            notify_events: false,
         }]));
-        let result: Json<serde_json::Value> =
-            delete_update_policy_h(State(policies.clone()), axum::extract::Path("nginx".into()))
-                .await;
+        let result: Json<serde_json::Value> = delete_update_policy_h(
+            State(policies.clone()),
+            State(db_pool),
+            axum::extract::Path("nginx".into()),
+        )
+        .await;
         assert_eq!(result.0["status"], "deleted");
         let list = policies.lock().await;
         assert!(list.is_empty());
@@ -289,9 +310,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_update_policy_nonexistent() {
+        let db_pool = db::test_pool();
         let policies = Arc::new(Mutex::new(Vec::new()));
         let result: Json<serde_json::Value> = delete_update_policy_h(
             State(policies.clone()),
+            State(db_pool),
             axum::extract::Path("nonexistent".into()),
         )
         .await;
@@ -306,12 +329,14 @@ mod tests {
                 action: UpdateAction::Pull,
                 cleanup_old_image: false,
                 rollback_on_failure: false,
+                notify_events: false,
             },
             UpdatePolicy {
                 container: "redis".into(),
                 action: UpdateAction::None,
                 cleanup_old_image: false,
                 rollback_on_failure: false,
+                notify_events: false,
             },
         ]));
         let result: Json<Vec<UpdatePolicy>> = get_update_policies_h(State(policies)).await;
@@ -322,11 +347,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_export_config_empty() {
+        let db_pool = db::test_pool();
         let settings = Arc::new(Mutex::new(Settings::default()));
         let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
         let result: Json<serde_json::Value> =
-            export_config_h(State(settings), State(update_history)).await;
+            export_config_h(State(settings), State(update_history), State(db_pool)).await;
 
         assert_eq!(result.0["version"], 1);
         assert!(result.0["exported_at"].is_string());
@@ -335,6 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_config_replaces_state() {
+        let db_pool = db::test_pool();
         let settings = Arc::new(Mutex::new(Settings::default()));
 
         let payload = ImportPayload {
@@ -347,7 +374,7 @@ mod tests {
         };
 
         let _: Json<serde_json::Value> =
-            import_config_h(State(settings.clone()), Json(payload)).await;
+            import_config_h(State(settings.clone()), State(db_pool), Json(payload)).await;
 
         let st = settings.lock().await;
         assert_eq!(st.auto_update_enabled, Some(false));
@@ -357,6 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_import_config_overwrites_existing() {
+        let db_pool = db::test_pool();
         let settings = Arc::new(Mutex::new(Settings::default()));
 
         let payload = ImportPayload {
@@ -364,6 +392,6 @@ mod tests {
         };
 
         let _: Json<serde_json::Value> =
-            import_config_h(State(settings.clone()), Json(payload)).await;
+            import_config_h(State(settings.clone()), State(db_pool), Json(payload)).await;
     }
 }

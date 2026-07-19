@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db;
+use crate::db::DbPool;
 use crate::models::*;
 
 pub async fn get_history_h(
@@ -17,10 +18,12 @@ pub async fn get_history_h(
 
 pub async fn delete_history_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+    State(db_pool): State<DbPool>,
 ) -> Json<serde_json::Value> {
     let mut hist = update_history.lock().await;
     hist.clear();
-    let conn = db::global().lock().await;
+    let obj = db_pool.get().await.unwrap();
+    let conn = obj.lock().unwrap();
     let _ = db::clear_update_history(&conn);
     Json(serde_json::json!({"status": "cleared"}))
 }
@@ -28,6 +31,7 @@ pub async fn delete_history_h(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_pool;
 
     #[tokio::test]
     async fn test_get_history_empty() {
@@ -130,7 +134,8 @@ mod tests {
                 status: "success".into(),
                 duration_ms: 100,
             }]));
-        let _ = delete_history_h(State(hist.clone())).await;
+        let pool = test_pool();
+        let _ = delete_history_h(State(hist.clone()), State(pool)).await;
         let stored = hist.lock().await;
         assert!(stored.is_empty());
     }
@@ -138,7 +143,9 @@ mod tests {
     #[tokio::test]
     async fn test_delete_history_on_empty() {
         let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
-        let result: Json<serde_json::Value> = delete_history_h(State(hist.clone())).await;
+        let pool = test_pool();
+        let result: Json<serde_json::Value> =
+            delete_history_h(State(hist.clone()), State(pool)).await;
         assert_eq!(result.0["status"], "cleared");
         assert!(hist.lock().await.is_empty());
     }
