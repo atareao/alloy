@@ -389,19 +389,29 @@ export default function DashboardPage({
     if (isMobile) {
       const isExpanded = !!expandedStacks[project];
       return (
-        <Paper shadow="sm" withBorder mb="md" key={project}>
+        <Paper
+          shadow="sm"
+          withBorder
+          key={project}
+          style={{
+            height: "100%",
+            width: "100%",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
           <Paper
             p="xs"
             style={{
               background: "var(--mantine-color-dark-6)",
               cursor: "pointer",
-              aspectRatio: "1",
               display: "flex",
               flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
               textAlign: "center",
               overflow: "hidden",
+              flex: isExpanded ? undefined : 1,
             }}
             onClick={() => toggleStackExpand(project)}
           >
@@ -417,9 +427,10 @@ export default function DashboardPage({
             </Badge>
           </Paper>
           <Collapse expanded={isExpanded}>
-            <Table>
-              <Table.Tbody>
-                {items.map((c) => (
+            <div style={{ overflowX: "auto", width: "100%" }}>
+              <Table>
+                <Table.Tbody>
+                  {items.map((c) => (
                   <ContainerRow
                   key={c.id}
                   container={c}
@@ -443,6 +454,7 @@ export default function DashboardPage({
               ))}
               </Table.Tbody>
             </Table>
+            </div>
           </Collapse>
         </Paper>
       );
@@ -517,6 +529,7 @@ export default function DashboardPage({
           availableStates={availableStates}
           isMobile={isMobile}
           onCheckAll={checkAll}
+          expandedStacks={expandedStacks}
           renderGroup={renderGroup}
           renderRow={renderRow}
         />

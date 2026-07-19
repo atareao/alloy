@@ -5,7 +5,6 @@ import {
   Chip,
   Group,
   Paper,
-  SimpleGrid,
   Stack,
   Switch,
   Text,
@@ -26,6 +25,7 @@ export interface ContainerTableProps {
   availableStates: string[];
   isMobile: boolean;
   onCheckAll: () => void;
+  expandedStacks: Record<string, boolean>;
   renderGroup: (project: string, items: ContainerInfo[]) => ReactNode;
   renderRow: (c: ContainerInfo) => ReactNode;
 }
@@ -42,6 +42,7 @@ export default function ContainerTable({
   availableStates,
   isMobile,
   onCheckAll,
+  expandedStacks,
   renderGroup,
   renderRow,
 }: ContainerTableProps) {
@@ -111,9 +112,27 @@ export default function ContainerTable({
 
       {/* Stack groups — grid on mobile, list on desktop */}
       {isMobile ? (
-        <SimpleGrid cols={3} spacing="sm" mb="md">
-          {sortedGroups.map(([project, items]) => renderGroup(project, items))}
-        </SimpleGrid>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: "var(--mantine-spacing-sm)",
+            marginBottom: "var(--mantine-spacing-md)",
+          }}
+        >
+          {sortedGroups.map(([project, items]) => (
+            <div
+              key={project}
+              style={
+                expandedStacks[project]
+                  ? { gridColumn: "1 / -1" }
+                  : { aspectRatio: "1", overflow: "hidden" }
+              }
+            >
+              {renderGroup(project, items)}
+            </div>
+          ))}
+        </div>
       ) : (
         sortedGroups.map(([project, items]) => renderGroup(project, items))
       )}
