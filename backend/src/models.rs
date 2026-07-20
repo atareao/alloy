@@ -42,8 +42,6 @@ pub struct NotifEvent {
 pub struct PublicConfig {
     pub oidc_configured: bool,
     pub port: u16,
-    pub auto_update_enabled: bool,
-    pub auto_update_interval_hours: u64,
     pub telegram_configured: bool,
     pub matrix_configured: bool,
     pub webhook_configured: bool,
@@ -153,10 +151,6 @@ pub struct UpdateHistoryEntry {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
-    pub auto_update_enabled: Option<bool>,
-    #[serde(default)]
-    pub auto_update_interval_hours: Option<u64>,
-    #[serde(default)]
     pub telegram_token: Option<String>,
     #[serde(default)]
     pub telegram_chat_id: Option<String>,
@@ -248,8 +242,6 @@ pub struct UpdateCheckConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct UpdateSettingsReq {
-    pub auto_update_enabled: Option<bool>,
-    pub auto_update_interval_hours: Option<u64>,
     pub telegram_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub matrix_homeserver: Option<String>,

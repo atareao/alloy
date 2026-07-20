@@ -4,6 +4,8 @@ use axum::{
 };
 use bollard::{
     container::{ListContainersOptions, RestartContainerOptions},
+    image::RemoveImageOptions,
+    image::TagImageOptions,
     Docker,
 };
 use chrono::Local;
@@ -17,7 +19,6 @@ use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
-use crate::workers::auto_update::{rollback_container, tag_backup_image, verify_container_healthy};
 use crate::workers::resolve_compose_file;
 
 struct PendingUpdate {
@@ -730,5 +731,53 @@ async fn apply_policies_background(
     tracing::info!("apply_policies_background: completado, prune imágenes dangling");
     let _ = docker
         .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
+        .await;
+}
+
+/// Verify a container is running after a restart
+async fn verify_container_healthy(docker: &Docker, name: &str) -> bool {
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    match find_container_by_name(docker, name).await {
+        Ok(c) => c.state.as_deref() == Some("running"),
+        Err(_) => false,
+    }
+}
+
+/// Tag current image as backup for rollback: image:tag → image:rollback-{ts}
+async fn tag_backup_image(docker: &Docker, image: &str) -> Option<(String, String, String)> {
+    let ts = Local::now().format("%Y%m%d%H%M%S").to_string();
+    if let Some((base, original_tag)) = image.rsplit_once(':') {
+        let backup_full = format!("{}:rollback-{}", base, ts);
+        let opts = TagImageOptions {
+            repo: base.to_string(),
+            tag: format!("rollback-{}", ts),
+        };
+        if docker.tag_image(image, Some(opts)).await.is_ok() {
+            return Some((backup_full, base.to_string(), original_tag.to_string()));
+        }
+    }
+    None
+}
+
+/// Rollback: restore backup tag, restart container, remove the new image
+async fn rollback_container(
+    docker: &Docker,
+    cid: &str,
+    base: &str,
+    original_tag: &str,
+    backup_full: &str,
+    new_image: &str,
+) {
+    tracing::warn!("Rollback: restoring backup for {}", new_image);
+    let restore_opts = TagImageOptions {
+        repo: base.to_string(),
+        tag: original_tag.to_string(),
+    };
+    let _ = docker.tag_image(backup_full, Some(restore_opts)).await;
+    let _ = docker
+        .restart_container(cid, None::<RestartContainerOptions>)
+        .await;
+    let _ = docker
+        .remove_image(new_image, None::<RemoveImageOptions>, None)
         .await;
 }
