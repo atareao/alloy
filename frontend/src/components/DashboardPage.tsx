@@ -165,6 +165,7 @@ export default function DashboardPage({
           p.status.startsWith("✅ actualizado") ||
           p.status.startsWith("✅ pulled") ||
           p.status.startsWith("✅ stack") ||
+          p.status.startsWith("❌") ||
           p.status.startsWith("⚠️") ||
           p.status.startsWith("📥") ||
           p.status.startsWith("✅ Updated");

@@ -39,6 +39,42 @@ pub async fn update_container_h(
     let container = find_container_by_name(&docker, &name).await?;
     let image = container.image.as_deref().unwrap_or("");
     let cid = container.id.as_deref().unwrap_or("");
+
+    if image.is_empty() {
+        return Err(AppError::BadRequest("container has no image".into()));
+    }
+
+    // Verificar digest remoto antes de hacer pull
+    let image_id = container.image_id.as_deref().unwrap_or("");
+    let (repo, local_tag) = crate::updates::digest::parse_image_ref(image);
+    let needs_pull = match crate::updates::digest::check_remote_digest(&repo, &local_tag).await {
+        Ok((remote_digest, _)) => {
+            if !image_id.is_empty() {
+                let local_short = crate::updates::digest::short_digest(image_id);
+                let remote_short = crate::updates::digest::short_digest(&remote_digest);
+                local_short != remote_short
+            } else {
+                true // sin image_id local, asumimos que necesita pull
+            }
+        }
+        Err(_) => true, // si falla la verificación, intentamos pull
+    };
+
+    if !needs_pull {
+        let _ = update_tx.send(UpdateProgress {
+            container: name.clone(),
+            status: "✅ ya actualizado".into(),
+            done: true,
+            error: None,
+        });
+        return Ok(Json(UpdateProgress {
+            container: name,
+            status: "already-up-to-date".into(),
+            done: true,
+            error: None,
+        }));
+    }
+
     let _ = update_tx.send(UpdateProgress {
         container: name.clone(),
         status: format!("Pulling {}...", image),
@@ -150,7 +186,32 @@ pub async fn update_all_h(
     State(db_pool): State<DbPool>,
 ) -> Json<Vec<UpdateProgress>> {
     let mut results = vec![];
-    for (name, image, cid, _) in crate::workers::docker_list_running(&docker).await {
+    for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
+        // Verificar digest remoto antes de hacer pull
+        let (repo, local_tag) = crate::updates::digest::parse_image_ref(&image);
+        let needs_pull = match crate::updates::digest::check_remote_digest(&repo, &local_tag).await
+        {
+            Ok((remote_digest, _)) => {
+                let has_update = image_id.as_ref().is_none_or(|local_digest| {
+                    let local_short = crate::updates::digest::short_digest(local_digest);
+                    let remote_short = crate::updates::digest::short_digest(&remote_digest);
+                    local_short != remote_short
+                });
+                has_update
+            }
+            Err(_) => true,
+        };
+
+        if !needs_pull {
+            results.push(UpdateProgress {
+                container: name.clone(),
+                status: "✅ ya actualizado".into(),
+                done: true,
+                error: None,
+            });
+            continue;
+        }
+
         let start_time = std::time::Instant::now();
         if !pull_image(&docker, &image).await {
             results.push(UpdateProgress {
@@ -375,6 +436,11 @@ pub async fn check_all_h(
         .collect();
 
     if !pending.is_empty() {
+        tracing::info!(
+            "check_all: {} updates pendientes: {:?}",
+            pending.len(),
+            pending.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
         let docker = docker.clone();
 
         let settings = settings.clone();
@@ -411,6 +477,10 @@ async fn apply_policies_background(
     db_pool: &DbPool,
     pending: &[PendingUpdate],
 ) {
+    tracing::info!(
+        "apply_policies_background: iniciando con {} pendientes",
+        pending.len()
+    );
     let policies = update_policies.lock().await.clone();
     let policy_map: HashMap<String, UpdatePolicy> = policies
         .into_iter()
@@ -439,8 +509,24 @@ async fn apply_policies_background(
             },
         };
         if policy.action == UpdateAction::None {
+            tracing::warn!(
+                "apply_policies_background: política None para '{}', saltando",
+                p.name
+            );
+            let _ = update_tx.send(UpdateProgress {
+                container: p.name.clone(),
+                status: "⏭️ política: no hacer nada".into(),
+                done: true,
+                error: None,
+            });
             continue;
         }
+
+        tracing::info!(
+            "apply_policies_background: procesando '{}' con acción {:?}",
+            p.name,
+            policy.action
+        );
 
         let _ = update_tx.send(UpdateProgress {
             container: p.name.clone(),
@@ -454,7 +540,9 @@ async fn apply_policies_background(
 
         match policy.action {
             UpdateAction::Pull => {
+                tracing::info!("apply_policies_background: Pull '{}'", p.name);
                 if pull_image(docker, &p.image_full).await {
+                    tracing::info!("apply_policies_background: Pull OK '{}'", p.name);
                     let _ = update_tx.send(UpdateProgress {
                         container: p.name.clone(),
                         status: "✅ pulled".into(),
@@ -462,63 +550,50 @@ async fn apply_policies_background(
                         error: None,
                     });
                     success = true;
+                } else {
+                    tracing::error!("apply_policies_background: Pull FALLÓ '{}'", p.name);
+                    let _ = update_tx.send(UpdateProgress {
+                        container: p.name.clone(),
+                        status: "❌ pull falló".into(),
+                        done: true,
+                        error: Some("pull_image returned false".into()),
+                    });
                 }
             }
             UpdateAction::PullRestart => {
-                if policy.cleanup_old_image || policy.rollback_on_failure {
-                    let backup = if policy.rollback_on_failure {
-                        tag_backup_image(docker, &p.image_full).await
-                    } else {
-                        None
-                    };
-                    if pull_image(docker, &p.image_full).await {
-                        let _ = docker
-                            .restart_container(&p.cid, None::<RestartContainerOptions>)
-                            .await;
-                        if policy.rollback_on_failure
-                            && !verify_container_healthy(docker, &p.name).await
-                        {
-                            if let Some((backup_full, base, orig_tag)) = backup {
-                                rollback_container(
-                                    docker,
-                                    &p.cid,
-                                    &base,
-                                    &orig_tag,
-                                    &backup_full,
-                                    &p.image_full,
-                                )
-                                .await;
-                            }
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "⚠️ rollback aplicado".into(),
-                                done: true,
-                                error: Some("container no healthy".into()),
-                            });
-                        } else {
-                            if policy.cleanup_old_image {
-                                let _ = docker
-                                    .remove_image(
-                                        &p.cid,
-                                        None::<bollard::image::RemoveImageOptions>,
-                                        None,
-                                    )
-                                    .await;
-                            }
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "✅ actualizado + reiniciado".into(),
-                                done: true,
-                                error: None,
-                            });
-                            success = true;
-                        }
-                    }
+                tracing::info!("apply_policies_background: PullRestart '{}'", p.name);
+                let backup = if policy.rollback_on_failure {
+                    tag_backup_image(docker, &p.image_full).await
                 } else {
-                    if pull_image(docker, &p.image_full).await {
-                        let _ = docker
-                            .restart_container(&p.cid, None::<RestartContainerOptions>)
+                    None
+                };
+                if pull_image(docker, &p.image_full).await {
+                    tracing::info!("apply_policies_background: Pull OK, restart '{}'", p.name);
+                    let _ = docker
+                        .restart_container(&p.cid, None::<RestartContainerOptions>)
+                        .await;
+                    if policy.rollback_on_failure
+                        && !verify_container_healthy(docker, &p.name).await
+                    {
+                        tracing::warn!("apply_policies_background: rollback '{}'", p.name);
+                        if let Some((backup_full, base, orig_tag)) = backup {
+                            rollback_container(
+                                docker,
+                                &p.cid,
+                                &base,
+                                &orig_tag,
+                                &backup_full,
+                                &p.image_full,
+                            )
                             .await;
+                        }
+                        let _ = update_tx.send(UpdateProgress {
+                            container: p.name.clone(),
+                            status: "⚠️ rollback aplicado".into(),
+                            done: true,
+                            error: Some("container no healthy".into()),
+                        });
+                    } else {
                         let _ = update_tx.send(UpdateProgress {
                             container: p.name.clone(),
                             status: "✅ actualizado + reiniciado".into(),
@@ -527,12 +602,21 @@ async fn apply_policies_background(
                         });
                         success = true;
                     }
+                } else {
+                    tracing::error!("apply_policies_background: Pull FALLÓ '{}'", p.name);
+                    let _ = update_tx.send(UpdateProgress {
+                        container: p.name.clone(),
+                        status: "❌ pull falló".into(),
+                        done: true,
+                        error: Some("pull_image returned false".into()),
+                    });
                 }
             }
             UpdateAction::PullRestartStack => {
                 if let Some(ref project) = p.compose_project {
                     let compose_file = resolve_compose_file(docker, project).await;
                     if let Some(ref file) = compose_file {
+                        tracing::info!("apply_policies_background: PullRestartStack '{}'", p.name);
                         let _ = update_tx.send(UpdateProgress {
                             container: p.name.clone(),
                             status: format!("📥 Pulling stack '{}'...", project),
@@ -543,8 +627,8 @@ async fn apply_policies_background(
                             .args(["compose", "-f", file, "pull"])
                             .output()
                             .await;
-                        if let Ok(output) = pull {
-                            if output.status.success() {
+                        match pull {
+                            Ok(output) if output.status.success() => {
                                 let _ = tokio::process::Command::new("docker")
                                     .args(["compose", "-f", file, "up", "-d"])
                                     .output()
@@ -557,14 +641,53 @@ async fn apply_policies_background(
                                 });
                                 success = true;
                             }
+                            Ok(output) => {
+                                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                let _ = update_tx.send(UpdateProgress {
+                                    container: p.name.clone(),
+                                    status: "❌ pull falló".into(),
+                                    done: true,
+                                    error: Some(stderr),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = update_tx.send(UpdateProgress {
+                                    container: p.name.clone(),
+                                    status: "❌ error".into(),
+                                    done: true,
+                                    error: Some(e.to_string()),
+                                });
+                            }
                         }
+                    } else {
+                        let _ = update_tx.send(UpdateProgress {
+                            container: p.name.clone(),
+                            status: "❌ compose file no encontrado".into(),
+                            done: true,
+                            error: Some("cannot resolve compose file".into()),
+                        });
                     }
+                } else {
+                    let _ = update_tx.send(UpdateProgress {
+                        container: p.name.clone(),
+                        status: "❌ no es stack".into(),
+                        done: true,
+                        error: Some("container has no compose project label".into()),
+                    });
                 }
             }
-            _ => {}
+            _ => {
+                let _ = update_tx.send(UpdateProgress {
+                    container: p.name.clone(),
+                    status: "⏭️ acción desconocida".into(),
+                    done: true,
+                    error: None,
+                });
+            }
         }
 
         if success {
+            tracing::info!("apply_policies_background: éxito '{}'", p.name);
             let _ = notif_tx.send(NotifEvent {
                 container: p.name.clone(),
                 status: "updated ✅".into(),
@@ -588,6 +711,24 @@ async fn apply_policies_background(
             hist.push(entry);
             let conn = db_pool.get().await.unwrap();
             let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+
+            // Limpiar imágenes dangling si la política lo indica
+            if policy.cleanup_old_image {
+                let _ = docker
+                    .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
+                    .await;
+            }
+        } else {
+            tracing::warn!(
+                "apply_policies_background: fallo/no-hubo-éxito '{}'",
+                p.name
+            );
         }
     }
+
+    // Safety net: limpiar dangling images que hayan podido quedar
+    tracing::info!("apply_policies_background: completado, prune imágenes dangling");
+    let _ = docker
+        .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
+        .await;
 }

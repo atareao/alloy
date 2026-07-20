@@ -142,6 +142,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     evtSource.addEventListener("update-progress", (e) => {
       try {
         const data: UpdateProgress = JSON.parse(e.data);
+        if (typeof console !== "undefined") {
+          console.log("SSE update-progress:", data);
+        }
         setProgress((prev) => {
           const next = new Map(prev);
           next.set(data.container, data);
