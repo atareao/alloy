@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::db as database;
 use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
-use crate::workers::{auto_update_worker, state_worker, update_check_worker, CachedContainers};
+use crate::workers::{state_worker, update_check_worker, CachedContainers};
 
 use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
@@ -180,17 +180,13 @@ async fn main() {
         notif_tx.clone(),
         db_pool.clone(),
     ));
-    tokio::spawn(auto_update_worker(
-        docker.clone(),
-        settings.clone(),
-        update_policies.clone(),
-        notif_tx.clone(),
-        update_history.clone(),
-        db_pool.clone(),
-    ));
     tokio::spawn(update_check_worker(
         docker.clone(),
         settings.clone(),
+        update_policies.clone(),
+        update_tx.clone(),
+        notif_tx.clone(),
+        update_history.clone(),
         db_pool.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
