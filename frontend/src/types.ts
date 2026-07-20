@@ -30,8 +30,6 @@ export interface NotifEvent {
 export interface AppConfig {
   oidc_configured: boolean;
   port: number;
-  auto_update_enabled: boolean;
-  auto_update_interval_hours: number;
   telegram_configured: boolean;
   telegram_token: string | null;
   telegram_chat_id: string | null;

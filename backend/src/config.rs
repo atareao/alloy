@@ -104,8 +104,6 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
     Json(PublicConfig {
         oidc_configured: true,
         port: 3066,
-        auto_update_enabled: s.auto_update_enabled.unwrap_or(false),
-        auto_update_interval_hours: s.auto_update_interval_hours.unwrap_or(6),
         telegram_configured: s.telegram_token.is_some(),
         telegram_token: s.telegram_token.clone(),
         telegram_chat_id: s.telegram_chat_id.clone(),
@@ -124,12 +122,6 @@ async fn update_config_h(
 ) -> Json<PublicConfig> {
     {
         let mut s = settings.lock().await;
-        if let Some(v) = body.auto_update_enabled {
-            s.auto_update_enabled = Some(v);
-        }
-        if let Some(v) = body.auto_update_interval_hours {
-            s.auto_update_interval_hours = Some(v);
-        }
         if let Some(v) = body.telegram_token {
             if v.is_empty() {
                 s.telegram_token = None;

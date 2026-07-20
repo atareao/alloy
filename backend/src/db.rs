@@ -358,10 +358,6 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
     }
 
     Ok(Settings {
-        auto_update_enabled: map.get("auto_update_enabled").and_then(|v| v.parse().ok()),
-        auto_update_interval_hours: map
-            .get("auto_update_interval_hours")
-            .and_then(|v| v.parse().ok()),
         telegram_token: map.get("telegram_token").cloned().filter(|s| !s.is_empty()),
         telegram_chat_id: map
             .get("telegram_chat_id")
@@ -395,14 +391,6 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
 
 pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
     let pairs = vec![
-        (
-            "auto_update_enabled",
-            settings.auto_update_enabled.map(|v| v.to_string()),
-        ),
-        (
-            "auto_update_interval_hours",
-            settings.auto_update_interval_hours.map(|v| v.to_string()),
-        ),
         ("telegram_token", settings.telegram_token.clone()),
         ("telegram_chat_id", settings.telegram_chat_id.clone()),
         ("matrix_homeserver", settings.matrix_homeserver.clone()),
@@ -688,14 +676,10 @@ mod tests {
     fn test_settings_save_load() {
         let conn = test_conn();
         let mut settings = Settings::default();
-        settings.auto_update_enabled = Some(true);
-        settings.auto_update_interval_hours = Some(12);
         settings.telegram_token = Some("bot123".into());
         settings.telegram_chat_id = Some("chat456".into());
         save_settings(&conn, &settings).unwrap();
         let loaded = load_settings(&conn).unwrap();
-        assert_eq!(loaded.auto_update_enabled, Some(true));
-        assert_eq!(loaded.auto_update_interval_hours, Some(12));
         assert_eq!(loaded.telegram_token.as_deref(), Some("bot123"));
     }
 
@@ -703,6 +687,6 @@ mod tests {
     fn test_load_settings_defaults() {
         let conn = test_conn();
         let settings = load_settings(&conn).unwrap();
-        assert_eq!(settings.auto_update_enabled, None);
+        assert_eq!(settings.telegram_token, None);
     }
 }

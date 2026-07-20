@@ -59,10 +59,6 @@ export default function ConfigPage({
   const [mxRoom, setMxRoom] = useState("");
   const [mxEnabled, setMxEnabled] = useState(false);
 
-  // Auto-update
-  const [auEnabled, setAuEnabled] = useState(false);
-  const [auInterval, setAuInterval] = useState(6);
-
   // Update check cron
   const [ucCron, setUcCron] = useState("0 */6 * * *");
   const [ucEnabled, setUcEnabled] = useState(false);
@@ -109,8 +105,6 @@ export default function ConfigPage({
     setMxToken(configProp.matrix_token ?? "");
     setMxRoom(configProp.matrix_room || "");
     setMxEnabled(configProp.matrix_configured);
-    setAuEnabled(configProp.auto_update_enabled);
-    setAuInterval(configProp.auto_update_interval_hours);
   }, [configProp]);
 
   const showSuccess = (msg: string) => {
@@ -185,35 +179,6 @@ export default function ConfigPage({
       }
     } catch {
       setError("Error de conexión al guardar Matrix");
-    }
-    setSaving(null);
-  };
-
-  const saveAutoUpdate = async () => {
-    setSaving("auto-update");
-    setError(null);
-    try {
-      const res = await apiFetch("/api/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          auto_update_enabled: auEnabled,
-          auto_update_interval_hours: auInterval,
-        }),
-      });
-      if (res.ok) {
-        const data: AppConfig = await res.json();
-        setConfigProp(data);
-        setAuEnabled(data.auto_update_enabled);
-        setAuInterval(data.auto_update_interval_hours);
-        showSuccess(
-          auEnabled ? "✅ Auto-update activado" : "❌ Auto-update desactivado",
-        );
-      } else {
-        setError("Error al guardar Auto-update");
-      }
-    } catch {
-      setError("Error de conexión al guardar Auto-update");
     }
     setSaving(null);
   };
@@ -467,39 +432,6 @@ export default function ConfigPage({
               Guardar Matrix
             </Button>
           )}
-        </Group>
-      </Paper>
-
-      {/* ═══ Auto-update ═══ */}
-      <Paper shadow="sm" p="md" withBorder>
-        <Group justify="space-between" mb="md">
-          <Title order={4}>🤖 Auto-update</Title>
-          <Switch
-            label={auEnabled ? "Activado" : "Desactivado"}
-            checked={auEnabled}
-            onChange={(e) => setAuEnabled(e.currentTarget.checked)}
-            color={auEnabled ? "green" : "gray"}
-          />
-        </Group>
-        {auEnabled && (
-          <TextInput
-            label="Intervalo (horas)"
-            description="Cada cuántas horas comprobar y actualizar containers"
-            type="number"
-            min={1}
-            max={168}
-            value={auInterval}
-            onChange={(e) => setAuInterval(Number(e.currentTarget.value))}
-          />
-        )}
-        <Group justify="flex-end" mt="md">
-          <Button
-            onClick={saveAutoUpdate}
-            loading={saving === "auto-update"}
-            color={auEnabled ? "blue" : "gray"}
-          >
-            {auEnabled ? "Guardar Auto-update" : "Desactivar Auto-update"}
-          </Button>
         </Group>
       </Paper>
 

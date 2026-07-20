@@ -3,8 +3,6 @@ pub mod digest;
 pub mod handlers;
 pub mod history;
 
-pub use digest::check_remote_digest;
-
 use crate::state::AppState;
 use axum::routing::{get, post, Router};
 

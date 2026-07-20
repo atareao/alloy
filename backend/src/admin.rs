@@ -366,7 +366,6 @@ mod tests {
 
         let payload = ImportPayload {
             settings: Settings {
-                auto_update_enabled: Some(false),
                 telegram_token: None,
                 telegram_chat_id: Some("123".into()),
                 ..Default::default()
@@ -377,7 +376,6 @@ mod tests {
             import_config_h(State(settings.clone()), State(db_pool), Json(payload)).await;
 
         let st = settings.lock().await;
-        assert_eq!(st.auto_update_enabled, Some(false));
         assert!(st.telegram_token.is_none());
         assert_eq!(st.telegram_chat_id.as_deref(), Some("123"));
     }
