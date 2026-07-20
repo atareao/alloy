@@ -21,6 +21,9 @@ pub async fn auto_update_worker(
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: DbPool,
 ) {
+    // Esperar al startup antes de la primera ejecución
+    tokio::time::sleep(Duration::from_secs(300)).await; // 5 min
+
     loop {
         // Leer configuración en cada ciclo (para soportar cambios dinámicos)
         let (enabled, interval_hours) = {
@@ -35,8 +38,8 @@ pub async fn auto_update_worker(
             continue;
         }
 
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_hours * 3600));
-        interval.tick().await;
+        // Esperar el intervalo ANTES de procesar (no al crear el interval)
+        tokio::time::sleep(Duration::from_secs(interval_hours * 3600)).await;
 
         // Cargar políticas una vez por ciclo
         let policies = {
