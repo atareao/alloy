@@ -6,19 +6,22 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub async fn record_update_entry(
     db_pool: &DbPool,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     container: &str,
     image: &str,
+    old_digest: &str,
+    new_digest: &str,
     status: &str,
     duration_ms: u64,
 ) {
     let entry = UpdateHistoryEntry {
         container: container.to_string(),
         image: image.to_string(),
-        old_digest: String::new(),
-        new_digest: String::new(),
+        old_digest: old_digest.to_string(),
+        new_digest: new_digest.to_string(),
         timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         status: status.to_string(),
         duration_ms,
