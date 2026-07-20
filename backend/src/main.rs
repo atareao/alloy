@@ -148,9 +148,9 @@ async fn main() {
     };
 
     // Broadcast channels for SSE
-    let (tx, _) = broadcast::channel(32);
-    let (update_tx, _) = broadcast::channel(32);
-    let (notif_tx, _) = broadcast::channel(32);
+    let (tx, _) = broadcast::channel(128);
+    let (update_tx, _) = broadcast::channel(128);
+    let (notif_tx, _) = broadcast::channel(128);
 
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
@@ -183,6 +183,7 @@ async fn main() {
     tokio::spawn(auto_update_worker(
         docker.clone(),
         settings.clone(),
+        update_policies.clone(),
         notif_tx.clone(),
         update_history.clone(),
         db_pool.clone(),
@@ -190,9 +191,6 @@ async fn main() {
     tokio::spawn(update_check_worker(
         docker.clone(),
         settings.clone(),
-        update_policies.clone(),
-        update_tx.clone(),
-        notif_tx.clone(),
         db_pool.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));

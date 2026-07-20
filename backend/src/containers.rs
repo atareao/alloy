@@ -252,12 +252,21 @@ pub async fn pull_image(docker: &Docker, image: &str) -> bool {
         None,
     );
     pin_mut!(stream);
-    while let Some(item) = stream.next().await {
-        if item.is_err() {
-            return false;
+    let timed = tokio::time::timeout(std::time::Duration::from_secs(600), async {
+        while let Some(item) = stream.next().await {
+            if item.is_err() {
+                return false;
+            }
+        }
+        true
+    });
+    match timed.await {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::error!("pull_image: timeout después de 600s para '{}'", image);
+            false
         }
     }
-    true
 }
 
 async fn list_containers_h(
