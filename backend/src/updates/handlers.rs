@@ -25,6 +25,7 @@ struct PendingUpdate {
     name: String,
     image_full: String,
     cid: String,
+    image_id: String,
     compose_project: Option<String>,
 }
 
@@ -46,20 +47,21 @@ pub async fn update_container_h(
     }
 
     // Verificar digest remoto antes de hacer pull
-    let image_id = container.image_id.as_deref().unwrap_or("");
+    let image_id = container.image_id.as_deref().unwrap_or("").to_string();
     let (repo, local_tag) = crate::updates::digest::parse_image_ref(image);
-    let needs_pull = match crate::updates::digest::check_remote_digest(&repo, &local_tag).await {
-        Ok((remote_digest, _)) => {
-            if !image_id.is_empty() {
-                let local_short = crate::updates::digest::short_digest(image_id);
-                let remote_short = crate::updates::digest::short_digest(&remote_digest);
-                local_short != remote_short
-            } else {
-                true // sin image_id local, asumimos que necesita pull
+    let (needs_pull, remote_digest) =
+        match crate::updates::digest::check_remote_digest(&repo, &local_tag).await {
+            Ok((digest, _)) => {
+                if !image_id.is_empty() {
+                    let local_short = crate::updates::digest::short_digest(&image_id);
+                    let remote_short = crate::updates::digest::short_digest(&digest);
+                    (local_short != remote_short, digest)
+                } else {
+                    (true, digest) // sin image_id local, asumimos que necesita pull
+                }
             }
-        }
-        Err(_) => true, // si falla la verificación, intentamos pull
-    };
+            Err(_) => (true, String::new()), // si falla, intentamos pull
+        };
 
     if !needs_pull {
         let _ = update_tx.send(UpdateProgress {
@@ -93,8 +95,8 @@ pub async fn update_container_h(
         let entry = UpdateHistoryEntry {
             container: name.clone(),
             image: image.to_string(),
-            old_digest: String::new(),
-            new_digest: String::new(),
+            old_digest: image_id.clone(),
+            new_digest: remote_digest.clone(),
             timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
             status: "error".into(),
             duration_ms: start_time.elapsed().as_millis() as u64,
@@ -137,8 +139,8 @@ pub async fn update_container_h(
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.to_string(),
-                old_digest: String::new(),
-                new_digest: String::new(),
+                old_digest: image_id.clone(),
+                new_digest: remote_digest.clone(),
                 timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                 status: "success".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
@@ -164,8 +166,8 @@ pub async fn update_container_h(
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.to_string(),
-                old_digest: String::new(),
-                new_digest: String::new(),
+                old_digest: image_id.clone(),
+                new_digest: remote_digest.clone(),
                 timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                 status: "error".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
@@ -190,18 +192,18 @@ pub async fn update_all_h(
     for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
         // Verificar digest remoto antes de hacer pull
         let (repo, local_tag) = crate::updates::digest::parse_image_ref(&image);
-        let needs_pull = match crate::updates::digest::check_remote_digest(&repo, &local_tag).await
-        {
-            Ok((remote_digest, _)) => {
-                let has_update = image_id.as_ref().is_none_or(|local_digest| {
-                    let local_short = crate::updates::digest::short_digest(local_digest);
-                    let remote_short = crate::updates::digest::short_digest(&remote_digest);
-                    local_short != remote_short
-                });
-                has_update
-            }
-            Err(_) => true,
-        };
+        let (needs_pull, remote_digest) =
+            match crate::updates::digest::check_remote_digest(&repo, &local_tag).await {
+                Ok((digest, _)) => {
+                    let has_update = image_id.as_ref().is_none_or(|local_digest| {
+                        let local_short = crate::updates::digest::short_digest(local_digest);
+                        let remote_short = crate::updates::digest::short_digest(&digest);
+                        local_short != remote_short
+                    });
+                    (has_update, digest)
+                }
+                Err(_) => (true, String::new()),
+            };
 
         if !needs_pull {
             results.push(UpdateProgress {
@@ -213,6 +215,7 @@ pub async fn update_all_h(
             continue;
         }
 
+        let old_digest = image_id.as_deref().unwrap_or("").to_string();
         let start_time = std::time::Instant::now();
         if !pull_image(&docker, &image).await {
             results.push(UpdateProgress {
@@ -224,8 +227,8 @@ pub async fn update_all_h(
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.clone(),
-                old_digest: String::new(),
-                new_digest: String::new(),
+                old_digest,
+                new_digest: remote_digest.clone(),
                 timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                 status: "error".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
@@ -261,8 +264,8 @@ pub async fn update_all_h(
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
                     image: image.clone(),
-                    old_digest: String::new(),
-                    new_digest: String::new(),
+                    old_digest,
+                    new_digest: remote_digest.clone(),
                     timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                     status: "success".into(),
                     duration_ms: start_time.elapsed().as_millis() as u64,
@@ -422,6 +425,7 @@ pub async fn check_all_h(
             })?;
             let image_full = raw.image.as_deref()?.to_string();
             let cid = raw.id.as_deref()?.to_string();
+            let image_id = raw.image_id.as_deref().unwrap_or("").to_string();
             let compose_project = raw
                 .labels
                 .as_ref()
@@ -431,6 +435,7 @@ pub async fn check_all_h(
                 name: c.name.clone(),
                 image_full,
                 cid,
+                image_id,
                 compose_project,
             })
         })
@@ -702,8 +707,8 @@ async fn apply_policies_background(
             let entry = UpdateHistoryEntry {
                 container: p.name.clone(),
                 image: p.image_full.clone(),
-                old_digest: String::new(),
-                new_digest: String::new(),
+                old_digest: p.image_id.clone(),
+                new_digest: check_remote_digest_on_image(&p.image_full).await,
                 timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
                 status: "success".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
@@ -780,4 +785,14 @@ async fn rollback_container(
     let _ = docker
         .remove_image(new_image, None::<RemoveImageOptions>, None)
         .await;
+}
+
+/// Llama a `check_remote_digest` parseando la referencia de imagen completa.
+/// Retorna el digest remoto o cadena vacía si falla la consulta.
+async fn check_remote_digest_on_image(image_full: &str) -> String {
+    let (repo, local_tag) = crate::updates::digest::parse_image_ref(image_full);
+    match crate::updates::digest::check_remote_digest(&repo, &local_tag).await {
+        Ok((digest, _)) => digest,
+        Err(_) => String::new(),
+    }
 }
