@@ -1,30 +1,17 @@
 use bollard::{container::ListContainersOptions, Docker};
 use chrono::Local;
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::Mutex;
 
-use crate::containers::pull_image;
 use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
-use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
-use crate::workers::auto_update::{rollback_container, tag_backup_image, verify_container_healthy};
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
-/// 1. Lee la configuración de update_check de Settings.
-/// 2. Si está habilitado y el cron coincide, revisa todos los contenedores.
-/// 3. Marca los contenedores con actualizaciones pendientes en la DB.
-/// 4. Ejecuta las acciones configuradas (pull, pull+restart, etc.) para cada contenedor.
-pub async fn update_check_worker(
-    docker: Docker,
-    settings: Arc<Mutex<Settings>>,
-    update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
-    update_tx: broadcast::Sender<UpdateProgress>,
-    _notif_tx: broadcast::Sender<NotifEvent>,
-    db_pool: DbPool,
-) {
+/// Solo revisa las imágenes para marcar si tienen actualización pendiente.
+/// NO hace pull ni restart — eso lo gestionan las políticas desde `apply_policies_background`.
+pub async fn update_check_worker(docker: Docker, settings: Arc<Mutex<Settings>>, db_pool: DbPool) {
     let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
     loop {
         tick.tick().await;
@@ -33,8 +20,7 @@ pub async fn update_check_worker(
         let cron = s
             .update_check_cron
             .clone()
-            .unwrap_or_else(|| "0 */6 * * *".into());
-        let notify = s.update_check_notify.unwrap_or(false);
+            .unwrap_or_else(|| "0 0 * * *".into()); // default: cada 24h a medianoche
         drop(s);
 
         if !enabled {
@@ -45,7 +31,7 @@ pub async fn update_check_worker(
         let should_run = match expr.parse::<cron::Schedule>() {
             Ok(schedule) => schedule.includes(now.to_utc()),
             Err(e) => {
-                tracing::warn!("update_check: invalid cron '{}': {}", cron, e);
+                tracing::warn!("update_check: cron inválido '{}': {}", cron, e);
                 false
             }
         };
@@ -53,10 +39,7 @@ pub async fn update_check_worker(
             continue;
         }
 
-        tracing::info!(
-            "update_check: ejecutando revisión de actualizaciones (cron={})",
-            cron
-        );
+        tracing::info!("update_check: revisando actualizaciones (cron={})", cron);
 
         // 1. Obtener todos los contenedores
         let containers = docker
@@ -68,7 +51,6 @@ pub async fn update_check_worker(
             .unwrap_or_default();
 
         // 2. Revisar cada contenedor en paralelo
-        let mut results: Vec<(String, bool)> = Vec::new();
         let tasks: Vec<_> = containers
             .iter()
             .map(|c| {
@@ -102,203 +84,23 @@ pub async fn update_check_worker(
                 }
             })
             .collect();
-        for task in futures::future::join_all(tasks).await {
-            results.push(task);
-        }
 
         // 3. Persistir has_update en DB
         {
             let obj = db_pool.get().await.unwrap();
             let mut updated_count = 0u32;
-            for (name, has_update) in &results {
-                let _ = db::update_container_has_update(&obj.lock().unwrap(), name, *has_update);
-                if *has_update {
+            for (name, has_update) in futures::future::join_all(tasks).await {
+                let _ = db::update_container_has_update(&obj.lock().unwrap(), &name, has_update);
+                if has_update {
                     updated_count += 1;
                 }
             }
+            drop(obj);
             tracing::info!(
-                "update_check: {} containers checked, {} with updates",
-                results.len(),
+                "update_check: {} contenedores revisados, {} con actualizaciones",
+                containers.len(),
                 updated_count
             );
-        }
-
-        // 4. Obtener políticas de actualización + política global por defecto
-        let policies = update_policies.lock().await.clone();
-        let policy_map: HashMap<String, UpdatePolicy> = policies
-            .into_iter()
-            .map(|p| (p.container.clone(), p))
-            .collect();
-        let default_action = {
-            let s = settings.lock().await;
-            (
-                s.default_update_action
-                    .clone()
-                    .unwrap_or_else(|| "pull-restart".into()),
-                s.default_cleanup_old_image.unwrap_or(false),
-                s.default_rollback_on_failure.unwrap_or(false),
-            )
-        };
-
-        // 5. Ejecutar acciones para contenedores con actualizaciones pendientes
-        for (name, has_update) in &results {
-            if !*has_update {
-                continue;
-            }
-            let policy = match policy_map.get(name) {
-                Some(p) => p.clone(),
-                None => UpdatePolicy {
-                    container: name.clone(),
-                    action: default_action
-                        .0
-                        .parse()
-                        .unwrap_or(UpdateAction::PullRestart),
-                    cleanup_old_image: default_action.1,
-                    rollback_on_failure: default_action.2,
-                    notify_events: false,
-                },
-            };
-            if policy.action == UpdateAction::None {
-                continue;
-            }
-
-            let _ = update_tx.send(UpdateProgress {
-                container: name.clone(),
-                status: format!("[update-check] 🔍 {}", policy.action),
-                done: false,
-                error: None,
-            });
-
-            let container = containers.iter().find(|c| {
-                c.names
-                    .as_ref()
-                    .and_then(|n| n.first())
-                    .map(|n| crate::models::strip_name(n) == *name)
-                    .unwrap_or(false)
-            });
-            let Some(container) = container else {
-                continue;
-            };
-            let image_full = container.image.as_deref().unwrap_or("").to_string();
-            let cid = container.id.as_deref().unwrap_or("").to_string();
-
-            match policy.action {
-                UpdateAction::Pull => {
-                    if pull_image(&docker, &image_full).await {
-                        let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
-                            status: "✅ pulled".into(),
-                            done: true,
-                            error: None,
-                        });
-                    }
-                }
-                UpdateAction::PullRestart => {
-                    if policy.cleanup_old_image || policy.rollback_on_failure {
-                        // Con limpieza/rollback
-                        let backup = if policy.rollback_on_failure {
-                            tag_backup_image(&docker, &image_full).await
-                        } else {
-                            None
-                        };
-                        if pull_image(&docker, &image_full).await {
-                            let _ = docker
-                                .restart_container(
-                                    &cid,
-                                    None::<bollard::container::RestartContainerOptions>,
-                                )
-                                .await;
-                            if policy.rollback_on_failure
-                                && !verify_container_healthy(&docker, name).await
-                            {
-                                if let Some((backup_full, base, orig_tag)) = backup {
-                                    rollback_container(
-                                        &docker,
-                                        &cid,
-                                        &base,
-                                        &orig_tag,
-                                        &backup_full,
-                                        &image_full,
-                                    )
-                                    .await;
-                                }
-                            } else if policy.cleanup_old_image {
-                                let _ = docker
-                                    .remove_image(
-                                        &cid,
-                                        None::<bollard::image::RemoveImageOptions>,
-                                        None,
-                                    )
-                                    .await;
-                            }
-                            let _ = update_tx.send(UpdateProgress {
-                                container: name.clone(),
-                                status: "✅ updated + restarted".into(),
-                                done: true,
-                                error: None,
-                            });
-                        }
-                    } else {
-                        if pull_image(&docker, &image_full).await {
-                            let _ = docker
-                                .restart_container(
-                                    &cid,
-                                    None::<bollard::container::RestartContainerOptions>,
-                                )
-                                .await;
-                            let _ = update_tx.send(UpdateProgress {
-                                container: name.clone(),
-                                status: "✅ updated + restarted".into(),
-                                done: true,
-                                error: None,
-                            });
-                        }
-                    }
-                }
-                UpdateAction::PullRestartStack => {
-                    let compose_project = container
-                        .labels
-                        .as_ref()
-                        .and_then(|l| l.get(crate::models::LABEL_COMPOSE_PROJECT))
-                        .cloned();
-                    if let Some(ref project) = compose_project {
-                        let compose_file = resolve_compose_file(&docker, project).await;
-                        if let Some(ref file) = compose_file {
-                            let _ = update_tx.send(UpdateProgress {
-                                container: name.clone(),
-                                status: format!("📥 Pulling stack '{}'...", project),
-                                done: false,
-                                error: None,
-                            });
-                            let pull = tokio::process::Command::new("docker")
-                                .args(["compose", "-f", file, "pull"])
-                                .output()
-                                .await;
-                            if let Ok(output) = pull {
-                                if output.status.success() {
-                                    let _ = tokio::process::Command::new("docker")
-                                        .args(["compose", "-f", file, "up", "-d"])
-                                        .output()
-                                        .await;
-                                    let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
-                                        status: "✅ stack updated".into(),
-                                        done: true,
-                                        error: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-
-            // Notificar si está configurado
-            if notify {
-                let msg = format!("🔄 '{}' → {} (update-check)", name, policy.action);
-                let _ = notify_all(&settings, name, &msg).await;
-            }
         }
     }
 }

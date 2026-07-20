@@ -1,5 +1,6 @@
 use bollard::{container::RestartContainerOptions, Docker};
 use chrono::Local;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
@@ -11,22 +12,42 @@ use crate::models::*;
 use crate::notifications::notify_all;
 use crate::workers::state::docker_list_running;
 
-/// Auto-update worker: periodic pull + restart
+/// Auto-update worker: periodic pull + restart según políticas
 pub async fn auto_update_worker(
     docker: Docker,
     settings: Arc<Mutex<Settings>>,
+    update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
     notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: DbPool,
 ) {
-    let enabled = { settings.lock().await.auto_update_enabled.unwrap_or(false) };
-    if !enabled {
-        return;
-    }
-    let hours = 6;
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(hours * 3600));
     loop {
+        // Leer configuración en cada ciclo (para soportar cambios dinámicos)
+        let (enabled, interval_hours) = {
+            let s = settings.lock().await;
+            (
+                s.auto_update_enabled.unwrap_or(false),
+                s.auto_update_interval_hours.unwrap_or(6).max(1),
+            )
+        };
+        if !enabled {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        }
+
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_hours * 3600));
         interval.tick().await;
+
+        // Cargar políticas una vez por ciclo
+        let policies = {
+            let p = update_policies.lock().await;
+            let map: HashMap<String, UpdatePolicy> = p
+                .iter()
+                .map(|pol| (pol.container.clone(), pol.clone()))
+                .collect();
+            map
+        };
+
         for (name, image, cid, image_id) in docker_list_running(&docker).await {
             let (repo, local_tag) = if let Some(pos) = image.rfind('@') {
                 (image[..pos].to_string(), "digest".to_string())
@@ -64,6 +85,19 @@ pub async fn auto_update_worker(
                 continue;
             }
 
+            // Leer política para este contenedor
+            let policy = policies.get(&name).cloned().unwrap_or(UpdatePolicy {
+                container: name.clone(),
+                action: UpdateAction::PullRestart,
+                cleanup_old_image: false,
+                rollback_on_failure: false,
+                notify_events: false,
+            });
+
+            if policy.action == UpdateAction::None {
+                continue;
+            }
+
             let start_time = std::time::Instant::now();
             if !pull_image(&docker, &image).await {
                 continue;
@@ -97,10 +131,14 @@ pub async fn auto_update_worker(
                 let obj = db_pool.get().await.unwrap();
                 let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
             }
+
+            // Limpiar imágenes viejas si la política lo indica
+            if policy.cleanup_old_image {
+                let _ = docker
+                    .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
+                    .await;
+            }
         }
-        let _ = docker
-            .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
-            .await;
     }
 }
 
