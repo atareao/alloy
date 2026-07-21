@@ -43,7 +43,7 @@ pub async fn update_check_worker(
         let now = Local::now();
         let expr = format!("0 {}", cron);
         let should_run = match expr.parse::<cron::Schedule>() {
-            Ok(schedule) => schedule.includes(now.to_utc()),
+            Ok(schedule) => schedule.includes(now),
             Err(e) => {
                 tracing::warn!("update_check: cron inválido '{}': {}", cron, e);
                 false
