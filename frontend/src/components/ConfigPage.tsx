@@ -23,6 +23,7 @@ const CRON_PRESETS = [
   { value: "0 */6 * * *", label: "Cada 6 horas" },
   { value: "0 */12 * * *", label: "Cada 12 horas" },
   { value: "0 0 * * *", label: "Cada día a medianoche" },
+  { value: "0 4 * * *", label: "Cada día a las 4:00" },
   { value: "0 6 * * *", label: "Cada día a las 6:00" },
   { value: "0 0 * * 0", label: "Cada domingo" },
   { value: "0 0 1 * *", label: "Cada 1 del mes" },

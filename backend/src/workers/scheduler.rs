@@ -2,7 +2,7 @@ use bollard::{
     container::{ListContainersOptions, RestartContainerOptions},
     Docker,
 };
-use chrono::Local;
+use chrono::{Local, Timelike};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -41,9 +41,13 @@ pub async fn update_check_worker(
             continue;
         }
         let now = Local::now();
+        let now_rounded = now
+            .with_second(0)
+            .and_then(|d| d.with_nanosecond(0))
+            .unwrap_or(now);
         let expr = format!("0 {}", cron);
         let should_run = match expr.parse::<cron::Schedule>() {
-            Ok(schedule) => schedule.includes(now.to_utc()),
+            Ok(schedule) => schedule.includes(now_rounded),
             Err(e) => {
                 tracing::warn!("update_check: cron inválido '{}': {}", cron, e);
                 false
@@ -82,7 +86,7 @@ pub async fn update_check_worker(
                 let cid = c.id.clone().unwrap_or_default();
                 async move {
                     if image_full.is_empty() {
-                        return (name, false, image_full, cid);
+                        return (name, false, image_full, cid, String::new(), String::new());
                     }
                     let (repo, local_tag) = crate::updates::digest::parse_image_ref(&image_full);
                     match check_remote_digest(&repo, &local_tag).await {
@@ -95,9 +99,9 @@ pub async fn update_check_worker(
                             } else {
                                 false
                             };
-                            (name, has_update, image_full, cid)
+                            (name, has_update, image_full, cid, image_id, remote_digest)
                         }
-                        Err(_) => (name, false, image_full, cid),
+                        Err(_) => (name, false, image_full, cid, String::new(), String::new()),
                     }
                 }
             })
@@ -128,7 +132,9 @@ pub async fn update_check_worker(
 
         // 4. Procesar resultados: persistir en DB y aplicar políticas
         let mut updated_count = 0u32;
-        for (name, has_update, image_full, cid) in futures::future::join_all(tasks).await {
+        for (name, has_update, image_full, cid, old_digest, new_digest) in
+            futures::future::join_all(tasks).await
+        {
             let _ = sqlite_update_has_update(&db_pool, &name, has_update).await;
             if !has_update || name.is_empty() || image_full.is_empty() {
                 continue;
@@ -184,6 +190,8 @@ pub async fn update_check_worker(
                             &update_history,
                             &name,
                             &image_full,
+                            &old_digest,
+                            &new_digest,
                             "update-check-pull",
                             start.elapsed().as_millis() as u64,
                         )
@@ -221,6 +229,8 @@ pub async fn update_check_worker(
                             &update_history,
                             &name,
                             &image_full,
+                            &old_digest,
+                            &new_digest,
                             "update-check-restart",
                             start.elapsed().as_millis() as u64,
                         )
@@ -330,19 +340,22 @@ async fn sqlite_update_has_update(db_pool: &DbPool, name: &str, has_update: bool
 }
 
 /// Append a update history (helper)
+#[allow(clippy::too_many_arguments)]
 async fn sqlite_append_update(
     db_pool: &DbPool,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     name: &str,
     image: &str,
+    old_digest: &str,
+    new_digest: &str,
     status: &str,
     duration_ms: u64,
 ) {
     let entry = UpdateHistoryEntry {
         container: name.to_string(),
         image: image.to_string(),
-        old_digest: String::new(),
-        new_digest: String::new(),
+        old_digest: old_digest.to_string(),
+        new_digest: new_digest.to_string(),
         timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         status: status.to_string(),
         duration_ms,
