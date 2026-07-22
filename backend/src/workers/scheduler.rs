@@ -2,7 +2,7 @@ use bollard::{
     container::{ListContainersOptions, RestartContainerOptions},
     Docker,
 };
-use chrono::Local;
+use chrono::{Local, Timelike};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -41,9 +41,13 @@ pub async fn update_check_worker(
             continue;
         }
         let now = Local::now();
+        let now_rounded = now
+            .with_second(0)
+            .and_then(|d| d.with_nanosecond(0))
+            .unwrap_or(now);
         let expr = format!("0 {}", cron);
         let should_run = match expr.parse::<cron::Schedule>() {
-            Ok(schedule) => schedule.includes(now.to_utc()),
+            Ok(schedule) => schedule.includes(now_rounded),
             Err(e) => {
                 tracing::warn!("update_check: cron inválido '{}': {}", cron, e);
                 false
