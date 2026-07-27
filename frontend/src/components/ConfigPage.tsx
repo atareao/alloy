@@ -66,7 +66,7 @@ export default function ConfigPage({
   const [ucNotify, setUcNotify] = useState(false);
 
   // Update check config — fetched separately
-  const [_checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
+  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
     null,
   );
   useEffect(() => {
@@ -452,6 +452,30 @@ export default function ConfigPage({
           actualización pendiente, se marcará el contenedor y se podrá actuar
           desde el Dashboard.
         </Text>
+        {/* Mostrar timezone + última/próxima revisión */}
+        <Stack gap="4" mb="md">
+          <Text size="sm" c="dimmed">
+            Zona horaria: {configProp?.timezone || "UTC"}
+          </Text>
+          {checkConfig?.last_run_at && (
+            <Text size="sm" c="dimmed">
+              Última revisión: {new Date(checkConfig.last_run_at).toLocaleString([], {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false
+              })}
+            </Text>
+          )}
+          {checkConfig?.next_run_at && (
+            <Text size="sm" c="dimmed">
+              Próxima revisión: {new Date(checkConfig.next_run_at).toLocaleString([], {
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit',
+                hour12: false
+              })}
+            </Text>
+          )}
+        </Stack>
         {ucEnabled && (
           <Stack>
             <Select

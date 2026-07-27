@@ -16,6 +16,10 @@ pub struct ContainerInfo {
     pub ports: Vec<String>,
     pub traefik_url: Option<String>,
     pub registry_url: String,
+    #[serde(default)]
+    pub last_check: Option<String>,
+    #[serde(default)]
+    pub next_check: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -42,6 +46,7 @@ pub struct NotifEvent {
 pub struct PublicConfig {
     pub oidc_configured: bool,
     pub port: u16,
+    pub timezone: String,
     pub telegram_configured: bool,
     pub matrix_configured: bool,
     pub webhook_configured: bool,
@@ -175,6 +180,9 @@ pub struct Settings {
     pub default_cleanup_old_image: Option<bool>,
     #[serde(default)]
     pub default_rollback_on_failure: Option<bool>,
+
+    #[serde(default)]
+    pub update_check_last_run_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -238,6 +246,8 @@ pub struct UpdateCheckConfig {
     pub cron: String,
     pub enabled: bool,
     pub notify: bool,
+    pub last_run_at: Option<String>,
+    pub next_run_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -104,6 +104,7 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
     Json(PublicConfig {
         oidc_configured: true,
         port: 3066,
+        timezone: crate::timezone::timezone_abbr(),
         telegram_configured: s.telegram_token.is_some(),
         telegram_token: s.telegram_token.clone(),
         telegram_chat_id: s.telegram_chat_id.clone(),

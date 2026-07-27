@@ -8,6 +8,7 @@ mod models;
 mod notifications;
 mod stacks;
 mod state;
+mod timezone;
 mod updates;
 mod workers;
 
@@ -48,6 +49,10 @@ async fn main() {
     jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER
         .install_default()
         .expect("failed to install jsonwebtoken CryptoProvider");
+
+    // Initialize timezone from TIMEZONE env var (default UTC)
+    let tz = std::env::var("TIMEZONE").unwrap_or_default();
+    timezone::init(&tz);
 
     // Initialize SQLite database
     let config = Config::load();

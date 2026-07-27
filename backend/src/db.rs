@@ -27,6 +27,8 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
             compose_project TEXT,
             has_update INTEGER NOT NULL DEFAULT 0,
             registry_url TEXT NOT NULL DEFAULT '',
+            last_check TEXT,
+            next_check TEXT,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
@@ -72,6 +74,10 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
         "ALTER TABLE update_policies ADD COLUMN notify_events INTEGER NOT NULL DEFAULT 0;",
     );
 
+    // Migraciones para columnas check time
+    let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN last_check TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN next_check TEXT;");
+
     Ok(pool)
 }
 
@@ -94,6 +100,7 @@ pub fn test_pool() -> DbPool {
                         state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
                         ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
                         has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
+                        last_check TEXT, next_check TEXT,
                         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
                     );
                     CREATE TABLE IF NOT EXISTS update_history (
@@ -129,8 +136,8 @@ pub fn test_pool() -> DbPool {
 pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlResult<()> {
     conn.execute("DELETE FROM containers", [])?;
     let mut stmt = conn.prepare(
-        "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'))",
+        "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))",
     )?;
     for c in containers {
         stmt.execute(params![
@@ -146,6 +153,8 @@ pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlRe
             c.compose_project,
             c.has_update as i32,
             c.registry_url,
+            c.last_check,
+            c.next_check,
         ])?;
     }
     Ok(())
@@ -154,7 +163,7 @@ pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlRe
 #[allow(dead_code)]
 pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url FROM containers ORDER BY name",
+        "SELECT id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check FROM containers ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
         let ports_str: String = row.get(7)?;
@@ -173,6 +182,8 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
             has_update: row.get::<_, i32>(10)? != 0,
             updating: false,
             registry_url: row.get(11)?,
+            last_check: row.get(12)?,
+            next_check: row.get(13)?,
         })
     })?;
     let mut result = Vec::new();
@@ -190,6 +201,19 @@ pub fn update_container_has_update(
     conn.execute(
         "UPDATE containers SET has_update = ?1, updated_at = datetime('now') WHERE name = ?2",
         params![has_update as i32, name],
+    )?;
+    Ok(())
+}
+
+pub fn update_container_check_times(
+    conn: &Connection,
+    name: &str,
+    last_check: &str,
+    next_check: &str,
+) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE containers SET last_check = ?1, next_check = ?2, updated_at = datetime('now') WHERE name = ?3",
+        params![last_check, next_check, name],
     )?;
     Ok(())
 }
@@ -386,6 +410,10 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
         default_rollback_on_failure: map
             .get("default_rollback_on_failure")
             .and_then(|v| v.parse().ok()),
+        update_check_last_run_at: map
+            .get("update_check_last_run_at")
+            .cloned()
+            .filter(|s| !s.is_empty()),
     })
 }
 
@@ -418,6 +446,10 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
             "default_rollback_on_failure",
             settings.default_rollback_on_failure.map(|v| v.to_string()),
         ),
+        (
+            "update_check_last_run_at",
+            settings.update_check_last_run_at.clone(),
+        ),
     ];
 
     for (key, value) in pairs {
@@ -445,6 +477,7 @@ mod tests {
                 state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
                 ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
                 has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
+                last_check TEXT, next_check TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS update_history (
@@ -487,6 +520,8 @@ mod tests {
             has_update: false,
             registry_url: "https://hub.docker.com/_/nginx".into(),
             updating: false,
+            last_check: None,
+            next_check: None,
         }];
         save_containers(&conn, &containers).unwrap();
         let loaded = load_containers(&conn).unwrap();
@@ -511,6 +546,8 @@ mod tests {
             has_update: false,
             registry_url: String::new(),
             updating: false,
+            last_check: None,
+            next_check: None,
         }];
         save_containers(&conn, &c1).unwrap();
         let c2 = vec![ContainerInfo {
@@ -527,6 +564,8 @@ mod tests {
             has_update: false,
             registry_url: String::new(),
             updating: false,
+            last_check: None,
+            next_check: None,
         }];
         save_containers(&conn, &c2).unwrap();
         let loaded = load_containers(&conn).unwrap();
@@ -558,6 +597,8 @@ mod tests {
             has_update: false,
             registry_url: String::new(),
             updating: false,
+            last_check: None,
+            next_check: None,
         }];
         save_containers(&conn, &containers).unwrap();
         update_container_has_update(&conn, "test", true).unwrap();

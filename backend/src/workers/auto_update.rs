@@ -1,5 +1,4 @@
 use bollard::{container::RestartContainerOptions, Docker};
-use chrono::Local;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -103,36 +102,66 @@ pub async fn auto_update_worker(
 
             let start_time = std::time::Instant::now();
             if !pull_image(&docker, &image).await {
-                continue;
-            }
-            if docker
-                .restart_container(&cid, None::<RestartContainerOptions>)
-                .await
-                .is_ok()
-            {
-                let _ = notif_tx.send(NotifEvent {
-                    container: name.clone(),
-                    status: "🤖 auto-updated".into(),
-                    timestamp: Local::now().format("%H:%M:%S").to_string(),
-                });
-                notify_all(&settings, &name, "🤖 auto-actualizado").await;
-                {
-                    let obj = db_pool.get().await.unwrap();
-                    let _ = db::update_container_has_update(&obj.lock().unwrap(), &name, false);
-                }
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
                     image: image.clone(),
                     old_digest: String::new(),
                     new_digest: String::new(),
-                    timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-                    status: "auto-update".into(),
+                    timestamp: crate::timezone::now_formatted(),
+                    status: "auto-update-error".into(),
                     duration_ms: start_time.elapsed().as_millis() as u64,
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
                 let obj = db_pool.get().await.unwrap();
                 let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
+                continue;
+            }
+            match docker
+                .restart_container(&cid, None::<RestartContainerOptions>)
+                .await
+            {
+                Ok(_) => {
+                    let _ = notif_tx.send(NotifEvent {
+                        container: name.clone(),
+                        status: "🤖 auto-updated".into(),
+                        timestamp: crate::timezone::now_time_formatted(),
+                    });
+                    notify_all(&settings, &name, "🤖 auto-actualizado").await;
+                    {
+                        let obj = db_pool.get().await.unwrap();
+                        let _ = db::update_container_has_update(&obj.lock().unwrap(), &name, false);
+                    }
+                    let entry = UpdateHistoryEntry {
+                        container: name.clone(),
+                        image: image.clone(),
+                        old_digest: String::new(),
+                        new_digest: String::new(),
+                        timestamp: crate::timezone::now_formatted(),
+                        status: "auto-update".into(),
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                    };
+                    let mut hist = update_history.lock().await;
+                    hist.push(entry);
+                    let obj = db_pool.get().await.unwrap();
+                    let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
+                }
+                Err(e) => {
+                    tracing::warn!("auto_update: restart falló para '{}': {}", name, e);
+                    let entry = UpdateHistoryEntry {
+                        container: name.clone(),
+                        image: image.clone(),
+                        old_digest: String::new(),
+                        new_digest: String::new(),
+                        timestamp: crate::timezone::now_formatted(),
+                        status: "auto-update-restart-error".into(),
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                    };
+                    let mut hist = update_history.lock().await;
+                    hist.push(entry);
+                    let obj = db_pool.get().await.unwrap();
+                    let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
+                }
             }
 
             // Limpiar imágenes viejas si la política lo indica
@@ -156,7 +185,7 @@ pub async fn verify_container_healthy(docker: &Docker, name: &str) -> bool {
 
 /// Tag current image as backup for rollback: image:tag → image:rollback-{ts}
 pub async fn tag_backup_image(docker: &Docker, image: &str) -> Option<(String, String, String)> {
-    let ts = Local::now().format("%Y%m%d%H%M%S").to_string();
+    let ts = crate::timezone::now().format("%Y%m%d%H%M%S").to_string();
     if let Some((base, original_tag)) = image.rsplit_once(':') {
         let backup_full = format!("{}:rollback-{}", base, ts);
         let opts = bollard::image::TagImageOptions {

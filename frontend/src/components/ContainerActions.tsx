@@ -238,6 +238,24 @@ export default function ContainerActions({
           size={btnSize}
         />
       </Group>
+      {c.last_check && (
+        <Text size="xs" c="dimmed">
+          Última revisión: {new Date(c.last_check).toLocaleString([], {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false
+          })}
+        </Text>
+      )}
+      {c.next_check && (
+        <Text size="xs" c="dimmed">
+          Próxima revisión: {new Date(c.next_check).toLocaleString([], {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit',
+            hour12: false
+          })}
+        </Text>
+      )}
     </Stack>
   );
 }

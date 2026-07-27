@@ -8,7 +8,6 @@ use bollard::{
     image::TagImageOptions,
     Docker,
 };
-use chrono::Local;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -97,7 +96,7 @@ pub async fn update_container_h(
             image: image.to_string(),
             old_digest: image_id.clone(),
             new_digest: remote_digest.clone(),
-            timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+            timestamp: crate::timezone::now_formatted(),
             status: "error".into(),
             duration_ms: start_time.elapsed().as_millis() as u64,
         };
@@ -125,7 +124,7 @@ pub async fn update_container_h(
                 done: true,
                 error: None,
             });
-            let ts = Local::now().format("%H:%M:%S").to_string();
+            let ts = crate::timezone::now_time_formatted();
             let _ = notif_tx.send(NotifEvent {
                 container: name.clone(),
                 status: "updated ✅".into(),
@@ -141,7 +140,7 @@ pub async fn update_container_h(
                 image: image.to_string(),
                 old_digest: image_id.clone(),
                 new_digest: remote_digest.clone(),
-                timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                timestamp: crate::timezone::now_formatted(),
                 status: "success".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
             };
@@ -168,7 +167,7 @@ pub async fn update_container_h(
                 image: image.to_string(),
                 old_digest: image_id.clone(),
                 new_digest: remote_digest.clone(),
-                timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                timestamp: crate::timezone::now_formatted(),
                 status: "error".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
             };
@@ -229,7 +228,7 @@ pub async fn update_all_h(
                 image: image.clone(),
                 old_digest,
                 new_digest: remote_digest.clone(),
-                timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                timestamp: crate::timezone::now_formatted(),
                 status: "error".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
             };
@@ -244,7 +243,7 @@ pub async fn update_all_h(
             .await
         {
             Ok(_) => {
-                let ts = Local::now().format("%H:%M:%S").to_string();
+                let ts = crate::timezone::now_time_formatted();
                 let _ = notif_tx.send(NotifEvent {
                     container: name.clone(),
                     status: "updated ✅".into(),
@@ -266,7 +265,7 @@ pub async fn update_all_h(
                     image: image.clone(),
                     old_digest,
                     new_digest: remote_digest.clone(),
-                    timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                    timestamp: crate::timezone::now_formatted(),
                     status: "success".into(),
                     duration_ms: start_time.elapsed().as_millis() as u64,
                 };
@@ -276,6 +275,20 @@ pub async fn update_all_h(
                 let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             }
             Err(e) => {
+                let entry = UpdateHistoryEntry {
+                    container: name.clone(),
+                    image: image.clone(),
+                    old_digest: old_digest.clone(),
+                    new_digest: remote_digest.clone(),
+                    timestamp: crate::timezone::now_formatted(),
+                    status: "error".into(),
+                    duration_ms: start_time.elapsed().as_millis() as u64,
+                };
+                let mut hist = update_history.lock().await;
+                hist.push(entry);
+                let conn = db_pool.get().await.unwrap();
+                let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+
                 results.push(UpdateProgress {
                     container: name,
                     status: "error".into(),
@@ -409,6 +422,23 @@ pub async fn check_all_h(
     let conn = db_pool.get().await.unwrap();
     for c in &containers {
         let _ = db::update_container_has_update(&conn.lock().unwrap(), &c.name, c.has_update);
+    }
+    // Actualizar timestamps de última y próxima revisión
+    {
+        let mut s = settings.lock().await;
+        let cron = s
+            .update_check_cron
+            .clone()
+            .unwrap_or_else(|| "0 0 * * *".into());
+        let last_check = crate::timezone::now_formatted();
+        let next_check = crate::timezone::next_cron_time(&cron).unwrap_or_default();
+        let conn_lock = conn.lock().unwrap();
+        for c in &containers {
+            let _ = db::update_container_check_times(&conn_lock, &c.name, &last_check, &next_check);
+        }
+        // Save last_run_at timestamp on settings so the API can expose it
+        s.update_check_last_run_at = Some(last_check.clone());
+        let _ = db::save_settings(&conn_lock, &s);
     }
     drop(conn);
 
@@ -564,6 +594,19 @@ async fn apply_policies_background(
                         done: true,
                         error: Some("pull_image returned false".into()),
                     });
+                    let entry = UpdateHistoryEntry {
+                        container: p.name.clone(),
+                        image: p.image_full.clone(),
+                        old_digest: p.image_id.clone(),
+                        new_digest: String::new(),
+                        timestamp: crate::timezone::now_formatted(),
+                        status: "apply-policy-error".into(),
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                    };
+                    let mut hist = update_history.lock().await;
+                    hist.push(entry);
+                    let conn = db_pool.get().await.unwrap();
+                    let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
                 }
             }
             UpdateAction::PullRestart => {
@@ -616,6 +659,19 @@ async fn apply_policies_background(
                         done: true,
                         error: Some("pull_image returned false".into()),
                     });
+                    let entry = UpdateHistoryEntry {
+                        container: p.name.clone(),
+                        image: p.image_full.clone(),
+                        old_digest: p.image_id.clone(),
+                        new_digest: String::new(),
+                        timestamp: crate::timezone::now_formatted(),
+                        status: "apply-policy-error".into(),
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                    };
+                    let mut hist = update_history.lock().await;
+                    hist.push(entry);
+                    let conn = db_pool.get().await.unwrap();
+                    let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
                 }
             }
             UpdateAction::PullRestartStack => {
@@ -697,7 +753,7 @@ async fn apply_policies_background(
             let _ = notif_tx.send(NotifEvent {
                 container: p.name.clone(),
                 status: "updated ✅".into(),
-                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                timestamp: crate::timezone::now_time_formatted(),
             });
             notify_all(settings, &p.name, "✅ actualizado y reiniciado").await;
             {
@@ -709,7 +765,7 @@ async fn apply_policies_background(
                 image: p.image_full.clone(),
                 old_digest: p.image_id.clone(),
                 new_digest: check_remote_digest_on_image(&p.image_full).await,
-                timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                timestamp: crate::timezone::now_formatted(),
                 status: "success".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
             };
@@ -750,7 +806,7 @@ async fn verify_container_healthy(docker: &Docker, name: &str) -> bool {
 
 /// Tag current image as backup for rollback: image:tag → image:rollback-{ts}
 async fn tag_backup_image(docker: &Docker, image: &str) -> Option<(String, String, String)> {
-    let ts = Local::now().format("%Y%m%d%H%M%S").to_string();
+    let ts = crate::timezone::now().format("%Y%m%d%H%M%S").to_string();
     if let Some((base, original_tag)) = image.rsplit_once(':') {
         let backup_full = format!("{}:rollback-{}", base, ts);
         let opts = TagImageOptions {
