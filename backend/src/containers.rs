@@ -107,6 +107,35 @@ pub async fn fetch_containers(
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Step 2b: Read persisted last_check / next_check from DB
+    let check_times_map = {
+        let conn = match db_pool.get().await {
+            Ok(c) => c,
+            Err(_) => {
+                tracing::warn!("fetch_containers: check_times DB error");
+                return Vec::new();
+            }
+        };
+        let guard = conn.lock().unwrap();
+        let mut stmt = match guard.prepare(
+            "SELECT name, last_check, next_check FROM containers WHERE last_check IS NOT NULL",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let lc: Option<String> = row.get(1)?;
+            let nc: Option<String> = row.get(2)?;
+            Ok((name, (lc, nc)))
+        }) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let map: std::collections::HashMap<_, _> = rows.filter_map(|r| r.ok()).collect();
+        map
+    };
+
     // Step 3: Build ContainerInfo list (now all image names are resolved)
     containers
         .iter()
@@ -237,6 +266,8 @@ pub async fn fetch_containers(
                 ports,
                 traefik_url,
                 registry_url,
+                last_check: check_times_map.get(&name).and_then(|(lc, _)| lc.clone()),
+                next_check: check_times_map.get(&name).and_then(|(_, nc)| nc.clone()),
             })
         })
         .collect()

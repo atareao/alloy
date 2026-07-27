@@ -56,7 +56,7 @@ async fn refresh(
     });
 
     // Detect state changes and send notifications
-    let now = chrono::Local::now().format("%H:%M:%S").to_string();
+    let now = crate::timezone::now_time_formatted();
     let settings_arc = settings.clone();
     let policies = update_policies.lock().await;
     for c in &containers {

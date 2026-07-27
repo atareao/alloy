@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect } from "react";
+import { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Badge,
@@ -18,6 +18,7 @@ import type {
   UpdateProgress,
   InspectData,
   UpdatePolicy,
+  UpdateCheckConfig,
 } from "../types";
 import { apiFetch } from "../api";
 import ContainerTable from "./ContainerTable";
@@ -86,11 +87,37 @@ export default function DashboardPage({
   const [stateFilter, setStateFilter] = useState<string[]>([]);
   const [showPendingUpdates, setShowPendingUpdates] = useState(false);
 
+  // ── Update check config (from API) ────────────────────────
+  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
+
+  // Fetch update check config on mount (for last/next check times)
+  const fetchCheckConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/api/update-check/config", { credentials: "include" });
+      if (res.ok) {
+        setCheckConfig(await res.json());
+      }
+    } catch {/* ignore */}
+  }, []);
+
+  useEffect(() => {
+    fetchCheckConfig();
+  }, [fetchCheckConfig]);
+
   // ── Computed ──────────────────────────────────────────────
   const containerInfo = useMemo(() => {
     if (!inspectName) return null;
     return containers.find((c) => c.name === inspectName) || null;
   }, [inspectName, containers]);
+
+  // Global last/next check times — from update check config API
+  const globalLastCheck = useMemo(() => {
+    return checkConfig?.last_run_at ?? null;
+  }, [checkConfig]);
+
+  const globalNextCheck = useMemo(() => {
+    return checkConfig?.next_run_at ?? null;
+  }, [checkConfig]);
 
   const availableStates = useMemo(
     () => Array.from(new Set(containers.map((c) => c.state))).sort(),
@@ -349,6 +376,8 @@ export default function DashboardPage({
     setCheckResults({ total: containers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, done: 0, errors });
     setBatchProgress({ current: containers.length, total: containers.length });
     setBatchCurrentItem("");
+    // Re-fetch check config to get updated last/next run times
+    fetchCheckConfig();
     if (updatedCount > 0) {
       setBatchPhase("updating");
       pendingTotalRef.current = updatedCount;
@@ -530,6 +559,8 @@ export default function DashboardPage({
           availableStates={availableStates}
           isMobile={isMobile}
           onCheckAll={checkAll}
+          lastCheck={globalLastCheck}
+          nextCheck={globalNextCheck}
           expandedStacks={expandedStacks}
           renderGroup={renderGroup}
           renderRow={renderRow}
