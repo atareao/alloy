@@ -19,14 +19,33 @@ async fn get_update_check_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
 ) -> Json<UpdateCheckConfig> {
     let s = settings.lock().await;
+    let cron = s
+        .update_check_cron
+        .clone()
+        .unwrap_or_else(|| "0 */6 * * *".into());
+    let next_run_at = compute_next_run(&cron);
     Json(UpdateCheckConfig {
-        cron: s
-            .update_check_cron
-            .clone()
-            .unwrap_or_else(|| "0 */6 * * *".into()),
+        cron,
         enabled: s.update_check_enabled.unwrap_or(false),
         notify: s.update_check_notify.unwrap_or(false),
+        last_run_at: s.update_check_last_run_at.clone(),
+        next_run_at,
     })
+}
+
+fn compute_next_run(cron_expr: &str) -> Option<String> {
+    if cron_expr.is_empty() {
+        return None;
+    }
+    let schedule = format!("0 {}", cron_expr).parse::<cron::Schedule>().ok()?;
+    let now = crate::timezone::now();
+    Some(
+        schedule
+            .upcoming(now.timezone())
+            .next()?
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string(),
+    )
 }
 
 async fn put_update_check_config_h(
@@ -40,7 +59,14 @@ async fn put_update_check_config_h(
     s.update_check_notify = Some(body.notify);
     let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
-    Json(body)
+    let next_run_at = compute_next_run(&body.cron);
+    Json(UpdateCheckConfig {
+        cron: body.cron,
+        enabled: body.enabled,
+        notify: body.notify,
+        last_run_at: s.update_check_last_run_at.clone(),
+        next_run_at,
+    })
 }
 
 // ── Update Policies ─────────────────────────────────────────
@@ -212,6 +238,8 @@ mod tests {
             cron: "0 0 * * *".into(),
             enabled: true,
             notify: true,
+            last_run_at: None,
+            next_run_at: None,
         };
         let result: Json<UpdateCheckConfig> =
             put_update_check_config_h(State(settings.clone()), State(db_pool), Json(config)).await;

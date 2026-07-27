@@ -25,6 +25,8 @@ export interface ContainerTableProps {
   availableStates: string[];
   isMobile: boolean;
   onCheckAll: () => void;
+  lastCheck: string | null;
+  nextCheck: string | null;
   expandedStacks: Record<string, boolean>;
   renderGroup: (project: string, items: ContainerInfo[]) => ReactNode;
   renderRow: (c: ContainerInfo) => ReactNode;
@@ -42,6 +44,8 @@ export default function ContainerTable({
   availableStates,
   isMobile,
   onCheckAll,
+  lastCheck,
+  nextCheck,
   expandedStacks,
   renderGroup,
   renderRow,
@@ -79,6 +83,26 @@ export default function ContainerTable({
                 {isMobile ? "🔍" : "🔍 Check"}
               </Button>
             </Tooltip>
+            </Group>
+          <Group gap="xs" wrap="nowrap" ml="sm">
+            {lastCheck && (
+              <Text size="xs" c="dimmed">
+                Última: {new Date(lastCheck).toLocaleString([], {
+                  year: 'numeric', month: '2-digit', day: '2-digit',
+                  hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  hour12: false
+                })}
+              </Text>
+            )}
+            {nextCheck && (
+              <Text size="xs" c="dimmed">
+                Próxima: {new Date(nextCheck).toLocaleString([], {
+                  year: 'numeric', month: '2-digit', day: '2-digit',
+                  hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  hour12: false
+                })}
+              </Text>
+            )}
           </Group>
           <Group gap="md" wrap="wrap" justify="space-between">
             <Group gap="xs" wrap="wrap">

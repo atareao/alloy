@@ -88,6 +88,8 @@ mod tests {
                 traefik_url: None,
                 updating: false,
                 registry_url: "https://hub.docker.com/_/nginx".into(),
+                last_check: None,
+                next_check: None,
             }],
         };
 
@@ -119,6 +121,8 @@ mod tests {
                     traefik_url: None,
                     updating: false,
                     registry_url: String::new(),
+                    last_check: None,
+                    next_check: None,
                 },
                 ContainerInfo {
                     id: "2".into(),
@@ -134,6 +138,8 @@ mod tests {
                     traefik_url: None,
                     updating: false,
                     registry_url: String::new(),
+                    last_check: None,
+                    next_check: None,
                 },
             ],
         };
@@ -171,6 +177,8 @@ mod tests {
                 traefik_url: None,
                 updating: false,
                 registry_url: String::new(),
+                last_check: None,
+                next_check: None,
             }],
         };
 
@@ -203,6 +211,8 @@ mod tests {
                     traefik_url: None,
                     updating: false,
                     registry_url: String::new(),
+                    last_check: None,
+                    next_check: None,
                 }],
             })
             .unwrap();

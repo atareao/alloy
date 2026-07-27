@@ -12,6 +12,8 @@ export interface ContainerInfo {
   ports: string[];
   traefik_url: string | null;
   registry_url: string;
+  last_check?: string;
+  next_check?: string;
 }
 
 export interface UpdateProgress {
@@ -30,6 +32,7 @@ export interface NotifEvent {
 export interface AppConfig {
   oidc_configured: boolean;
   port: number;
+  timezone: string;
   telegram_configured: boolean;
   telegram_token: string | null;
   telegram_chat_id: string | null;
@@ -108,6 +111,8 @@ export interface UpdateCheckConfig {
   cron: string;
   enabled: boolean;
   notify: boolean;
+  last_run_at: string | null;
+  next_run_at: string | null;
 }
 
 export interface DefaultUpdatePolicy {

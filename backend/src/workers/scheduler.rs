@@ -2,7 +2,7 @@ use bollard::{
     container::{ListContainersOptions, RestartContainerOptions},
     Docker,
 };
-use chrono::{Local, Timelike};
+use chrono::Timelike;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -40,7 +40,7 @@ pub async fn update_check_worker(
         if !enabled {
             continue;
         }
-        let now = Local::now();
+        let now = crate::timezone::now();
         let now_rounded = now
             .with_second(0)
             .and_then(|d| d.with_nanosecond(0))
@@ -218,7 +218,7 @@ pub async fn update_check_worker(
                         let _ = notif_tx.send(NotifEvent {
                             container: name.clone(),
                             status: "🔄 actualizado (update-check)".into(),
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            timestamp: crate::timezone::now_time_formatted(),
                         });
                         if notify {
                             notify_all(&settings, &name, "🔄 actualizado vía update-check").await;
@@ -324,6 +324,36 @@ pub async fn update_check_worker(
             }
         }
 
+        // Actualizar last_check y next_check para todos los contenedores
+        let last_check = crate::timezone::now_formatted();
+        let next_check = crate::timezone::next_cron_time(&cron).unwrap_or_default();
+        for c in &containers {
+            let name = c
+                .names
+                .as_ref()
+                .and_then(|n| n.first())
+                .map(|n| crate::models::strip_name(n))
+                .unwrap_or_default();
+            if !name.is_empty() {
+                let obj = db_pool.get().await.unwrap();
+                let _ = db::update_container_check_times(
+                    &obj.lock().unwrap(),
+                    &name,
+                    &last_check,
+                    &next_check,
+                );
+            }
+        }
+
+        // Persistir last_run_at en settings para que el endpoint API lo exponga
+        {
+            let mut s = settings.lock().await;
+            s.update_check_last_run_at = Some(last_check.clone());
+            if let Ok(conn) = db_pool.get().await {
+                let _ = db::save_settings(&conn.lock().unwrap(), &s);
+            }
+        }
+
         tracing::info!(
             "update_check: {} contenedores revisados, {} actualizados/aplicados",
             containers.len(),
@@ -356,7 +386,7 @@ async fn sqlite_append_update(
         image: image.to_string(),
         old_digest: old_digest.to_string(),
         new_digest: new_digest.to_string(),
-        timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        timestamp: crate::timezone::now_formatted(),
         status: status.to_string(),
         duration_ms,
     };
