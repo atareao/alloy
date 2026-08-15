@@ -198,6 +198,7 @@ async fn main() {
 
     // Session secret for cookie signing (use client_secret)
     let secret_clone = config.oidc_client_secret().to_string();
+    let config_clone = config.clone();
 
     let app = axum::Router::new()
         .route("/api/health", get(health_h))
@@ -215,8 +216,10 @@ async fn main() {
                   mut req: axum::extract::Request,
                   next: axum::middleware::Next| {
                 let s = secret_clone.clone();
+                let c = config_clone.clone();
                 async move {
                     req.extensions_mut().insert(s);
+                    req.extensions_mut().insert(c);
                     auth_middleware(headers, req, next).await
                 }
             },

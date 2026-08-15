@@ -57,12 +57,18 @@ pub struct PublicConfig {
     pub matrix_room: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionClaims {
     pub sub: String,
     pub name: String,
     pub email: String,
     pub exp: usize,
+    /// Issued at (epoch seconds) — when the session was created.
+    /// Used to enforce max session duration.
+    pub iat: usize,
+    /// Last activity timestamp (epoch seconds).
+    /// Used to enforce idle timeout.
+    pub last_active: usize,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -183,6 +189,11 @@ pub struct Settings {
 
     #[serde(default)]
     pub update_check_last_run_at: Option<String>,
+
+    /// Timeout en segundos para el pull de imágenes. Default: 1800 (30 min).
+    /// Aumentar para imágenes muy grandes (>500MB) o conexiones lentas.
+    #[serde(default)]
+    pub pull_timeout_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -248,6 +259,9 @@ pub struct UpdateCheckConfig {
     pub notify: bool,
     pub last_run_at: Option<String>,
     pub next_run_at: Option<String>,
+    /// Timeout en segundos para pull de imágenes. Default: 1800 (30 min).
+    #[serde(default)]
+    pub pull_timeout_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -297,6 +311,40 @@ pub const LABEL_COMPOSE_WORKING_DIR: &str = "com.docker.compose.project.working_
 
 pub fn strip_name(name: &str) -> String {
     name.trim_start_matches('/').to_string()
+}
+
+/// Extract the tag portion from a full image reference.
+/// Returns `("paradedb/paradedb", "latest")` for `"paradedb/paradedb:latest"`.
+/// Returns `("alpine", "latest")` for `"alpine"` (no tag, defaults to latest).
+pub fn parse_image_tag(image: &str) -> (String, String) {
+    if let Some(pos) = image.rfind('@') {
+        (image[..pos].to_string(), "digest".to_string())
+    } else if let Some(pos) = image.rfind(':') {
+        // Ensure we don't split on port numbers like registry:5000/image
+        // Only split if the part after ':' looks like a tag (no '/')
+        let after = &image[pos + 1..];
+        if after.contains('/') {
+            // This is a registry with port, e.g. registry:5000/image
+            (image.to_string(), "latest".to_string())
+        } else {
+            (image[..pos].to_string(), image[pos + 1..].to_string())
+        }
+    } else {
+        (image.to_string(), "latest".to_string())
+    }
+}
+
+/// Return the current platform string in Docker format: `os/arch`.
+/// Maps Rust architecture names to Docker convention.
+pub fn current_platform() -> String {
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "arm" => "arm",
+        "riscv64" => "riscv64",
+        other => other,
+    };
+    format!("{}/{}", std::env::consts::OS, arch)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -396,5 +444,74 @@ mod tests {
     fn test_app_error_from_status_code() {
         let err = AppError::from(StatusCode::BAD_REQUEST);
         assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    // ── parse_image_tag ────────────────────────────────────
+
+    #[test]
+    fn test_parse_image_tag_with_tag() {
+        let (repo, tag) = parse_image_tag("nginx:latest");
+        assert_eq!(repo, "nginx");
+        assert_eq!(tag, "latest");
+    }
+
+    #[test]
+    fn test_parse_image_tag_with_version_tag() {
+        let (repo, tag) = parse_image_tag("library/postgres:15-alpine");
+        assert_eq!(repo, "library/postgres");
+        assert_eq!(tag, "15-alpine");
+    }
+
+    #[test]
+    fn test_parse_image_tag_with_digest() {
+        let (repo, tag) = parse_image_tag(
+            "nginx@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+        );
+        assert_eq!(repo, "nginx");
+        assert_eq!(tag, "digest");
+    }
+
+    #[test]
+    fn test_parse_image_tag_without_tag_defaults_latest() {
+        let (repo, tag) = parse_image_tag("alpine");
+        assert_eq!(repo, "alpine");
+        assert_eq!(tag, "latest");
+    }
+
+    #[test]
+    fn test_parse_image_tag_with_registry_port() {
+        // registry:5000/image — the colon is part of the registry URL, not a tag
+        let (repo, tag) = parse_image_tag("registry.example.com:5000/myimage:v2");
+        assert_eq!(repo, "registry.example.com:5000/myimage");
+        assert_eq!(tag, "v2");
+    }
+
+    #[test]
+    fn test_parse_image_tag_docker_io_with_tag() {
+        let (repo, tag) = parse_image_tag("docker.io/library/redis:7.2");
+        assert_eq!(repo, "docker.io/library/redis");
+        assert_eq!(tag, "7.2");
+    }
+
+    #[test]
+    fn test_parse_image_tag_empty() {
+        let (repo, tag) = parse_image_tag("");
+        assert_eq!(repo, "");
+        assert_eq!(tag, "latest");
+    }
+
+    // ── current_platform ────────────────────────────────────
+
+    #[test]
+    fn test_current_platform_format() {
+        let platform = current_platform();
+        // Should be in format "os/arch" like "linux/amd64"
+        assert!(
+            platform.contains('/'),
+            "Platform should contain '/': {}",
+            platform
+        );
+        let parts: Vec<&str> = platform.split('/').collect();
+        assert_eq!(parts.len(), 2, "Platform should have 2 parts: {}", platform);
     }
 }
