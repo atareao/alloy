@@ -1,4 +1,34 @@
 # Changelog
+## [0.18.0] - 2026-07-27
+
+### Bug Fixes
+
+- Mobile stack grid — expanded stacks span full row without overflow
+- Digest verification before pull, prune_images per policy, pull timeout, update_check_worker default 24h cron
+- Auto_update_worker tight loop — sleep en vez de interval.tick()
+- Populate old_digest and new_digest in update history entries
+- Evaluate cron expression in local timezone instead of UTC
+- Round cron check time to start of minute (fix tick timing mismatch)
+
+### Features
+
+- Add cron preset for daily at 4:00
+- *(update-check)* Show last/next check times based on cron config
+
+### Miscellaneous Tasks
+
+- Fix clippy warnings (unused results, dead_code lint)
+
+### Other
+
+- V0.17.0
+- V0.18.0
+
+### Refactor
+
+- Remove env-var config overrides, simplify notifications to Settings-only
+- Deadpool-sqlite, extract common helpers, split DashboardPage, mobile stack grid
+- Remove auto-update, unify update system under update-check cron
 ## [0.17.0] - 2026-07-18
 
 ### Bug Fixes
@@ -9,6 +39,10 @@
 
 - Dashboard UI refinements (#12)
 - Container logs SSE streaming with live viewer modal
+
+### Miscellaneous Tasks
+
+- Release v0.17.0
 
 ### Other
 
