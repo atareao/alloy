@@ -16,6 +16,14 @@ pub struct Config {
     pub oidc_client_secret: Option<String>,
     #[serde(default)]
     pub oidc_redirect_url: Option<String>,
+    /// Idle timeout in minutes. Auto-logout after this period of inactivity.
+    /// Default: 30 minutes.
+    #[serde(default)]
+    pub session_idle_timeout_minutes: Option<u64>,
+    /// Max session duration in hours. Forces logout after this time since login.
+    /// Default: 24 hours.
+    #[serde(default)]
+    pub session_max_duration_hours: Option<u64>,
 }
 
 /// Intenta leer un secreto de Podman montado en `/run/secrets/<name>`.
@@ -81,6 +89,12 @@ impl Config {
         self.oidc_redirect_url
             .as_deref()
             .expect("OIDC_REDIRECT_URL is required")
+    }
+    pub fn session_idle_timeout_minutes(&self) -> u64 {
+        self.session_idle_timeout_minutes.unwrap_or(30)
+    }
+    pub fn session_max_duration_hours(&self) -> u64 {
+        self.session_max_duration_hours.unwrap_or(24)
     }
 }
 

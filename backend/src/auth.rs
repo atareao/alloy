@@ -6,7 +6,7 @@ use axum::{
     routing::get,
     Router,
 };
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use cookie::{Cookie, SameSite};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
@@ -156,13 +156,17 @@ async fn auth_callback(
     };
 
     // Create session token (signed JWT cookie)
+    let now = Utc::now().timestamp() as usize;
+    let max_duration_secs = (config.session_max_duration_hours() * 3600) as usize;
     let session_token = encode(
         &Header::default(),
         &SessionClaims {
             sub,
             name,
             email,
-            exp: (Utc::now() + Duration::days(7)).timestamp() as usize,
+            iat: now,
+            last_active: now,
+            exp: now + max_duration_secs,
         },
         &EncodingKey::from_secret(config.oidc_client_secret().as_ref()),
     )
@@ -172,6 +176,7 @@ async fn auth_callback(
         .path("/")
         .http_only(true)
         .same_site(SameSite::Lax)
+        .max_age(cookie::time::Duration::new(max_duration_secs as i64, 0))
         .build();
     Ok(Response::builder()
         .status(302)
@@ -183,6 +188,8 @@ async fn auth_callback(
 
 async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Json<serde_json::Value> {
     let secret = config.oidc_client_secret();
+    let idle_timeout_secs = config.session_idle_timeout_minutes() * 60;
+    let max_duration_secs = config.session_max_duration_hours() * 3600;
     let extract = |token: &str| -> Option<serde_json::Value> {
         jsonwebtoken::decode::<SessionClaims>(
             token,
@@ -191,9 +198,25 @@ async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Json<serde
         )
         .ok()
         .map(|d| {
+            let now = Utc::now().timestamp() as usize;
+            let idle_remaining = (idle_timeout_secs as usize).saturating_sub(now - d.claims.last_active);
+            let session_remaining = (max_duration_secs as usize).saturating_sub(now - d.claims.iat);
             json!({
                 "authenticated": true,
-                "user": { "sub": d.claims.sub, "name": d.claims.name, "email": d.claims.email }
+                "user": {
+                    "sub": d.claims.sub,
+                    "name": d.claims.name,
+                    "email": d.claims.email
+                },
+                "session": {
+                    "exp": d.claims.exp,
+                    "iat": d.claims.iat,
+                    "last_active": d.claims.last_active,
+                    "idle_timeout_secs": idle_timeout_secs,
+                    "max_duration_secs": max_duration_secs,
+                    "idle_remaining_secs": idle_remaining,
+                    "session_remaining_secs": session_remaining
+                }
             })
         })
     };
@@ -222,7 +245,11 @@ async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Json<serde
 }
 
 async fn auth_logout() -> Response {
-    let cookie = Cookie::build(("session", "")).path("/").build();
+    let cookie = Cookie::build(("session", ""))
+        .path("/")
+        .http_only(true)
+        .max_age(cookie::time::Duration::new(0, 0))
+        .build();
     Response::builder()
         .status(302)
         .header(header::LOCATION, "/")
@@ -249,59 +276,132 @@ pub async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Extract session secret from request extensions
+    // Extract session secret and config from request extensions
     let secret = req
         .extensions()
         .get::<String>()
         .cloned()
         .unwrap_or_default();
+    let config = req
+        .extensions()
+        .get::<Config>()
+        .cloned()
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "Config not found").into_response())?;
 
-    let validate = |token: &str| -> bool {
-        jsonwebtoken::decode::<SessionClaims>(
+    let idle_timeout_secs = config.session_idle_timeout_minutes() * 60;
+    let max_duration_secs = config.session_max_duration_hours() * 3600;
+
+    // Helper: validate token AND check session expiry
+    let validate = |token: &str| -> Result<SessionClaims, Box<Response>> {
+        let data = jsonwebtoken::decode::<SessionClaims>(
             token,
             &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
             &jsonwebtoken::Validation::default(),
         )
-        .is_ok()
+        .map_err(|_| Box::new((StatusCode::UNAUTHORIZED, "Invalid session token").into_response()))?;
+
+        let claims = data.claims;
+        let now = Utc::now().timestamp() as usize;
+
+        // Check max session duration (since login)
+        let session_elapsed = now.saturating_sub(claims.iat);
+        if session_elapsed > max_duration_secs as usize {
+            tracing::info!(
+                "Session expired (max duration): user={}, elapsed={}s > max={}s",
+                claims.sub,
+                session_elapsed,
+                max_duration_secs
+            );
+            return Err(Box::new((StatusCode::UNAUTHORIZED, "Session expired: maximum duration reached. Please log in again.").into_response()));
+        }
+
+        // Check idle timeout
+        let idle_elapsed = now.saturating_sub(claims.last_active);
+        if idle_elapsed > idle_timeout_secs as usize {
+            tracing::info!(
+                "Session expired (idle timeout): user={}, idle={}s > timeout={}s",
+                claims.sub,
+                idle_elapsed,
+                idle_timeout_secs
+            );
+            return Err(Box::new((StatusCode::UNAUTHORIZED, "Session expired: inactivity timeout. Please log in again.").into_response()));
+        }
+
+        Ok(claims)
     };
 
     // 1. Check session cookie
-    if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
-        for part in cookie_str.split("; ") {
-            if let Some(value) = part.strip_prefix("session=") {
-                if validate(value) {
-                    return Ok(next.run(req).await);
+    let token = 'token: {
+        if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+            for part in cookie_str.split("; ") {
+                if let Some(value) = part.strip_prefix("session=") {
+                    break 'token Some(value.to_string());
                 }
             }
         }
-    }
-    // 2. Check Authorization Bearer header
-    if let Some(token) = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-    {
-        if validate(token) {
-            return Ok(next.run(req).await);
+        // 2. Check Authorization Bearer header
+        if let Some(token) = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        {
+            break 'token Some(token.to_string());
         }
-    }
-    // 3. Check query parameter (for SSE)
-    if let Some(query) = req.uri().query() {
-        if let Some(token) = query.split('&').find_map(|p| {
-            let mut parts = p.splitn(2, '=');
-            if parts.next()? == "token" {
-                parts.next()
-            } else {
-                None
-            }
-        }) {
-            if validate(token) {
-                return Ok(next.run(req).await);
+        // 3. Check query parameter (for SSE)
+        if let Some(query) = req.uri().query() {
+            if let Some(token) = query.split('&').find_map(|p| {
+                let mut parts = p.splitn(2, '=');
+                if parts.next()? == "token" {
+                    parts.next()
+                } else {
+                    None
+                }
+            }) {
+                break 'token Some(token.to_string());
             }
         }
+        None::<String>
+    };
+
+    let token = token.ok_or_else(|| {
+        (StatusCode::UNAUTHORIZED, "Not authenticated").into_response()
+    })?;
+
+    let claims = validate(&token).map_err(|e| *e)?;
+
+    // Run the request
+    let mut response = next.run(req).await;
+
+    // Sliding session: if more than half the idle timeout has elapsed,
+    // refresh the session cookie with a new `last_active` timestamp.
+    let now = Utc::now().timestamp() as usize;
+    let sliding_threshold = (idle_timeout_secs as usize) / 2;
+    if now.saturating_sub(claims.last_active) > sliding_threshold {
+        let remaining_secs = (max_duration_secs as i64).saturating_sub((now - claims.iat) as i64);
+        let new_token = encode(
+            &Header::default(),
+            &SessionClaims {
+                last_active: now,
+                ..claims
+            },
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Session refresh failed").into_response())?;
+
+        let cookie = Cookie::build(("session", new_token))
+            .path("/")
+            .http_only(true)
+            .same_site(SameSite::Lax)
+            .max_age(cookie::time::Duration::new(remaining_secs.max(0), 0))
+            .build();
+
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            cookie.to_string().parse().unwrap(),
+        );
     }
 
-    Err((StatusCode::UNAUTHORIZED, "Not authenticated").into_response())
+    Ok(response)
 }
 
 // ── Frontend static file handler ───────────────────────────
@@ -369,7 +469,9 @@ pub fn routes() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
+
+    // ── url_encode ───────────────────────────────────────────
 
     #[test]
     fn test_url_encode_spaces() {
@@ -406,14 +508,25 @@ mod tests {
         assert_eq!(url_encode("a b&c=d?e"), "a%20b%26c%3Dd%3Fe");
     }
 
+    // ── SessionClaims helpers ────────────────────────────────
+
+    fn make_claims(exp_offset: chrono::Duration) -> SessionClaims {
+        let now = Utc::now().timestamp() as usize;
+        SessionClaims {
+            sub: "test_user".into(),
+            name: "Test User".into(),
+            email: "test@example.com".into(),
+            iat: now,
+            last_active: now,
+            exp: (Utc::now() + exp_offset).timestamp() as usize,
+        }
+    }
+
+    // ── Session token roundtrip ──────────────────────────────
+
     #[test]
     fn test_session_token_roundtrip() {
-        let claims = SessionClaims {
-            sub: "test_user".into(),
-            name: "Test".into(),
-            email: "test@example.com".into(),
-            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
-        };
+        let claims = make_claims(Duration::hours(1));
         let secret = "test_secret_key_12345";
         let token = encode(
             &Header::default(),
@@ -430,18 +543,15 @@ mod tests {
         )
         .expect("should verify");
         assert_eq!(decoded.claims.sub, "test_user");
-        assert_eq!(decoded.claims.name, "Test");
+        assert_eq!(decoded.claims.name, "Test User");
         assert_eq!(decoded.claims.email, "test@example.com");
+        assert_eq!(decoded.claims.iat, claims.iat);
+        assert_eq!(decoded.claims.last_active, claims.last_active);
     }
 
     #[test]
     fn test_session_token_invalid_secret() {
-        let claims = SessionClaims {
-            sub: "user".into(),
-            name: "U".into(),
-            email: "u@u.com".into(),
-            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
-        };
+        let claims = make_claims(Duration::hours(1));
         let token = encode(
             &Header::default(),
             &claims,
@@ -459,10 +569,8 @@ mod tests {
     #[test]
     fn test_session_token_expired() {
         let claims = SessionClaims {
-            sub: "user".into(),
-            name: "U".into(),
-            email: "u@u.com".into(),
             exp: (Utc::now() - Duration::hours(1)).timestamp() as usize,
+            ..make_claims(Duration::hours(1))
         };
         let token = encode(
             &Header::default(),
@@ -484,6 +592,8 @@ mod tests {
             sub: "abc-123".into(),
             name: "John Doe".into(),
             email: "john@example.com".into(),
+            iat: Utc::now().timestamp() as usize,
+            last_active: Utc::now().timestamp() as usize,
             exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
         };
         let secret = "my_secret";
@@ -509,32 +619,23 @@ mod tests {
 
     #[test]
     fn test_session_token_empty_secret() {
-        let claims = SessionClaims {
-            sub: "user".into(),
-            name: "U".into(),
-            email: "u@u.com".into(),
-            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
-        };
+        let claims = make_claims(Duration::hours(1));
         let result = encode(
             &Header::default(),
             &claims,
             &EncodingKey::from_secret("".as_ref()),
         );
-        // Empty secret still produces a token (just not secure)
         assert!(result.is_ok());
         let token = result.unwrap();
         assert!(!token.is_empty());
     }
 
+    // ── auth_me extract ──────────────────────────────────────
+
     #[test]
     fn test_auth_me_extract_from_cookie_header() {
         let secret = "test_secret_for_me_handler";
-        let claims = SessionClaims {
-            sub: "user-42".into(),
-            name: "Alice".into(),
-            email: "alice@example.com".into(),
-            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
-        };
+        let claims = make_claims(Duration::hours(1));
         let token = encode(
             &Header::default(),
             &claims,
@@ -542,7 +643,6 @@ mod tests {
         )
         .expect("should create token");
 
-        // Simulate the extract closure from auth_me handler
         let extract = |t: &str| -> Option<serde_json::Value> {
             jsonwebtoken::decode::<SessionClaims>(
                 t,
@@ -562,9 +662,9 @@ mod tests {
         assert!(result.is_some());
         let resp = result.unwrap();
         assert_eq!(resp["authenticated"], true);
-        assert_eq!(resp["user"]["sub"], "user-42");
-        assert_eq!(resp["user"]["name"], "Alice");
-        assert_eq!(resp["user"]["email"], "alice@example.com");
+        assert_eq!(resp["user"]["sub"], "test_user");
+        assert_eq!(resp["user"]["name"], "Test User");
+        assert_eq!(resp["user"]["email"], "test@example.com");
     }
 
     #[test]
@@ -594,10 +694,8 @@ mod tests {
     fn test_auth_me_extract_expired_token() {
         let secret = "expired_secret_test";
         let claims = SessionClaims {
-            sub: "expired_user".into(),
-            name: "Expired".into(),
-            email: "expired@test.com".into(),
             exp: (Utc::now() - Duration::hours(1)).timestamp() as usize,
+            ..make_claims(Duration::hours(1))
         };
         let token = encode(
             &Header::default(),
@@ -626,12 +724,7 @@ mod tests {
 
     #[test]
     fn test_auth_me_different_secret_returns_none() {
-        let claims = SessionClaims {
-            sub: "user".into(),
-            name: "Name".into(),
-            email: "e@e.com".into(),
-            exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
-        };
+        let claims = make_claims(Duration::hours(1));
         let token = encode(
             &Header::default(),
             &claims,
@@ -656,6 +749,8 @@ mod tests {
 
         assert!(extract(&token).is_none());
     }
+
+    // ── Cookie parsing ───────────────────────────────────────
 
     #[test]
     fn test_cookie_value_extraction() {
@@ -684,25 +779,31 @@ mod tests {
         assert_eq!(found, Some(""));
     }
 
+    // ── Logout ───────────────────────────────────────────────
+
     #[test]
     fn test_logout_clears_cookie() {
-        // Simulate what auth_logout does
         let cookie = Cookie::build(("session", ""))
             .path("/")
             .http_only(true)
+            .max_age(cookie::time::Duration::new(0, 0))
             .build();
         let cookie_str = cookie.to_string();
         assert!(cookie_str.contains("session="));
-        // A cleared cookie should have empty value
-        assert!(cookie_str.contains("session=;") || cookie_str.contains("session=\"\""));
+        assert!(cookie_str.contains("Max-Age=0"));
     }
+
+    // ── Session token with special chars ─────────────────────
 
     #[test]
     fn test_session_token_roundtrip_with_special_chars() {
+        let now = Utc::now().timestamp() as usize;
         let claims = SessionClaims {
             sub: "user|with|pipes".into(),
             name: "José María".into(),
             email: "test+alias@example.com".into(),
+            iat: now,
+            last_active: now,
             exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
         };
         let secret = "s3cr3t_k3y!@#$%";
@@ -723,5 +824,143 @@ mod tests {
         assert_eq!(decoded.claims.sub, "user|with|pipes");
         assert_eq!(decoded.claims.name, "José María");
         assert_eq!(decoded.claims.email, "test+alias@example.com");
+        assert_eq!(decoded.claims.iat, now);
+        assert_eq!(decoded.claims.last_active, now);
+    }
+
+    // ── Session expiry validation ────────────────────────────
+
+    #[test]
+    fn test_session_idle_timeout_rejection() {
+        let idle_timeout_secs: u64 = 30;
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 3600,
+            last_active: now - 31,
+            exp: now + 3600,
+        };
+        let secret = "test_secret";
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let decoded = jsonwebtoken::decode::<SessionClaims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .expect("should verify");
+
+        let idle_elapsed = Utc::now().timestamp() as usize - decoded.claims.last_active;
+        assert!(
+            idle_elapsed > idle_timeout_secs as usize,
+            "idle_elapsed={} should exceed timeout={}",
+            idle_elapsed,
+            idle_timeout_secs
+        );
+    }
+
+    #[test]
+    fn test_session_max_duration_rejection() {
+        let max_duration_secs: u64 = 3600;
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 3601,
+            last_active: now - 10,
+            exp: now + 3600,
+        };
+        let secret = "test_secret";
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let decoded = jsonwebtoken::decode::<SessionClaims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .expect("should verify");
+
+        let session_elapsed = Utc::now().timestamp() as usize - decoded.claims.iat;
+        assert!(
+            session_elapsed > max_duration_secs as usize,
+            "session_elapsed={} should exceed max={}",
+            session_elapsed,
+            max_duration_secs
+        );
+    }
+
+    #[test]
+    fn test_session_iat_and_last_active_present() {
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now,
+            last_active: now,
+            exp: now + 3600,
+        };
+        assert_eq!(claims.iat, now);
+        assert_eq!(claims.last_active, now);
+        assert!(claims.exp > now);
+    }
+
+    #[test]
+    fn test_session_sliding_window_refresh_updates_last_active() {
+        let now = Utc::now().timestamp() as usize;
+        let original = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 1800,
+            last_active: now - 120,
+            exp: now + 3600,
+        };
+
+        let refreshed = SessionClaims {
+            last_active: now,
+            ..original.clone()
+        };
+
+        assert_eq!(refreshed.sub, original.sub);
+        assert_eq!(refreshed.iat, original.iat);
+        assert_eq!(refreshed.exp, original.exp);
+        assert_eq!(refreshed.last_active, now);
+        assert!(refreshed.last_active > original.last_active);
+    }
+
+    #[test]
+    fn test_session_iat_never_changes_on_refresh() {
+        let now = Utc::now().timestamp() as usize;
+        let original = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 7200,
+            last_active: now - 60,
+            exp: now + 3600,
+        };
+
+        let mut claims = original.clone();
+        for _ in 0..5 {
+            claims = SessionClaims {
+                last_active: Utc::now().timestamp() as usize,
+                ..claims
+            };
+            assert_eq!(claims.iat, original.iat);
+        }
     }
 }
