@@ -414,6 +414,9 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .get("update_check_last_run_at")
             .cloned()
             .filter(|s| !s.is_empty()),
+        pull_timeout_secs: map
+            .get("pull_timeout_secs")
+            .and_then(|v| v.parse().ok()),
     })
 }
 
@@ -449,6 +452,10 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         (
             "update_check_last_run_at",
             settings.update_check_last_run_at.clone(),
+        ),
+        (
+            "pull_timeout_secs",
+            settings.pull_timeout_secs.map(|v| v.to_string()),
         ),
     ];
 

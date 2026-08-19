@@ -70,7 +70,7 @@ export default function ConfigPage({
     null,
   );
   useEffect(() => {
-    fetch("/api/update-check/config", { credentials: "include" })
+    apiFetch("/api/update-check/config")
       .then((res) => res.json())
       .then((data: UpdateCheckConfig) => {
         setCheckConfig(data);
@@ -86,7 +86,7 @@ export default function ConfigPage({
   const [defCleanup, setDefCleanup] = useState(false);
   const [defRollback, setDefRollback] = useState(false);
   useEffect(() => {
-    fetch("/api/update-policies/default", { credentials: "include" })
+    apiFetch("/api/update-policies/default")
       .then((res) => res.json())
       .then((data: DefaultUpdatePolicy) => {
         setDefAction(data.action);

@@ -30,6 +30,7 @@ async fn get_update_check_config_h(
         notify: s.update_check_notify.unwrap_or(false),
         last_run_at: s.update_check_last_run_at.clone(),
         next_run_at,
+        pull_timeout_secs: s.pull_timeout_secs,
     })
 }
 
@@ -57,6 +58,7 @@ async fn put_update_check_config_h(
     s.update_check_cron = Some(body.cron.clone());
     s.update_check_enabled = Some(body.enabled);
     s.update_check_notify = Some(body.notify);
+    s.pull_timeout_secs = body.pull_timeout_secs;
     let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
     let next_run_at = compute_next_run(&body.cron);
@@ -66,6 +68,7 @@ async fn put_update_check_config_h(
         notify: body.notify,
         last_run_at: s.update_check_last_run_at.clone(),
         next_run_at,
+        pull_timeout_secs: body.pull_timeout_secs,
     })
 }
 
@@ -240,6 +243,7 @@ mod tests {
             notify: true,
             last_run_at: None,
             next_run_at: None,
+            pull_timeout_secs: None,
         };
         let result: Json<UpdateCheckConfig> =
             put_update_check_config_h(State(settings.clone()), State(db_pool), Json(config)).await;
