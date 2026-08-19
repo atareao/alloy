@@ -93,7 +93,7 @@ export default function DashboardPage({
   // Fetch update check config on mount (for last/next check times)
   const fetchCheckConfig = useCallback(async () => {
     try {
-      const res = await fetch("/api/update-check/config", { credentials: "include" });
+      const res = await apiFetch("/api/update-check/config");
       if (res.ok) {
         setCheckConfig(await res.json());
       }
@@ -218,7 +218,7 @@ export default function DashboardPage({
   }, [progress, batchPhase]);
 
   useEffect(() => {
-    fetch("/api/update-policies", { credentials: "include" })
+    apiFetch("/api/update-policies")
       .then((res) => res.json())
       .then((data: UpdatePolicy[]) => setPolicies(data))
       .catch(() => {});

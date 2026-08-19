@@ -17,6 +17,7 @@ import type {
   HistoryEntry,
   AppConfig,
 } from "./types";
+import { apiFetch } from "./api";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
@@ -60,10 +61,29 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       .finally(() => setChecking(false));
   }, []);
 
+  // Periodic auth check to detect session expiry (every 5 minutes)
+  useEffect(() => {
+    if (!authenticated) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/auth/me", { credentials: "include" });
+        if (res.status === 401) {
+          const body = await res.json();
+          if (body.session_expired) {
+            window.location.href = "/api/auth/login";
+          }
+        }
+      } catch {
+        // Network error — ignore, retry next interval
+      }
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [authenticated]);
+
   // Initial eager fetch of containers — avoids waiting for first SSE event
   useEffect(() => {
     if (!authenticated) return;
-    fetch("/api/containers", { credentials: "include" })
+    apiFetch("/api/containers")
       .then((res) => res.json())
       .then((data) => {
         setContainers(data);
@@ -77,7 +97,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [config, setConfig] = useState<AppConfig | null>(null);
   const api = useCallback(async (path: string) => {
     try {
-      return await (await fetch(path, { credentials: "include" })).json();
+      return await (await apiFetch(path)).json();
     } catch {
       return null;
     }
@@ -107,7 +127,19 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       });
       setContainersLoaded(true);
     });
-    evtSource.onerror = () => setContainersLoaded(true);
+    evtSource.onerror = () => {
+      // Check if session expired — redirect to login
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          res.json().then((body) => {
+            if (body.session_expired) {
+              window.location.href = "/api/auth/login";
+            }
+          });
+        }
+      });
+      setContainersLoaded(true);
+    };
     return () => evtSource.close();
   }, [authenticated]);
 
@@ -130,6 +162,18 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         /* ignore malformed */
       }
     });
+    notifSource.onerror = () => {
+      // Check if session expired — redirect to login
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          res.json().then((body) => {
+            if (body.session_expired) {
+              window.location.href = "/api/auth/login";
+            }
+          });
+        }
+      });
+    };
     return () => notifSource.close();
   }, [authenticated]);
 
@@ -165,6 +209,18 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         /* ignore malformed */
       }
     });
+    evtSource.onerror = () => {
+      // Check if session expired — redirect to login
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          res.json().then((body) => {
+            if (body.session_expired) {
+              window.location.href = "/api/auth/login";
+            }
+          });
+        }
+      });
+    };
     return () => evtSource.close();
   }, [authenticated]);
 
