@@ -1,4 +1,19 @@
 # Changelog
+## [0.18.1] - 2026-08-19
+
+### Bug Fixes
+
+- Redirect to OIDC login when session expires
+- Session-expiry-redirect
+
+### Features
+
+- Implement automatic session logout with idle timeout and sliding refresh (#37)
+## [0.17.1] - 2026-07-27
+
+### Miscellaneous Tasks
+
+- Release v0.17.1
 ## [0.18.0] - 2026-07-27
 
 ### Bug Fixes
