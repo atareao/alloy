@@ -260,6 +260,20 @@ async fn auth_logout() -> Response {
 
 // ── Middleware ──────────────────────────────────────────────
 
+/// Helper: build a JSON 401 response for session expiry / auth failure.
+fn unauthorized_json(session_expired: bool, detail: &str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [("content-type", "application/json")],
+        json!({
+            "error": detail,
+            "session_expired": session_expired,
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
 pub async fn auth_middleware(
     headers: HeaderMap,
     req: axum::extract::Request,
@@ -298,7 +312,7 @@ pub async fn auth_middleware(
             &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
             &jsonwebtoken::Validation::default(),
         )
-        .map_err(|_| Box::new((StatusCode::UNAUTHORIZED, "Invalid session token").into_response()))?;
+        .map_err(|_| Box::new(unauthorized_json(false, "Invalid session token")))?;
 
         let claims = data.claims;
         let now = Utc::now().timestamp() as usize;
@@ -312,7 +326,7 @@ pub async fn auth_middleware(
                 session_elapsed,
                 max_duration_secs
             );
-            return Err(Box::new((StatusCode::UNAUTHORIZED, "Session expired: maximum duration reached. Please log in again.").into_response()));
+            return Err(Box::new(unauthorized_json(true, "Session expired: maximum duration reached. Please log in again.")));
         }
 
         // Check idle timeout
@@ -324,7 +338,7 @@ pub async fn auth_middleware(
                 idle_elapsed,
                 idle_timeout_secs
             );
-            return Err(Box::new((StatusCode::UNAUTHORIZED, "Session expired: inactivity timeout. Please log in again.").into_response()));
+            return Err(Box::new(unauthorized_json(true, "Session expired: inactivity timeout. Please log in again.")));
         }
 
         Ok(claims)
@@ -364,7 +378,7 @@ pub async fn auth_middleware(
     };
 
     let token = token.ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, "Not authenticated").into_response()
+        unauthorized_json(false, "Not authenticated")
     })?;
 
     let claims = validate(&token).map_err(|e| *e)?;
