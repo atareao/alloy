@@ -1,4 +1,13 @@
 # Changelog
+## [0.17.4] - 2026-08-23
+
+### Bug Fixes
+
+- Redirect to OIDC login when session expires
+
+### Miscellaneous Tasks
+
+- Release v0.17.4
 ## [0.17.2] - 2026-08-19
 
 ### Miscellaneous Tasks
