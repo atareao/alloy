@@ -21,14 +21,14 @@ importers:
         specifier: ^9.4.0
         version: 9.4.1(@mantine/core@9.4.1(@mantine/hooks@9.4.1(react@19.2.7))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@mantine/hooks@9.4.1(react@19.2.7))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       postcss:
-        specifier: ^8.5.15
-        version: 8.5.19
+        specifier: ^8.5.26
+        version: 8.5.26
       postcss-preset-mantine:
         specifier: ^1.18.0
-        version: 1.18.0(postcss@8.5.19)
+        version: 1.18.0(postcss@8.5.26)
       postcss-simple-vars:
         specifier: ^7.0.1
-        version: 7.0.1(postcss@8.5.19)
+        version: 7.0.1(postcss@8.5.26)
       react:
         specifier: ^19.2.7
         version: 19.2.7
@@ -53,7 +53,7 @@ importers:
         version: 19.2.3(@types/react@19.2.17)
       '@vitejs/plugin-react':
         specifier: ^6.0.2
-        version: 6.0.3(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19)))
+        version: 6.0.3(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26)))
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1
@@ -65,10 +65,10 @@ importers:
         version: 6.0.3
       vite:
         specifier: ^8.1.0
-        version: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19))
+        version: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26))
       vitest:
         specifier: ^4.1.9
-        version: 4.1.10(@types/node@24.13.3)(jsdom@29.1.1)(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19)))
+        version: 4.1.10(@types/node@24.13.3)(jsdom@29.1.1)(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26)))
 
 packages:
 
@@ -922,8 +922,8 @@ packages:
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
-  nanoid@3.3.16:
-    resolution: {integrity: sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==}
+  nanoid@3.3.18:
+    resolution: {integrity: sha512-DTg4MJbGMWkfi6VZFdNt2/caMbQy4Ou+Op/hJQvGEWcnVfoA1QA+xzRKAzw9jD6+GVOOeYr/mIcuDSdug6F6+w==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
@@ -1009,8 +1009,8 @@ packages:
     peerDependencies:
       postcss: ^8.2.1
 
-  postcss@8.5.19:
-    resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
+  postcss@8.5.26:
+    resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
 
   pretty-format@27.5.1:
@@ -1780,10 +1780,10 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
-  '@vitejs/plugin-react@6.0.3(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19)))':
+  '@vitejs/plugin-react@6.0.3(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26)))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19))
+      vite: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26))
 
   '@vitest/expect@4.1.10':
     dependencies:
@@ -1794,13 +1794,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19)))':
+  '@vitest/mocker@4.1.10(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26)))':
     dependencies:
       '@vitest/spy': 4.1.10
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19))
+      vite: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26))
 
   '@vitest/pretty-format@4.1.10':
     dependencies:
@@ -2068,7 +2068,7 @@ snapshots:
 
   ms@2.1.3: {}
 
-  nanoid@3.3.16: {}
+  nanoid@3.3.18: {}
 
   object-assign@4.1.1: {}
 
@@ -2121,42 +2121,42 @@ snapshots:
 
   picomatch@4.0.5: {}
 
-  postcss-js@4.1.0(postcss@8.5.19):
+  postcss-js@4.1.0(postcss@8.5.26):
     dependencies:
       camelcase-css: 2.0.1
-      postcss: 8.5.19
+      postcss: 8.5.26
 
-  postcss-mixins@12.1.2(postcss@8.5.19):
+  postcss-mixins@12.1.2(postcss@8.5.26):
     dependencies:
-      postcss: 8.5.19
-      postcss-js: 4.1.0(postcss@8.5.19)
-      postcss-simple-vars: 7.0.1(postcss@8.5.19)
-      sugarss: 5.0.1(postcss@8.5.19)
+      postcss: 8.5.26
+      postcss-js: 4.1.0(postcss@8.5.26)
+      postcss-simple-vars: 7.0.1(postcss@8.5.26)
+      sugarss: 5.0.1(postcss@8.5.26)
       tinyglobby: 0.2.17
 
-  postcss-nested@7.0.2(postcss@8.5.19):
+  postcss-nested@7.0.2(postcss@8.5.26):
     dependencies:
-      postcss: 8.5.19
+      postcss: 8.5.26
       postcss-selector-parser: 7.1.4
 
-  postcss-preset-mantine@1.18.0(postcss@8.5.19):
+  postcss-preset-mantine@1.18.0(postcss@8.5.26):
     dependencies:
-      postcss: 8.5.19
-      postcss-mixins: 12.1.2(postcss@8.5.19)
-      postcss-nested: 7.0.2(postcss@8.5.19)
+      postcss: 8.5.26
+      postcss-mixins: 12.1.2(postcss@8.5.26)
+      postcss-nested: 7.0.2(postcss@8.5.26)
 
   postcss-selector-parser@7.1.4:
     dependencies:
       cssesc: 3.0.0
       util-deprecate: 1.0.2
 
-  postcss-simple-vars@7.0.1(postcss@8.5.19):
+  postcss-simple-vars@7.0.1(postcss@8.5.26):
     dependencies:
-      postcss: 8.5.19
+      postcss: 8.5.26
 
-  postcss@8.5.19:
+  postcss@8.5.26:
     dependencies:
-      nanoid: 3.3.16
+      nanoid: 3.3.18
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
@@ -2285,9 +2285,9 @@ snapshots:
 
   stylis@4.2.0: {}
 
-  sugarss@5.0.1(postcss@8.5.19):
+  sugarss@5.0.1(postcss@8.5.26):
     dependencies:
-      postcss: 8.5.19
+      postcss: 8.5.26
 
   supports-preserve-symlinks-flag@1.0.0: {}
 
@@ -2351,22 +2351,22 @@ snapshots:
 
   util-deprecate@1.0.2: {}
 
-  vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19)):
+  vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26)):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.26
       rolldown: 1.1.5
       tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 24.13.3
       fsevents: 2.3.3
-      sugarss: 5.0.1(postcss@8.5.19)
+      sugarss: 5.0.1(postcss@8.5.26)
 
-  vitest@4.1.10(@types/node@24.13.3)(jsdom@29.1.1)(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19))):
+  vitest@4.1.10(@types/node@24.13.3)(jsdom@29.1.1)(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26))):
     dependencies:
       '@vitest/expect': 4.1.10
-      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19)))
+      '@vitest/mocker': 4.1.10(vite@8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26)))
       '@vitest/pretty-format': 4.1.10
       '@vitest/runner': 4.1.10
       '@vitest/snapshot': 4.1.10
@@ -2383,7 +2383,7 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.19))
+      vite: 8.1.5(@types/node@24.13.3)(sugarss@5.0.1(postcss@8.5.26))
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 24.13.3
