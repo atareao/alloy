@@ -1,6 +1,5 @@
 use crate::state::http_client;
 
-
 /// Fetch the config digest (image ID) of a remote image from Docker Hub.
 ///
 /// Returns `(config_digest, tag)` where `config_digest` matches what Docker
