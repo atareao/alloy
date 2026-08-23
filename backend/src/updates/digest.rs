@@ -1,5 +1,6 @@
 use crate::state::http_client;
 
+
 /// Fetch the config digest (image ID) of a remote image from Docker Hub.
 ///
 /// Returns `(config_digest, tag)` where `config_digest` matches what Docker
@@ -13,11 +14,15 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
         "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
         repo
     );
+    tracing::debug!("check_remote_digest [{}:{}]: obteniendo token desde {}", repo, tag, token_url);
     let token_resp = client
         .get(&token_url)
         .send()
         .await
-        .map_err(|e| format!("token request failed: {}", e))?;
+        .map_err(|e| {
+            tracing::warn!("check_remote_digest [{}:{}]: token request failed: {}", repo, tag, e);
+            format!("token request failed: {}", e)
+        })?;
     let token_body: serde_json::Value = token_resp
         .json()
         .await
@@ -27,6 +32,7 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
         .ok_or_else(|| "no token".to_string())?;
 
     let manifest_url = format!("https://registry-1.docker.io/v2/{}/manifests/{}", repo, tag);
+    tracing::debug!("check_remote_digest [{}:{}]: consultando manifiesto en {}", repo, tag, manifest_url);
     let manifest_resp = client
         .get(&manifest_url)
         .header("Authorization", format!("Bearer {}", token))
@@ -44,7 +50,9 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
         .await
         .map_err(|e| format!("manifest request failed: {}", e))?;
     if !manifest_resp.status().is_success() {
-        return Err(format!("manifest status: {}", manifest_resp.status()));
+        let status = manifest_resp.status();
+        tracing::warn!("check_remote_digest [{}:{}]: manifest HTTP {}", repo, tag, status);
+        return Err(format!("manifest status: {}", status));
     }
 
     let content_type = manifest_resp
@@ -52,9 +60,11 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    tracing::debug!("check_remote_digest [{}:{}]: content-type={}", repo, tag, content_type);
 
     let config_digest =
         if content_type.contains("manifest.list") || content_type.contains("image.index") {
+            tracing::debug!("check_remote_digest [{}:{}]: manifest list detectado, buscando plataforma amd64/linux", repo, tag);
             let body: serde_json::Value = manifest_resp
                 .json()
                 .await
@@ -77,6 +87,7 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
                 "https://registry-1.docker.io/v2/{}/manifests/{}",
                 repo, amd64_digest
             );
+            tracing::debug!("check_remote_digest [{}:{}]: consultando manifiesto de plataforma en {}", repo, tag, plat_url);
             let plat_resp = client
                 .get(&plat_url)
                 .header("Authorization", format!("Bearer {}", token))
@@ -110,6 +121,12 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
                 .to_string()
         };
 
+    tracing::debug!(
+        "check_remote_digest [{}:{}]: digest remoto = {}",
+        repo,
+        tag,
+        short_digest(&config_digest)
+    );
     Ok((config_digest, tag.to_string()))
 }
 

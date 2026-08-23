@@ -308,20 +308,30 @@ pub async fn check_update_h(
 ) -> Result<Json<VersionCompare>, AppError> {
     let container = find_container_by_name(&docker, &name).await?;
     let image_full = container.image.as_deref().unwrap_or("");
+    tracing::info!("check_update [{}]: imagen={}", name, image_full);
     let (has_update, local_tag, remote_digest, remote_tag, error) = if image_full.is_empty() {
+        tracing::warn!("check_update [{}]: contenedor sin imagen", name);
         (None, "unknown".into(), None, None, Some("no image".into()))
     } else {
         let (repo, local_tag) = crate::updates::digest::parse_image_ref(image_full);
         let (remote_digest, remote_tag, error) = match check_remote_digest(&repo, &local_tag).await
         {
             Ok((digest, tag)) => (Some(digest), Some(tag), None),
-            Err(e) => (None, None, Some(e)),
+            Err(e) => {
+                tracing::warn!("check_update [{}]: error obteniendo digest remoto: {}", name, e);
+                (None, None, Some(e))
+            }
         };
         let has_update = match (&container.image_id, &remote_digest) {
             (Some(local_digest), Some(remote_digest)) => {
                 let local_short = crate::updates::digest::short_digest(local_digest);
                 let remote_short = crate::updates::digest::short_digest(remote_digest);
-                Some(local_short != remote_short)
+                let result = local_short != remote_short;
+                tracing::info!(
+                    "check_update [{}]: local={} remote={} has_update={}",
+                    name, local_short, remote_short, result
+                );
+                Some(result)
             }
             _ => None,
         };
@@ -366,50 +376,54 @@ pub async fn check_all_h(
         }))
         .await
         .unwrap_or_default();
+    tracing::info!("check_all: verificando {} contenedores", containers.len());
     let tasks: Vec<_> = containers
         .iter()
         .map(|c| {
-            let docker = docker.clone();
             let name = c.name.clone();
+            // Capture image data from raw_containers already fetched above to avoid an
+            // extra list_containers call per task.
+            let raw = raw_containers.iter().find(|ct| {
+                ct.names
+                    .as_ref()
+                    .and_then(|n| n.first())
+                    .map(|n| strip_name(n) == name.as_str())
+                    .unwrap_or(false)
+            });
+            let image_full = raw
+                .and_then(|ct| ct.image.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let image_id = raw
+                .and_then(|ct| ct.image_id.as_deref())
+                .unwrap_or("")
+                .to_string();
             async move {
-                let containers = docker
-                    .list_containers(Some(ListContainersOptions::<String> {
-                        all: true,
-                        ..Default::default()
-                    }))
-                    .await
-                    .unwrap_or_default();
-                if let Some(container) = containers.iter().find(|ct| {
-                    ct.names
-                        .as_ref()
-                        .and_then(|n| n.first())
-                        .map(|n| strip_name(n) == name.as_str())
-                        .unwrap_or(false)
-                }) {
-                    let image_full = container.image.as_deref().unwrap_or("");
-                    if image_full.is_empty() {
-                        return (name, false);
+                if image_full.is_empty() {
+                    tracing::warn!("check_all [{}]: sin imagen, omitiendo", name);
+                    return (name, false);
+                }
+                let (repo, local_tag) = crate::updates::digest::parse_image_ref(&image_full);
+                tracing::info!("check_all [{}]: verificando imagen {}:{}", name, repo, local_tag);
+                match check_remote_digest(&repo, &local_tag).await {
+                    Ok((remote_digest, _)) => {
+                        let local_short = if image_id.is_empty() {
+                            String::new()
+                        } else {
+                            crate::updates::digest::short_digest(&image_id)
+                        };
+                        let remote_short = crate::updates::digest::short_digest(&remote_digest);
+                        let has_update = !image_id.is_empty() && local_short != remote_short;
+                        tracing::info!(
+                            "check_all [{}]: local={} remote={} has_update={}",
+                            name, local_short, remote_short, has_update
+                        );
+                        (name, has_update)
                     }
-                    let (repo, local_tag) = crate::updates::digest::parse_image_ref(image_full);
-                    match check_remote_digest(&repo, &local_tag).await {
-                        Ok((remote_digest, _)) => {
-                            let has_update = container
-                                .image_id
-                                .as_ref()
-                                .map(|local_digest| {
-                                    let local_short =
-                                        crate::updates::digest::short_digest(local_digest);
-                                    let remote_short =
-                                        crate::updates::digest::short_digest(&remote_digest);
-                                    local_short != remote_short
-                                })
-                                .unwrap_or(false);
-                            (name, has_update)
-                        }
-                        Err(_) => (name, false),
+                    Err(e) => {
+                        tracing::warn!("check_all [{}]: error consultando digest remoto: {}", name, e);
+                        (name, false)
                     }
-                } else {
-                    (name, false)
                 }
             }
         })
