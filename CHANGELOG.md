@@ -1,4 +1,9 @@
 # Changelog
+## [0.17.2] - 2026-08-19
+
+### Miscellaneous Tasks
+
+- Release v0.17.2
 ## [0.18.1] - 2026-08-19
 
 ### Bug Fixes
