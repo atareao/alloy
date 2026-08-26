@@ -32,6 +32,7 @@ export default function PolicyActionButton({
   const [editAction, setEditAction] = useState<string>("pull-restart");
   const [editCleanup, setEditCleanup] = useState(false);
   const [editRollback, setEditRollback] = useState(false);
+  const [editNotifyEvents, setEditNotifyEvents] = useState(true);
   const [savingPolicy, setSavingPolicy] = useState(false);
 
   const policy = getPolicy(containerName);
@@ -40,6 +41,7 @@ export default function PolicyActionButton({
     setEditAction(policy?.action || "pull-restart");
     setEditCleanup(policy?.cleanup_old_image || false);
     setEditRollback(policy?.rollback_on_failure || false);
+    setEditNotifyEvents(policy?.notify_events ?? true);
     setShowPolicyModal(true);
   };
 
@@ -55,6 +57,7 @@ export default function PolicyActionButton({
             action: editAction,
             cleanup_old_image: editCleanup,
             rollback_on_failure: editRollback,
+            notify_events: editNotifyEvents,
           }),
         },
       );
@@ -128,6 +131,12 @@ export default function PolicyActionButton({
             description="Si el contenedor no arranca correctamente, restaura la imagen anterior"
             checked={editRollback}
             onChange={(e) => setEditRollback(e.currentTarget.checked)}
+          />
+          <Switch
+            label="🔔 Notificar eventos"
+            description="Envía notificación (Telegram/Matrix) cuando el contenedor cambie de estado"
+            checked={editNotifyEvents}
+            onChange={(e) => setEditNotifyEvents(e.currentTarget.checked)}
           />
           <Group justify="flex-end" mt="md">
             <Button variant="default" onClick={() => setShowPolicyModal(false)}>
