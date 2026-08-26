@@ -197,15 +197,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           api("/api/config").then((d) => {
             if (d) setConfig(d);
           });
-          setTimeout(
-            () =>
-              setProgress((prev) => {
-                const n = new Map(prev);
-                n.delete(data.container);
-                return n;
-              }),
-            3000,
-          );
         }
       } catch {
         /* ignore malformed */
@@ -225,6 +216,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     };
     return () => evtSource.close();
   }, [authenticated, api]);
+
+  const clearProgress = useCallback(() => {
+    setProgress(new Map());
+  }, []);
 
   const logout = () => {
     window.location.href = "/api/auth/logout";
@@ -304,6 +299,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             setContainers={setContainers}
             progress={progress}
             containersLoaded={containersLoaded}
+            clearProgress={clearProgress}
           />
         )}
         {view === "history" && (
