@@ -1,13 +1,67 @@
 # Changelog
-## [0.17.4] - 2026-08-23
+## [0.20.0] - 2026-08-26
 
 ### Bug Fixes
 
-- Redirect to OIDC login when session expires
+- HistoryPage status colors for all status strings
+- HistoryPage status colors for all status strings (#41)
+
+### Features
+
+- Configurable pull timeout + registry-aware digest improvements (#40)
+- Registry-aware check_remote_digest with ImageRef struct
+- Remove_old_image after updates + cleanup_worker for dangling images
+- Registry-aware digest check + dangling image cleanup (#42)
+- Registry push target, digest resolution fix, progress cleanup
+- Registry push target, digest resolution fix, progress cleanup (#44)
 
 ### Miscellaneous Tasks
 
-- Release v0.17.4
+- Merge main into develop after v0.17.5
+- Merge main into develop after HistoryPage status colors fix
+- Rustfmt formatting + clippy fixes
+- Merge main into develop after registry-aware digest + cleanup
+- Remove dead auto_update_worker module
+- Remove dead auto_update_worker module (#43)
+- Merge main into develop after removing dead auto_update_worker
+- Bump version to 0.18.0
+- Release v0.18.0
+- Bump version to 0.19.0
+## [0.17.5] - 2026-08-26
+
+### Bug Fixes
+
+- Refresh history and config after update completes
+
+### Features
+
+- Add configurable pull timeout setting
+- Use pull timeout, prune dangling images, and improve update pipeline
+
+### Miscellaneous Tasks
+
+- Merge main into develop after v0.17.4
+- Sync Cargo.lock version to 0.17.4
+## [0.17.4] - 2026-08-23
+
+### Features
+
+- Add tracing logs to image update checks + fix check_all redundant Docker calls (#38)
+
+### Miscellaneous Tasks
+
+- Merge main into develop to align branches
+- Bump version to 0.17.4
+
+### Other
+
+- V0.17.4 (#39)
+## [0.17.3] - 2026-08-23
+
+### Miscellaneous Tasks
+
+- Merge main into develop after v0.17.2
+- Release v0.17.3
 ## [0.17.2] - 2026-08-19
 
 ### Miscellaneous Tasks
@@ -18,11 +72,17 @@
 ### Bug Fixes
 
 - Redirect to OIDC login when session expires
+- Redirect to OIDC login when session expires
+- Merge session-expiry-redirect into develop
 - Session-expiry-redirect
 
 ### Features
 
 - Implement automatic session logout with idle timeout and sliding refresh (#37)
+
+### Miscellaneous Tasks
+
+- Merge main into develop after v0.18.0 release and auto-logout (#37)
 ## [0.17.1] - 2026-07-27
 
 ### Miscellaneous Tasks
