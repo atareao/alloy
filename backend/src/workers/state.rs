@@ -1,4 +1,4 @@
-use bollard::{system::EventsOptions, Docker};
+use bollard::{container::InspectContainerOptions, system::EventsOptions, Docker};
 use futures::{pin_mut, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,20 +20,51 @@ pub async fn docker_list_running(docker: &Docker) -> Vec<(String, String, String
         }))
         .await
     {
-        Ok(list) => list
-            .iter()
-            .filter_map(|c| {
-                let name = c
-                    .names
-                    .as_ref()
-                    .and_then(|n| n.first())
-                    .map(|n| strip_name(n))?;
-                let image = c.image.as_deref()?.to_string();
-                let id = c.id.as_deref()?.to_string();
-                let image_id = c.image_id.as_deref().map(|s| s.to_string());
-                Some((name, image, id, image_id))
-            })
-            .collect(),
+        Ok(list) => {
+            // Pre-resolve: bare digest images (sha256:...) only carry the digest
+            // in `image`; inspect each container to recover the real image ref.
+            let mut resolved_images: HashMap<String, String> = HashMap::new();
+            for c in &list {
+                let image = c.image.as_deref().unwrap_or("");
+                if image.starts_with("sha256:") {
+                    if let Some(cid) = &c.id {
+                        if let Ok(inspect) = docker
+                            .inspect_container(cid, None::<InspectContainerOptions>)
+                            .await
+                        {
+                            let real = inspect
+                                .config
+                                .as_ref()
+                                .and_then(|cfg| cfg.image.as_deref())
+                                .unwrap_or("");
+                            resolved_images.insert(cid.clone(), real.to_string());
+                        }
+                    }
+                }
+            }
+            list.iter()
+                .filter_map(|c| {
+                    let name = c
+                        .names
+                        .as_ref()
+                        .and_then(|n| n.first())
+                        .map(|n| strip_name(n))?;
+                    let raw_image = c.image.as_deref()?;
+                    let image = if raw_image.starts_with("sha256:") {
+                        c.id.as_ref()
+                            .and_then(|cid| resolved_images.get(cid))
+                            .map(|s| s.as_str())
+                            .unwrap_or(raw_image)
+                            .to_string()
+                    } else {
+                        raw_image.to_string()
+                    };
+                    let id = c.id.as_deref()?.to_string();
+                    let image_id = c.image_id.as_deref().map(|s| s.to_string());
+                    Some((name, image, id, image_id))
+                })
+                .collect()
+        }
         Err(_) => vec![],
     }
 }
