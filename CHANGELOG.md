@@ -1,5 +1,27 @@
 # Changelog
+## [0.20.1] - 2026-08-26
+
+### Features
+
+- Make notify_events toggle functional per container
+- Merge feature/notify-events-toggle into develop
+
+### Miscellaneous Tasks
+
+- Bump version to 0.19.0
+- Merge release v0.19.0 into develop
+- Bump version to 0.19.1
+- Bump version to 0.20.1
+
+### Other
+
+- V0.20.1
 ## [0.20.0] - 2026-08-26
+
+### Miscellaneous Tasks
+
+- Release v0.20.0
+## [0.19.0] - 2026-08-26
 
 ### Bug Fixes
 
