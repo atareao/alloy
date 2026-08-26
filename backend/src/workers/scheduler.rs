@@ -12,6 +12,7 @@ use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
+use crate::updates::handlers::{log_prune_result, prune_dangling_images};
 use crate::updates::digest::check_remote_digest;
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
@@ -139,7 +140,6 @@ pub async fn update_check_worker(
             if !has_update || name.is_empty() || image_full.is_empty() {
                 continue;
             }
-            updated_count += 1;
 
             // Leer política para este contenedor
             let policy = match policies.0.get(&name) {
@@ -178,7 +178,8 @@ pub async fn update_check_worker(
             let start = std::time::Instant::now();
             match policy.action {
                 UpdateAction::Pull => {
-                    if pull_image(&docker, &image_full).await {
+                    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+                    if pull_image(&docker, &image_full, pull_timeout).await {
                         let _ = update_tx.send(UpdateProgress {
                             container: name.clone(),
                             status: "✅ descargado (update-check)".into(),
@@ -197,21 +198,22 @@ pub async fn update_check_worker(
                         )
                         .await;
                         if policy.cleanup_old_image {
-                            let _ = docker
-                                .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
-                                .await;
+                            let result = prune_dangling_images(&docker).await;
+                            log_prune_result("scheduler-pull", &result);
                         }
+                        updated_count += 1;
                     } else {
                         let _ = update_tx.send(UpdateProgress {
                             container: name.clone(),
-                            status: "❌ error al descargar".into(),
+                            status: "❌ error al descargar (se reintentará)".into(),
                             done: true,
-                            error: Some("pull failed".into()),
+                            error: Some("pull failed, will retry".into()),
                         });
                     }
                 }
                 UpdateAction::PullRestart => {
-                    if pull_image(&docker, &image_full).await {
+                    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+                    if pull_image(&docker, &image_full, pull_timeout).await {
                         let _ = docker
                             .restart_container(&cid, None::<RestartContainerOptions>)
                             .await;
@@ -242,16 +244,16 @@ pub async fn update_check_worker(
                             error: None,
                         });
                         if policy.cleanup_old_image {
-                            let _ = docker
-                                .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
-                                .await;
+                            let result = prune_dangling_images(&docker).await;
+                            log_prune_result("scheduler-restart", &result);
                         }
+                        updated_count += 1;
                     } else {
                         let _ = update_tx.send(UpdateProgress {
                             container: name.clone(),
-                            status: "❌ error al descargar".into(),
+                            status: "❌ error al descargar (se reintentará)".into(),
                             done: true,
-                            error: Some("pull failed".into()),
+                            error: Some("pull failed, will retry".into()),
                         });
                     }
                 }
@@ -294,12 +296,10 @@ pub async fn update_check_worker(
                                         error: None,
                                     });
                                     if policy.cleanup_old_image {
-                                        let _ = docker
-                                            .prune_images(
-                                                None::<bollard::image::PruneImagesOptions<&str>>,
-                                            )
-                                            .await;
+                                        let result = prune_dangling_images(&docker).await;
+                                        log_prune_result("scheduler-safety", &result);
                                     }
+                                    updated_count += 1;
                                 }
                                 _ => {
                                     let _ = update_tx.send(UpdateProgress {

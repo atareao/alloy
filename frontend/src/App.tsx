@@ -117,14 +117,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     if (!authenticated) return;
     const evtSource = new EventSource("/api/events", { withCredentials: true });
     evtSource.addEventListener("containers", (e) => {
-      setContainers((prev) => {
-        const incoming: ContainerInfo[] = JSON.parse(e.data).containers;
-        const prevHasUpdate = new Map(prev.map((c) => [c.name, c.has_update]));
-        return incoming.map((c) => ({
-          ...c,
-          has_update: prevHasUpdate.get(c.name) ?? c.has_update,
-        }));
-      });
+      const incoming: ContainerInfo[] = JSON.parse(e.data).containers;
+      setContainers(incoming);
       setContainersLoaded(true);
     });
     evtSource.onerror = () => {
@@ -195,6 +189,14 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           return next;
         });
         if (data.done) {
+          // Re-fetch history so the new entry appears immediately
+          api("/api/history").then((d) => {
+            if (d) setHistory(d);
+          });
+          // Also re-fetch config to pick up any changes
+          api("/api/config").then((d) => {
+            if (d) setConfig(d);
+          });
           setTimeout(
             () =>
               setProgress((prev) => {
@@ -222,7 +224,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       });
     };
     return () => evtSource.close();
-  }, [authenticated]);
+  }, [authenticated, api]);
 
   const logout = () => {
     window.location.href = "/api/auth/logout";

@@ -11,6 +11,7 @@ import {
   TextInput,
   Switch,
   Select,
+  NumberInput,
 } from "@mantine/core";
 import type {
   AppConfig,
@@ -69,6 +70,9 @@ export default function ConfigPage({
   const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
     null,
   );
+
+  // Pull timeout
+  const [pullTimeout, setPullTimeout] = useState(600);
   useEffect(() => {
     apiFetch("/api/update-check/config")
       .then((res) => res.json())
@@ -77,6 +81,7 @@ export default function ConfigPage({
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
+        if (data.pull_timeout_secs != null) setPullTimeout(data.pull_timeout_secs);
       })
       .catch(() => {});
   }, []);
@@ -195,6 +200,7 @@ export default function ConfigPage({
           cron: ucCron,
           enabled: ucEnabled,
           notify: ucNotify,
+          pull_timeout_secs: pullTimeout,
         }),
       });
       if (res.ok) {
@@ -203,6 +209,7 @@ export default function ConfigPage({
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
+        if (data.pull_timeout_secs != null) setPullTimeout(data.pull_timeout_secs);
         showSuccess(
           ucEnabled
             ? "✅ Revisión programada activada"
@@ -496,6 +503,15 @@ export default function ConfigPage({
               label="🔔 Notificar vía Telegram/Matrix"
               checked={ucNotify}
               onChange={(e) => setUcNotify(e.currentTarget.checked)}
+            />
+            <NumberInput
+              label="⏱️ Timeout pull (segundos)"
+              description="Aumentar para imágenes grandes (>500MB) o conexiones lentas. Default: 1800 (30 min)"
+              value={pullTimeout}
+              onChange={(v) => setPullTimeout(Number(v) || 1800)}
+              min={60}
+              max={7200}
+              step={60}
             />
           </Stack>
         )}

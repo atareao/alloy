@@ -4,8 +4,7 @@ use axum::{
 };
 use bollard::{
     container::{ListContainersOptions, RestartContainerOptions},
-    image::RemoveImageOptions,
-    image::TagImageOptions,
+    image::{PruneImagesOptions, RemoveImageOptions, TagImageOptions},
     Docker,
 };
 use std::collections::HashMap;
@@ -19,6 +18,7 @@ use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
 use crate::workers::resolve_compose_file;
+use bollard::models::ImagePruneResponse;
 
 struct PendingUpdate {
     name: String,
@@ -83,8 +83,14 @@ pub async fn update_container_h(
         done: false,
         error: None,
     });
+    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
     let start_time = std::time::Instant::now();
-    if !pull_image(&docker, image).await {
+    tracing::info!(
+        "update_container_h: descargando '{}' (timeout: {}s)",
+        image,
+        pull_timeout
+    );
+    if !pull_image(&docker, image, pull_timeout).await {
         let _ = update_tx.send(UpdateProgress {
             container: name.clone(),
             status: "Error".into(),
@@ -118,6 +124,7 @@ pub async fn update_container_h(
         .await
     {
         Ok(_) => {
+            tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
             let _ = update_tx.send(UpdateProgress {
                 container: name.clone(),
                 status: "✅ Restarted".into(),
@@ -156,6 +163,7 @@ pub async fn update_container_h(
             }))
         }
         Err(e) => {
+            tracing::error!("update_container_h: error al reiniciar '{}': {}", name, e);
             let _ = update_tx.send(UpdateProgress {
                 container: name.clone(),
                 status: "Error".into(),
@@ -215,8 +223,16 @@ pub async fn update_all_h(
         }
 
         let old_digest = image_id.as_deref().unwrap_or("").to_string();
+        let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
         let start_time = std::time::Instant::now();
-        if !pull_image(&docker, &image).await {
+        tracing::info!(
+            "update_all_h: descargando '{}' (imagen: {}, timeout: {}s)",
+            name,
+            image,
+            pull_timeout
+        );
+        if !pull_image(&docker, &image, pull_timeout).await {
+            tracing::error!("update_all_h: pull FALLÓ para '{}'", name);
             results.push(UpdateProgress {
                 container: name.clone(),
                 status: "error".into(),
@@ -238,11 +254,13 @@ pub async fn update_all_h(
             let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             continue;
         }
+        tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
         match docker
             .restart_container(&cid, None::<RestartContainerOptions>)
             .await
         {
             Ok(_) => {
+                tracing::info!("update_all_h: contenedor '{}' reiniciado correctamente", name);
                 let ts = crate::timezone::now_time_formatted();
                 let _ = notif_tx.send(NotifEvent {
                     container: name.clone(),
@@ -275,6 +293,7 @@ pub async fn update_all_h(
                 let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
             }
             Err(e) => {
+                tracing::error!("update_all_h: error al reiniciar '{}': {}", name, e);
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
                     image: image.clone(),
@@ -362,6 +381,7 @@ pub async fn check_update_h(
 pub async fn check_all_h(
     State(docker): State<Docker>,
     State(db_pool): State<DbPool>,
+    State(tx): State<broadcast::Sender<StateEvent>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
@@ -492,7 +512,7 @@ pub async fn check_all_h(
             pending.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
         let docker = docker.clone();
-
+        let tx = tx.clone();
         let settings = settings.clone();
         let update_tx = update_tx.clone();
         let notif_tx = notif_tx.clone();
@@ -502,6 +522,7 @@ pub async fn check_all_h(
             apply_policies_background(
                 &docker,
                 &settings,
+                &tx,
                 &update_tx,
                 &notif_tx,
                 &update_history,
@@ -520,6 +541,7 @@ pub async fn check_all_h(
 async fn apply_policies_background(
     docker: &Docker,
     settings: &Arc<Mutex<Settings>>,
+    tx: &broadcast::Sender<StateEvent>,
     update_tx: &broadcast::Sender<UpdateProgress>,
     notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
@@ -528,8 +550,9 @@ async fn apply_policies_background(
     pending: &[PendingUpdate],
 ) {
     tracing::info!(
-        "apply_policies_background: iniciando con {} pendientes",
-        pending.len()
+        "apply_policies_background: iniciando con {} pendientes: {:?}",
+        pending.len(),
+        pending.iter().map(|p| &p.name).collect::<Vec<_>>()
     );
     let policies = update_policies.lock().await.clone();
     let policy_map: HashMap<String, UpdatePolicy> = policies
@@ -546,6 +569,8 @@ async fn apply_policies_background(
             s.default_rollback_on_failure.unwrap_or(false),
         )
     };
+
+    let mut any_success = false;
 
     for p in pending {
         let policy = match policy_map.get(&p.name) {
@@ -573,9 +598,11 @@ async fn apply_policies_background(
         }
 
         tracing::info!(
-            "apply_policies_background: procesando '{}' con acción {:?}",
+            "apply_policies_background: procesando '{}' con acción {:?} (imagen: {}, cleanup_old_image: {})",
             p.name,
-            policy.action
+            policy.action,
+            p.image_full,
+            policy.cleanup_old_image
         );
 
         let _ = update_tx.send(UpdateProgress {
@@ -587,11 +614,19 @@ async fn apply_policies_background(
 
         let start_time = std::time::Instant::now();
         let mut success = false;
+        let pull_timeout = {
+            let s = settings.lock().await;
+            s.pull_timeout_secs.unwrap_or(600)
+        };
 
         match policy.action {
             UpdateAction::Pull => {
-                tracing::info!("apply_policies_background: Pull '{}'", p.name);
-                if pull_image(docker, &p.image_full).await {
+                tracing::info!(
+                    "apply_policies_background: Pull '{}' desde '{}'",
+                    p.name,
+                    p.image_full
+                );
+                if pull_image(docker, &p.image_full, pull_timeout).await {
                     tracing::info!("apply_policies_background: Pull OK '{}'", p.name);
                     let _ = update_tx.send(UpdateProgress {
                         container: p.name.clone(),
@@ -624,46 +659,97 @@ async fn apply_policies_background(
                 }
             }
             UpdateAction::PullRestart => {
-                tracing::info!("apply_policies_background: PullRestart '{}'", p.name);
+                tracing::info!(
+                    "apply_policies_background: PullRestart '{}' desde '{}'",
+                    p.name,
+                    p.image_full
+                );
                 let backup = if policy.rollback_on_failure {
                     tag_backup_image(docker, &p.image_full).await
                 } else {
                     None
                 };
-                if pull_image(docker, &p.image_full).await {
-                    tracing::info!("apply_policies_background: Pull OK, restart '{}'", p.name);
-                    let _ = docker
+                if pull_image(docker, &p.image_full, pull_timeout).await {
+                    tracing::info!(
+                        "apply_policies_background: Pull OK, reiniciando contenedor '{}' (cid: {})",
+                        p.name,
+                        p.cid
+                    );
+                    let _ = update_tx.send(UpdateProgress {
+                        container: p.name.clone(),
+                        status: "🔄 reiniciando contenedor...".into(),
+                        done: false,
+                        error: None,
+                    });
+                    match docker
                         .restart_container(&p.cid, None::<RestartContainerOptions>)
-                        .await;
-                    if policy.rollback_on_failure
-                        && !verify_container_healthy(docker, &p.name).await
+                        .await
                     {
-                        tracing::warn!("apply_policies_background: rollback '{}'", p.name);
-                        if let Some((backup_full, base, orig_tag)) = backup {
-                            rollback_container(
-                                docker,
-                                &p.cid,
-                                &base,
-                                &orig_tag,
-                                &backup_full,
-                                &p.image_full,
-                            )
-                            .await;
+                        Ok(_) => {
+                            tracing::info!(
+                                "apply_policies_background: contenedor '{}' reiniciado correctamente",
+                                p.name
+                            );
+                            if policy.rollback_on_failure
+                                && !verify_container_healthy(docker, &p.name).await
+                            {
+                                tracing::warn!("apply_policies_background: rollback '{}'", p.name);
+                                if let Some((backup_full, base, orig_tag)) = backup {
+                                    rollback_container(
+                                        docker,
+                                        &p.cid,
+                                        &base,
+                                        &orig_tag,
+                                        &backup_full,
+                                        &p.image_full,
+                                    )
+                                    .await;
+                                }
+                                let _ = update_tx.send(UpdateProgress {
+                                    container: p.name.clone(),
+                                    status: "⚠️ rollback aplicado".into(),
+                                    done: true,
+                                    error: Some("container no healthy".into()),
+                                });
+                            } else {
+                                let _ = update_tx.send(UpdateProgress {
+                                    container: p.name.clone(),
+                                    status: "✅ actualizado + reiniciado".into(),
+                                    done: true,
+                                    error: None,
+                                });
+                                success = true;
+                            }
                         }
-                        let _ = update_tx.send(UpdateProgress {
-                            container: p.name.clone(),
-                            status: "⚠️ rollback aplicado".into(),
-                            done: true,
-                            error: Some("container no healthy".into()),
-                        });
-                    } else {
-                        let _ = update_tx.send(UpdateProgress {
-                            container: p.name.clone(),
-                            status: "✅ actualizado + reiniciado".into(),
-                            done: true,
-                            error: None,
-                        });
-                        success = true;
+                        Err(e) => {
+                            tracing::error!(
+                                "apply_policies_background: error al reiniciar '{}': {}",
+                                p.name,
+                                e
+                            );
+                            let _ = update_tx.send(UpdateProgress {
+                                container: p.name.clone(),
+                                status: "❌ error al reiniciar".into(),
+                                done: true,
+                                error: Some(e.to_string()),
+                            });
+                            let entry = UpdateHistoryEntry {
+                                container: p.name.clone(),
+                                image: p.image_full.clone(),
+                                old_digest: p.image_id.clone(),
+                                new_digest: String::new(),
+                                timestamp: crate::timezone::now_formatted(),
+                                status: "apply-policy-restart-error".into(),
+                                duration_ms: start_time.elapsed().as_millis() as u64,
+                            };
+                            let mut hist = update_history.lock().await;
+                            hist.push(entry);
+                            let conn = db_pool.get().await.unwrap();
+                            let _ = db::append_update_history(
+                                &conn.lock().unwrap(),
+                                hist.last().unwrap(),
+                            );
+                        }
                     }
                 } else {
                     tracing::error!("apply_policies_background: Pull FALLÓ '{}'", p.name);
@@ -692,7 +778,11 @@ async fn apply_policies_background(
                 if let Some(ref project) = p.compose_project {
                     let compose_file = resolve_compose_file(docker, project).await;
                     if let Some(ref file) = compose_file {
-                        tracing::info!("apply_policies_background: PullRestartStack '{}'", p.name);
+                        tracing::info!(
+                            "apply_policies_background: PullRestartStack '{}' (proyecto: {})",
+                            p.name,
+                            project
+                        );
                         let _ = update_tx.send(UpdateProgress {
                             container: p.name.clone(),
                             status: format!("📥 Pulling stack '{}'...", project),
@@ -705,6 +795,10 @@ async fn apply_policies_background(
                             .await;
                         match pull {
                             Ok(output) if output.status.success() => {
+                                tracing::info!(
+                                    "apply_policies_background: Pull stack OK, recreando '{}'",
+                                    project
+                                );
                                 let _ = tokio::process::Command::new("docker")
                                     .args(["compose", "-f", file, "up", "-d"])
                                     .output()
@@ -719,6 +813,11 @@ async fn apply_policies_background(
                             }
                             Ok(output) => {
                                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                tracing::error!(
+                                    "apply_policies_background: Pull stack FALLÓ '{}': {}",
+                                    project,
+                                    stderr
+                                );
                                 let _ = update_tx.send(UpdateProgress {
                                     container: p.name.clone(),
                                     status: "❌ pull falló".into(),
@@ -727,6 +826,10 @@ async fn apply_policies_background(
                                 });
                             }
                             Err(e) => {
+                                tracing::error!(
+                                    "apply_policies_background: error al ejecutar docker compose: {}",
+                                    e
+                                );
                                 let _ = update_tx.send(UpdateProgress {
                                     container: p.name.clone(),
                                     status: "❌ error".into(),
@@ -736,6 +839,10 @@ async fn apply_policies_background(
                             }
                         }
                     } else {
+                        tracing::error!(
+                            "apply_policies_background: compose file no encontrado para '{}'",
+                            project
+                        );
                         let _ = update_tx.send(UpdateProgress {
                             container: p.name.clone(),
                             status: "❌ compose file no encontrado".into(),
@@ -788,11 +895,16 @@ async fn apply_policies_background(
             let conn = db_pool.get().await.unwrap();
             let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
 
+            any_success = true;
+
             // Limpiar imágenes dangling si la política lo indica
             if policy.cleanup_old_image {
-                let _ = docker
-                    .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
-                    .await;
+                tracing::info!(
+                    "apply_policies_background: policy.cleanup_old_image=true, haciendo prune de imágenes dangling para '{}'",
+                    p.name
+                );
+                let result = prune_dangling_images(docker).await;
+                log_prune_result("policy.cleanup_old_image", &result);
             }
         } else {
             tracing::warn!(
@@ -803,10 +915,56 @@ async fn apply_policies_background(
     }
 
     // Safety net: limpiar dangling images que hayan podido quedar
-    tracing::info!("apply_policies_background: completado, prune imágenes dangling");
-    let _ = docker
-        .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
-        .await;
+    tracing::info!("apply_policies_background: completado, iniciando prune de imágenes dangling");
+    let result = prune_dangling_images(docker).await;
+    log_prune_result("safety-net", &result);
+
+    // Enviar StateEvent para que el frontend refresque inmediatamente
+    if any_success {
+        tracing::info!("apply_policies_background: enviando StateEvent para refrescar frontend");
+        let containers = fetch_containers(docker, &None, db_pool).await;
+        let _ = tx.send(StateEvent {
+            containers,
+        });
+    }
+}
+
+/// Prune dangling images (no tag, no container reference)
+pub(crate) async fn prune_dangling_images(docker: &Docker) -> Result<ImagePruneResponse, bollard::errors::Error> {
+    let mut filters = HashMap::new();
+    filters.insert("dangling", vec!["true"]);
+    let opts = PruneImagesOptions { filters };
+    docker.prune_images(Some(opts)).await
+}
+
+/// Log the result of a prune operation
+pub(crate) fn log_prune_result(context: &str, result: &Result<ImagePruneResponse, bollard::errors::Error>) {
+    match result {
+        Ok(resp) => {
+            let deleted_count = resp
+                .images_deleted
+                .as_ref()
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let reclaimed = resp.space_reclaimed.unwrap_or(0);
+            if deleted_count > 0 {
+                tracing::info!(
+                    "prune_images [{}]: {} imágenes eliminadas, {} bytes liberados",
+                    context,
+                    deleted_count,
+                    reclaimed
+                );
+            } else {
+                tracing::info!(
+                    "prune_images [{}]: no hay imágenes dangling para eliminar",
+                    context
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!("prune_images [{}]: error: {}", context, e);
+        }
+    }
 }
 
 /// Verify a container is running after a restart
