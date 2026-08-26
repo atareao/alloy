@@ -1,4 +1,15 @@
 # Changelog
+## [0.20.3] - 2026-08-26
+
+### Bug Fixes
+
+- *(admin)* Use notify_events from request body on policy update
+- *(admin)* Use notify_events from request body on policy update
+## [0.20.2] - 2026-08-26
+
+### Miscellaneous Tasks
+
+- Release v0.20.2
 ## [0.20.1] - 2026-08-26
 
 ### Features
