@@ -53,17 +53,47 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
     setConfirmClear(false);
   };
 
-  const statusColor = (status: string) => {
-    switch (status) {
-      case "success":
-        return "green";
-      case "failed":
-        return "red";
-      case "skipped":
-        return "yellow";
-      default:
-        return "gray";
+  const isSuccess = (status: string) => {
+    const s = status.toLowerCase();
+    if (
+      s === "success" ||
+      s === "ok" ||
+      s === "done" ||
+      s.startsWith("✅") ||
+      s.startsWith("✔️") ||
+      s.startsWith("🤖 auto-updated") ||
+      s.includes("actualizado") ||
+      s.includes("descargado") ||
+      s.includes("pulled") ||
+      s.includes("ya actualizado") ||
+      s.includes("updated")
+    ) {
+      return true;
     }
+    if (
+      s === "failed" ||
+      s === "error" ||
+      s.startsWith("❌") ||
+      s.includes("error") ||
+      s.includes("falló") ||
+      s.includes("err")
+    ) {
+      return false;
+    }
+    return false;
+  };
+
+  const statusColor = (status: string) => {
+    const s = status.toLowerCase();
+    if (s === "skipped") return "yellow";
+    return isSuccess(status) ? "green" : "red";
+  };
+
+  const statusBg = (status: string) => {
+    if (status.toLowerCase() === "skipped") return undefined;
+    return isSuccess(status)
+      ? "var(--mantine-color-green-light)"
+      : "var(--mantine-color-red-light)";
   };
 
   const formatDuration = (ms: number) => {
@@ -87,7 +117,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
 
   // ── Mobile card ─────────────────────────────────────────────
   const renderMobileCard = (entry: HistoryEntry, i: number) => (
-    <Paper key={i} shadow="sm" p="sm" withBorder>
+    <Paper key={i} shadow="sm" p="sm" withBorder style={entry.status.toLowerCase() !== "skipped" ? { background: statusBg(entry.status) } : undefined}>
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">
           <Text size="sm" fw={500} truncate flex="1">
@@ -206,7 +236,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
               </Table.Thead>
               <Table.Tbody>
                 {history.map((entry, i) => (
-                  <Table.Tr key={i}>
+                  <Table.Tr key={i} style={entry.status.toLowerCase() !== "skipped" ? { background: statusBg(entry.status) } : undefined}>
                     <Table.Td>
                       <Text size="sm" fw={500}>
                         {entry.container}
