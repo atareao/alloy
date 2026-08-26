@@ -316,6 +316,7 @@ pub fn strip_name(name: &str) -> String {
 /// Extract the tag portion from a full image reference.
 /// Returns `("paradedb/paradedb", "latest")` for `"paradedb/paradedb:latest"`.
 /// Returns `("alpine", "latest")` for `"alpine"` (no tag, defaults to latest).
+#[allow(dead_code)]
 pub fn parse_image_tag(image: &str) -> (String, String) {
     if let Some(pos) = image.rfind('@') {
         (image[..pos].to_string(), "digest".to_string())
@@ -336,6 +337,7 @@ pub fn parse_image_tag(image: &str) -> (String, String) {
 
 /// Return the current platform string in Docker format: `os/arch`.
 /// Maps Rust architecture names to Docker convention.
+#[allow(dead_code)]
 pub fn current_platform() -> String {
     let arch = match std::env::consts::ARCH {
         "x86_64" => "amd64",

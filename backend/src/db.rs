@@ -721,9 +721,11 @@ mod tests {
     #[test]
     fn test_settings_save_load() {
         let conn = test_conn();
-        let mut settings = Settings::default();
-        settings.telegram_token = Some("bot123".into());
-        settings.telegram_chat_id = Some("chat456".into());
+        let settings = Settings {
+            telegram_token: Some("bot123".into()),
+            telegram_chat_id: Some("chat456".into()),
+            ..Default::default()
+        };
         save_settings(&conn, &settings).unwrap();
         let loaded = load_settings(&conn).unwrap();
         assert_eq!(loaded.telegram_token.as_deref(), Some("bot123"));

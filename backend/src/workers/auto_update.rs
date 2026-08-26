@@ -56,15 +56,7 @@ pub async fn auto_update_worker(
         };
 
         for (name, image, cid, image_id) in docker_list_running(&docker).await {
-            let (repo, local_tag) = if let Some(pos) = image.rfind('@') {
-                (image[..pos].to_string(), "digest".to_string())
-            } else if let Some(pos) = image.rfind(':') {
-                (image[..pos].to_string(), image[pos + 1..].to_string())
-            } else {
-                (image.clone(), "latest".to_string())
-            };
-
-            let should_update = match crate::updates::check_remote_digest(&repo, &local_tag).await {
+            let should_update = match crate::updates::digest::check_remote_digest(&image).await {
                 Ok((remote_digest, _)) => {
                     let has_update = image_id.as_ref().is_none_or(|local_digest| {
                         let local_short = local_digest
@@ -85,7 +77,14 @@ pub async fn auto_update_worker(
                     });
                     has_update
                 }
-                Err(_) => true,
+                Err(e) => {
+                    tracing::warn!(
+                        "auto_update [{}]: error verificando digest remoto: {}, NO se hará pull",
+                        name,
+                        e
+                    );
+                    false
+                }
             };
 
             if !should_update {
