@@ -528,7 +528,13 @@ pub async fn check_all_h(
                     .map(|n| strip_name(n) == c.name.as_str())
                     .unwrap_or(false)
             })?;
-            let image_full = raw.image.as_deref()?.to_string();
+            // Use the resolved image from ContainerInfo (handles sha256: pinned images)
+            // instead of raw.image from bollard, which may be just a bare digest.
+            let image_full = if c.image_tag.is_empty() {
+                c.image.clone()
+            } else {
+                format!("{}:{}", c.image, c.image_tag)
+            };
             let cid = raw.id.as_deref()?.to_string();
             let image_id = raw.image_id.as_deref().unwrap_or("").to_string();
             let compose_project = raw

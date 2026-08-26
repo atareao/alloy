@@ -10,6 +10,7 @@ import {
   Table,
   Text,
   Divider,
+  Tooltip,
 } from "@mantine/core";
 import { apiFetch } from "./api";
 
@@ -236,16 +237,18 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
               </Table.Thead>
               <Table.Tbody>
                 {history.map((entry, i) => (
-                  <Table.Tr key={i} style={entry.status.toLowerCase() !== "skipped" ? { background: statusBg(entry.status) } : undefined}>
+                  <Table.Tr key={i}>
                     <Table.Td>
                       <Text size="sm" fw={500}>
                         {entry.container}
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text size="xs" c="dimmed">
-                        {entry.image}
-                      </Text>
+                      <Tooltip label={entry.image}>
+                        <Text size="xs" c="dimmed" truncate maw={250}>
+                          {entry.image}
+                        </Text>
+                      </Tooltip>
                     </Table.Td>
                     <Table.Td>
                       <Text
