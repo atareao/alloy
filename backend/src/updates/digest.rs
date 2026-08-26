@@ -71,12 +71,27 @@ pub async fn check_remote_digest(repo: &str, tag: &str) -> Result<(String, Strin
             let manifests = body["manifests"]
                 .as_array()
                 .ok_or_else(|| "no manifests in list".to_string())?;
+            // Use current platform from the system, falling back to amd64/linux
+            let platform = crate::models::current_platform();
+            let parts: Vec<&str> = platform.split('/').collect();
+            let (os, arch) = if parts.len() == 2 {
+                (parts[0], parts[1])
+            } else {
+                ("linux", "amd64")
+            };
             let amd64_digest = manifests
                 .iter()
                 .find(|m| {
                     let plat = &m["platform"];
-                    plat["architecture"].as_str() == Some("amd64")
-                        && plat["os"].as_str() == Some("linux")
+                    plat["architecture"].as_str() == Some(arch) && plat["os"].as_str() == Some(os)
+                })
+                .or_else(|| {
+                    // Fallback: any amd64/linux if current platform not found
+                    manifests.iter().find(|m| {
+                        let plat = &m["platform"];
+                        plat["architecture"].as_str() == Some("amd64")
+                            && plat["os"].as_str() == Some("linux")
+                    })
                 })
                 .or_else(|| manifests.first())
                 .and_then(|m| m["digest"].as_str())
