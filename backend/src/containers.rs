@@ -11,7 +11,7 @@ use bollard::{
         RemoveContainerOptions, RestartContainerOptions, StartContainerOptions,
         StopContainerOptions,
     },
-    image::CreateImageOptions,
+    image::{CreateImageOptions, RemoveImageOptions},
     Docker,
 };
 use futures::{pin_mut, StreamExt};
@@ -271,6 +271,39 @@ pub async fn fetch_containers(
             })
         })
         .collect()
+}
+
+/// Remove an old image by its digest/ID after a successful update.
+/// Only succeeds if no container is still using the image.
+pub async fn remove_old_image(docker: &Docker, old_image_id: &str) {
+    if old_image_id.is_empty() {
+        return;
+    }
+    match docker
+        .remove_image(
+            old_image_id,
+            Some(RemoveImageOptions {
+                force: false,
+                noprune: false,
+            }),
+            None,
+        )
+        .await
+    {
+        Ok(_) => {
+            tracing::info!(
+                "remove_old_image: imagen antigua {} eliminada",
+                crate::updates::digest::short_digest(old_image_id)
+            );
+        }
+        Err(e) => {
+            tracing::debug!(
+                "remove_old_image: no se pudo eliminar {} (en uso?): {}",
+                crate::updates::digest::short_digest(old_image_id),
+                e
+            );
+        }
+    }
 }
 
 pub async fn pull_image(docker: &Docker, image: &str, timeout_secs: u64) -> bool {
