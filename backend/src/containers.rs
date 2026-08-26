@@ -333,11 +333,7 @@ pub async fn pull_image(docker: &Docker, image: &str, timeout_secs: u64) -> bool
     let timed = tokio::time::timeout(timeout_dur, async {
         while let Some(item) = stream.next().await {
             if let Err(e) = item {
-                tracing::error!(
-                    "pull_image: error de Bollard para '{}': {}",
-                    image,
-                    e
-                );
+                tracing::error!("pull_image: error de Bollard para '{}': {}", image, e);
                 return false;
             }
         }

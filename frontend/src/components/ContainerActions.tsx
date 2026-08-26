@@ -7,6 +7,7 @@ import {
   Text,
 } from "@mantine/core";
 import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
+import { apiFetch } from "../api";
 import PolicyActionButton from "./PolicyActionButton";
 
 interface ContainerActionsProps {
@@ -215,6 +216,39 @@ export default function ContainerActions({
           label="Notificar eventos"
           checked={getPolicy(c.name)?.notify_events ?? true}
           disabled={busy}
+          onChange={async () => {
+            const current = getPolicy(c.name);
+            const newVal = !(current?.notify_events ?? true);
+            try {
+              const res = await apiFetch(
+                `/api/update-policies/${encodeURIComponent(c.name)}`,
+                {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    action: current?.action || "pull-restart",
+                    cleanup_old_image: current?.cleanup_old_image || false,
+                    rollback_on_failure: current?.rollback_on_failure || false,
+                    notify_events: newVal,
+                  }),
+                },
+              );
+              if (res.ok) {
+                const updated: UpdatePolicy = await res.json();
+                setPolicies((prev) => {
+                  const next = prev.filter((p) => p.container !== c.name);
+                  next.push(updated);
+                  return next;
+                });
+                showToast(
+                  `🔔 Notificaciones ${newVal ? "activadas" : "desactivadas"} para ${c.name}`,
+                  newVal ? "green" : "gray",
+                );
+              }
+            } catch {
+              showToast(`🔔 Error al cambiar notificaciones`, "red");
+            }
+          }}
         />
       </Group>
       {p && (
