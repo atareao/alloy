@@ -273,17 +273,31 @@ pub async fn fetch_containers(
         .collect()
 }
 
-pub async fn pull_image(docker: &Docker, image: &str) -> bool {
+pub async fn pull_image(docker: &Docker, image: &str, timeout_secs: u64) -> bool {
+    // Extract tag explicitly to prevent pulling ALL tags when tag is empty.
+    // Bollard docs: "If empty when pulling an image, this causes all tags
+    // for the given image to be pulled."
+    let (_, tag) = crate::models::parse_image_tag(image);
+    let platform = crate::models::current_platform();
+    tracing::info!(
+        "pull_image: descargando imagen '{}' (tag: {:?}, timeout: {}s)",
+        image,
+        tag,
+        timeout_secs
+    );
     let stream = docker.create_image(
         Some(CreateImageOptions {
-            from_image: image,
+            from_image: image.to_string(),
+            tag,
+            platform,
             ..Default::default()
         }),
         None,
         None,
     );
     pin_mut!(stream);
-    let timed = tokio::time::timeout(std::time::Duration::from_secs(600), async {
+    let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+    let timed = tokio::time::timeout(timeout_dur, async {
         while let Some(item) = stream.next().await {
             if item.is_err() {
                 return false;
@@ -292,9 +306,20 @@ pub async fn pull_image(docker: &Docker, image: &str) -> bool {
         true
     });
     match timed.await {
-        Ok(result) => result,
+        Ok(result) => {
+            if result {
+                tracing::info!("pull_image: descarga completada para '{}'", image);
+            } else {
+                tracing::error!("pull_image: error durante la descarga de '{}'", image);
+            }
+            result
+        }
         Err(_) => {
-            tracing::error!("pull_image: timeout después de 600s para '{}'", image);
+            tracing::error!(
+                "pull_image: timeout después de {}s para '{}'",
+                timeout_secs,
+                image
+            );
             false
         }
     }

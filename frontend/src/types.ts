@@ -113,6 +113,7 @@ export interface UpdateCheckConfig {
   notify: boolean;
   last_run_at: string | null;
   next_run_at: string | null;
+  pull_timeout_secs?: number | null;
 }
 
 export interface DefaultUpdatePolicy {

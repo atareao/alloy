@@ -1,4 +1,8 @@
-use bollard::{container::RestartContainerOptions, Docker};
+use bollard::{
+    container::RestartContainerOptions,
+    image::PruneImagesOptions,
+    Docker,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +13,7 @@ use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
+use crate::updates::handlers::{log_prune_result, prune_dangling_images};
 use crate::workers::state::docker_list_running;
 
 /// Auto-update worker: periodic pull + restart según políticas
@@ -101,7 +106,18 @@ pub async fn auto_update_worker(
             }
 
             let start_time = std::time::Instant::now();
-            if !pull_image(&docker, &image).await {
+            let pull_timeout = {
+                let s = settings.lock().await;
+                s.pull_timeout_secs.unwrap_or(600)
+            };
+            tracing::info!(
+                "auto_update: descargando '{}' (imagen: {}, timeout: {}s)",
+                name,
+                image,
+                pull_timeout
+            );
+            if !pull_image(&docker, &image, pull_timeout).await {
+                tracing::error!("auto_update: pull FALLÓ para '{}'", name);
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
                     image: image.clone(),
@@ -117,11 +133,13 @@ pub async fn auto_update_worker(
                 let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
                 continue;
             }
+            tracing::info!("auto_update: pull OK para '{}', reiniciando...", name);
             match docker
                 .restart_container(&cid, None::<RestartContainerOptions>)
                 .await
             {
                 Ok(_) => {
+                    tracing::info!("auto_update: contenedor '{}' reiniciado correctamente", name);
                     let _ = notif_tx.send(NotifEvent {
                         container: name.clone(),
                         status: "🤖 auto-updated".into(),
@@ -166,9 +184,9 @@ pub async fn auto_update_worker(
 
             // Limpiar imágenes viejas si la política lo indica
             if policy.cleanup_old_image {
-                let _ = docker
-                    .prune_images(None::<bollard::image::PruneImagesOptions<&str>>)
-                    .await;
+                tracing::info!("auto_update: policy.cleanup_old_image=true, pruneando imágenes dangling para '{}'", name);
+                let result = prune_dangling_images(&docker).await;
+                log_prune_result("auto_update", &result);
             }
         }
     }
