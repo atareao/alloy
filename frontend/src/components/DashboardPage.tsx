@@ -34,6 +34,7 @@ interface DashboardPageProps {
   setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
   progress: Map<string, UpdateProgress>;
   containersLoaded: boolean;
+  clearProgress: () => void;
 }
 
 // ── Types ────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ export default function DashboardPage({
   containers,
   setContainers,
   progress,
+  clearProgress,
 }: DashboardPageProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
 
@@ -346,6 +348,7 @@ export default function DashboardPage({
 
   const checkAll = async () => {
     cancelBatchRef.current = false;
+    clearProgress();
     setBatchPhase("checking");
     setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [] });
     setUpdateResults({ total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [] });

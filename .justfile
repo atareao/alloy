@@ -11,6 +11,7 @@ check:
 user     := "atareao"
 name     := "alloy"
 version  := `vampus show`
+registry := "registry.territoriolinux.es"
 
 
 list:
@@ -27,12 +28,12 @@ fmt-fix:
 
 build:
     @podman build \
-        --tag={{user}}/{{name}}:{{version}} \
-        --tag={{user}}/{{name}}:latest .
+        --tag={{registry}}/{{user}}/{{name}}:{{version}} \
+        --tag={{registry}}/{{user}}/{{name}}:latest .
 
 push:
-    @podman image push --authfile ~/.podman-auth.json {{user}}/{{name}}:{{version}}
-    @podman image push --authfile ~/.podman-auth.json {{user}}/{{name}}:latest
+    @podman image push {{registry}}/{{user}}/{{name}}:{{version}}
+    @podman image push {{registry}}/{{user}}/{{name}}:latest
 
 # ═══════════════════════════════════════════════════════════════
 # GitFlow recipes
