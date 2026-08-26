@@ -94,7 +94,7 @@ async fn put_update_policy_h(
         action: body.action,
         cleanup_old_image: body.cleanup_old_image,
         rollback_on_failure: body.rollback_on_failure,
-        notify_events: false,
+        notify_events: body.notify_events,
     };
     {
         let mut list = policies.lock().await;
@@ -102,6 +102,7 @@ async fn put_update_policy_h(
             existing.action = policy.action.clone();
             existing.cleanup_old_image = policy.cleanup_old_image;
             existing.rollback_on_failure = policy.rollback_on_failure;
+            existing.notify_events = policy.notify_events;
         } else {
             list.push(policy.clone());
         }
