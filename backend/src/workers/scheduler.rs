@@ -1,5 +1,5 @@
 use bollard::{
-    container::{ListContainersOptions, RestartContainerOptions},
+    container::{InspectContainerOptions, ListContainersOptions, RestartContainerOptions},
     Docker,
 };
 use chrono::Timelike;
@@ -12,8 +12,8 @@ use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
-use crate::updates::handlers::{log_prune_result, prune_dangling_images};
 use crate::updates::digest::check_remote_digest;
+use crate::updates::handlers::{log_prune_result, prune_dangling_images};
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
 /// Revisa todas las imágenes, marca las que tienen actualización pendiente en DB,
@@ -72,6 +72,28 @@ pub async fn update_check_worker(
             .await
             .unwrap_or_default();
 
+        // Pre-resolve: bare digest images (sha256:...) only carry the digest
+        // in `image`; inspect each container to recover the real image ref.
+        let mut resolved_images: HashMap<String, String> = HashMap::new();
+        for c in &containers {
+            let image = c.image.as_deref().unwrap_or("");
+            if image.starts_with("sha256:") {
+                if let Some(cid) = &c.id {
+                    if let Ok(inspect) = docker
+                        .inspect_container(cid, None::<InspectContainerOptions>)
+                        .await
+                    {
+                        let real = inspect
+                            .config
+                            .as_ref()
+                            .and_then(|cfg| cfg.image.as_deref())
+                            .unwrap_or("");
+                        resolved_images.insert(cid.clone(), real.to_string());
+                    }
+                }
+            }
+        }
+
         // 2. Revisar cada contenedor para detectar actualizaciones
         let tasks: Vec<_> = containers
             .iter()
@@ -82,15 +104,23 @@ pub async fn update_check_worker(
                     .and_then(|n| n.first())
                     .map(|n| crate::models::strip_name(n))
                     .unwrap_or_default();
-                let image_full = c.image.as_deref().unwrap_or("").to_string();
+                let raw_image = c.image.as_deref().unwrap_or("");
+                let image_full = if raw_image.starts_with("sha256:") {
+                    c.id.as_ref()
+                        .and_then(|cid| resolved_images.get(cid))
+                        .map(|s| s.as_str())
+                        .unwrap_or(raw_image)
+                        .to_string()
+                } else {
+                    raw_image.to_string()
+                };
                 let image_id = c.image_id.clone().unwrap_or_default();
                 let cid = c.id.clone().unwrap_or_default();
                 async move {
                     if image_full.is_empty() {
                         return (name, false, image_full, cid, String::new(), String::new());
                     }
-                    let (repo, local_tag) = crate::updates::digest::parse_image_ref(&image_full);
-                    match check_remote_digest(&repo, &local_tag).await {
+                    match check_remote_digest(&image_full).await {
                         Ok((remote_digest, _)) => {
                             let has_update = if !image_id.is_empty() {
                                 let local_short = crate::updates::digest::short_digest(&image_id);

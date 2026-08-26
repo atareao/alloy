@@ -199,7 +199,8 @@ async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Json<serde
         .ok()
         .map(|d| {
             let now = Utc::now().timestamp() as usize;
-            let idle_remaining = (idle_timeout_secs as usize).saturating_sub(now - d.claims.last_active);
+            let idle_remaining =
+                (idle_timeout_secs as usize).saturating_sub(now - d.claims.last_active);
             let session_remaining = (max_duration_secs as usize).saturating_sub(now - d.claims.iat);
             json!({
                 "authenticated": true,
@@ -296,11 +297,10 @@ pub async fn auth_middleware(
         .get::<String>()
         .cloned()
         .unwrap_or_default();
-    let config = req
-        .extensions()
-        .get::<Config>()
-        .cloned()
-        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "Config not found").into_response())?;
+    let config =
+        req.extensions().get::<Config>().cloned().ok_or_else(|| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Config not found").into_response()
+        })?;
 
     let idle_timeout_secs = config.session_idle_timeout_minutes() * 60;
     let max_duration_secs = config.session_max_duration_hours() * 3600;
@@ -326,7 +326,10 @@ pub async fn auth_middleware(
                 session_elapsed,
                 max_duration_secs
             );
-            return Err(Box::new(unauthorized_json(true, "Session expired: maximum duration reached. Please log in again.")));
+            return Err(Box::new(unauthorized_json(
+                true,
+                "Session expired: maximum duration reached. Please log in again.",
+            )));
         }
 
         // Check idle timeout
@@ -338,7 +341,10 @@ pub async fn auth_middleware(
                 idle_elapsed,
                 idle_timeout_secs
             );
-            return Err(Box::new(unauthorized_json(true, "Session expired: inactivity timeout. Please log in again.")));
+            return Err(Box::new(unauthorized_json(
+                true,
+                "Session expired: inactivity timeout. Please log in again.",
+            )));
         }
 
         Ok(claims)
@@ -377,9 +383,7 @@ pub async fn auth_middleware(
         None::<String>
     };
 
-    let token = token.ok_or_else(|| {
-        unauthorized_json(false, "Not authenticated")
-    })?;
+    let token = token.ok_or_else(|| unauthorized_json(false, "Not authenticated"))?;
 
     let claims = validate(&token).map_err(|e| *e)?;
 
@@ -400,7 +404,9 @@ pub async fn auth_middleware(
             },
             &EncodingKey::from_secret(secret.as_ref()),
         )
-        .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Session refresh failed").into_response())?;
+        .map_err(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "Session refresh failed").into_response()
+        })?;
 
         let cookie = Cookie::build(("session", new_token))
             .path("/")
@@ -409,10 +415,9 @@ pub async fn auth_middleware(
             .max_age(cookie::time::Duration::new(remaining_secs.max(0), 0))
             .build();
 
-        response.headers_mut().insert(
-            header::SET_COOKIE,
-            cookie.to_string().parse().unwrap(),
-        );
+        response
+            .headers_mut()
+            .insert(header::SET_COOKIE, cookie.to_string().parse().unwrap());
     }
 
     Ok(response)

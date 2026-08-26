@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::db as database;
 use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
-use crate::workers::{state_worker, update_check_worker, CachedContainers};
+use crate::workers::{cleanup_worker, state_worker, update_check_worker, CachedContainers};
 
 use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
@@ -195,6 +195,7 @@ async fn main() {
         db_pool.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
+    tokio::spawn(cleanup_worker(docker.clone()));
 
     // Session secret for cookie signing (use client_secret)
     let secret_clone = config.oidc_client_secret().to_string();
