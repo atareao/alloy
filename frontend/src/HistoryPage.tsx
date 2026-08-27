@@ -54,6 +54,14 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
     setConfirmClear(false);
   };
 
+  const formatStatus = (status: string): string => {
+    const map: Record<string, string> = {
+      "update-check-restart": "🔄 update-check",
+      "update-check-pull": "📥 update-check",
+    };
+    return map[status] || status;
+  };
+
   const isSuccess = (status: string) => {
     const s = status.toLowerCase();
     if (
@@ -67,7 +75,8 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
       s.includes("descargado") ||
       s.includes("pulled") ||
       s.includes("ya actualizado") ||
-      s.includes("updated")
+      s.includes("updated") ||
+      s.includes("update-check")
     ) {
       return true;
     }
@@ -125,7 +134,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             {entry.container}
           </Text>
           <Badge size="sm" color={statusColor(entry.status)}>
-            {entry.status}
+            {formatStatus(entry.status)}
           </Badge>
         </Group>
         <Divider />
@@ -270,7 +279,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
                     </Table.Td>
                     <Table.Td>
                       <Badge color={statusColor(entry.status)}>
-                        {entry.status}
+                        {formatStatus(entry.status)}
                       </Badge>
                     </Table.Td>
                     <Table.Td>
