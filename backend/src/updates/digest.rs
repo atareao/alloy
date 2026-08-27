@@ -123,22 +123,34 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
             resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
         }
         other => {
-            // Unknown registry: try an anonymous manifest request first.
-            match resolve_config_digest(client, other, &repo, &tag, None).await {
-                Ok(digest) => digest,
-                Err(e)
-                    if e.starts_with("manifest status: 40")
-                        && (e.contains("401") || e.contains("403")) =>
-                {
-                    // Auth required — fetch a token for this registry and retry.
-                    let token_url = format!(
-                        "https://{}/token?service={}&scope=repository:{}:pull",
-                        other, other, repo
-                    );
-                    let token = fetch_token(client, &token_url, &repo, &tag).await?;
-                    resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
-                }
-                Err(e) => return Err(e),
+            // Unknown registry: probe for auth requirements first.
+            let probe_url = format!(
+                "https://{}/v2/{}/manifests/{}",
+                other, repo, tag
+            );
+            let probe = fetch_manifest(client, &probe_url, None).await?;
+            let status = probe.status();
+
+            if status == 401 || status == 403 {
+                // Parse Www-Authenticate to find the real token endpoint.
+                let auth_header = probe
+                    .headers()
+                    .get("www-authenticate")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let realm = parse_realm(auth_header)
+                    .unwrap_or_else(|| format!("https://{}/token", other));
+                let token_url = format!(
+                    "{}?service={}&scope=repository:{}:pull",
+                    realm, other, repo
+                );
+                let token = fetch_token(client, &token_url, &repo, &tag).await?;
+                resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
+            } else if status.is_success() {
+                // No auth needed — make the actual request (second call, but clean).
+                resolve_config_digest(client, other, &repo, &tag, None).await?
+            } else {
+                return Err(format!("manifest status: {}", status));
             }
         }
     };
@@ -150,6 +162,20 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
         short_digest(&config_digest)
     );
     Ok((config_digest, tag))
+}
+
+/// Parse the realm (token endpoint) from a Www-Authenticate header.
+/// Format: Bearer realm="https://...",service="...",scope="..."
+fn parse_realm(auth_header: &str) -> Option<String> {
+    for part in auth_header.split(',') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("realm=\"") {
+            if let Some(end) = value.rfind('"') {
+                return Some(value[..end].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Obtiene un token Bearer del registry para el scope `repository:{repo}:pull`.
