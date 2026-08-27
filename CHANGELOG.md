@@ -1,4 +1,15 @@
 # Changelog
+## [0.20.6] - 2026-08-27
+
+### Bug Fixes
+
+- *(history)* Add tooltip to status badge showing action details and result
+- History-status-tooltip
+## [0.20.5] - 2026-08-27
+
+### Miscellaneous Tasks
+
+- Release v0.20.5
 ## [0.20.4] - 2026-08-27
 
 ### Bug Fixes
