@@ -1,10 +1,25 @@
 # Changelog
+## [0.20.4] - 2026-08-27
+
+### Bug Fixes
+
+- Parse Www-Authenticate realm for private registries; fix isSuccess for update-check status
+- Update-check-digest-fix
+
+### Miscellaneous Tasks
+
+- Resolve Cargo.lock after main merge
+- Bump version to 0.20.4
 ## [0.20.3] - 2026-08-26
 
 ### Bug Fixes
 
 - *(admin)* Use notify_events from request body on policy update
 - *(admin)* Use notify_events from request body on policy update
+
+### Miscellaneous Tasks
+
+- Release v0.20.3
 ## [0.20.2] - 2026-08-26
 
 ### Miscellaneous Tasks
