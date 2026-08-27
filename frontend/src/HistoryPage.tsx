@@ -106,6 +106,55 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
       : "var(--mantine-color-red-light)";
   };
 
+  const statusTooltipLabel = (entry: HistoryEntry): string => {
+    const parts: string[] = [];
+    const s = entry.status;
+
+    // What action was performed
+    if (s === "success" || s === "✅ success") {
+      parts.push("✅ Actualización completada con éxito");
+    } else if (s === "failed" || s === "❌ failed") {
+      parts.push("❌ La actualización falló");
+    } else if (s.startsWith("update-check-restart")) {
+      parts.push("🔄 Comprobación: reinicio necesario");
+    } else if (s.startsWith("update-check-pull")) {
+      parts.push("📥 Comprobación: nueva imagen disponible");
+    } else if (s.startsWith("🤖 auto-updated")) {
+      parts.push("🤖 Auto-actualizado correctamente");
+    } else if (s.includes("skipped")) {
+      parts.push("⏭️ Actualización omitida");
+    } else if (s.includes("ya actualizado")) {
+      parts.push("✅ Ya estaba actualizado");
+    } else if (s.includes("error") || s.includes("falló")) {
+      parts.push("❌ Error durante la actualización");
+    } else if (s.includes("pulled") || s.includes("descargado")) {
+      parts.push("📥 Imagen descargada");
+    } else if (s.includes("updated")) {
+      parts.push("✅ Actualizado");
+    } else {
+      parts.push(`📋 ${s}`);
+    }
+
+    // Duration
+    parts.push(`⏱️ Duración: ${formatDuration(entry.duration_ms)}`);
+
+    // Digest change (only if they differ)
+    if (
+      entry.old_digest &&
+      entry.new_digest &&
+      entry.old_digest !== entry.new_digest
+    ) {
+      parts.push(
+        `📦 ${shortDigest(entry.old_digest)} → ${shortDigest(entry.new_digest)}`,
+      );
+    }
+
+    // Timestamp
+    parts.push(`🕐 ${formatDate(entry.timestamp)}`);
+
+    return parts.join("\n");
+  };
+
   const formatDuration = (ms: number) => {
     if (ms < 1000) return `${ms}ms`;
     if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
@@ -127,15 +176,33 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
 
   // ── Mobile card ─────────────────────────────────────────────
   const renderMobileCard = (entry: HistoryEntry, i: number) => (
-    <Paper key={i} shadow="sm" p="sm" withBorder style={entry.status.toLowerCase() !== "skipped" ? { background: statusBg(entry.status) } : undefined}>
+    <Paper
+      key={i}
+      shadow="sm"
+      p="sm"
+      withBorder
+      style={
+        entry.status.toLowerCase() !== "skipped"
+          ? { background: statusBg(entry.status) }
+          : undefined
+      }
+    >
       <Stack gap="xs">
         <Group justify="space-between" wrap="nowrap">
           <Text size="sm" fw={500} truncate flex="1">
             {entry.container}
           </Text>
-          <Badge size="sm" color={statusColor(entry.status)}>
-            {formatStatus(entry.status)}
-          </Badge>
+          <Tooltip
+            label={statusTooltipLabel(entry)}
+            multiline
+            w={320}
+            withArrow
+            transitionProps={{ transition: "fade", duration: 200 }}
+          >
+            <Badge size="sm" color={statusColor(entry.status)}>
+              {formatStatus(entry.status)}
+            </Badge>
+          </Tooltip>
         </Group>
         <Divider />
         <Stack gap={2}>
@@ -260,27 +327,30 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
                       </Tooltip>
                     </Table.Td>
                     <Table.Td>
-                      <Text
-                        size="xs"
-                        c="dimmed"
-                        ff="monospace"
-                      >
+                      <Text size="xs" c="dimmed" ff="monospace">
                         {shortDigest(entry.old_digest)}
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Text
-                        size="xs"
-                        c="dimmed"
-                        ff="monospace"
-                      >
+                      <Text size="xs" c="dimmed" ff="monospace">
                         {shortDigest(entry.new_digest)}
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      <Badge color={statusColor(entry.status)}>
-                        {formatStatus(entry.status)}
-                      </Badge>
+                      <Tooltip
+                        label={statusTooltipLabel(entry)}
+                        multiline
+                        w={320}
+                        withArrow
+                        transitionProps={{ transition: "fade", duration: 200 }}
+                      >
+                        <Badge
+                          color={statusColor(entry.status)}
+                          style={{ cursor: "pointer" }}
+                        >
+                          {formatStatus(entry.status)}
+                        </Badge>
+                      </Tooltip>
                     </Table.Td>
                     <Table.Td>
                       <Text size="xs" c="dimmed">
