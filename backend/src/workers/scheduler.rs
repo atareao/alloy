@@ -14,8 +14,8 @@ use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
 use crate::updates::handlers::{
-    log_prune_result, prune_dangling_images, recreate_container,
-    rollback_container, tag_backup_image, verify_container_healthy,
+    log_prune_result, prune_dangling_images, recreate_container, rollback_container,
+    tag_backup_image, verify_container_healthy,
 };
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
@@ -136,8 +136,7 @@ pub async fn update_check_worker(
                 .unwrap_or_default();
             let raw_image = c.image.as_deref().unwrap_or("");
             let image_full = if raw_image.starts_with("sha256:") {
-                c.id
-                    .as_ref()
+                c.id.as_ref()
                     .and_then(|cid| resolved_images.get(cid))
                     .map(|s| s.as_str())
                     .unwrap_or(raw_image)
@@ -154,12 +153,12 @@ pub async fn update_check_worker(
             }
 
             // Check remote digest for this container
-            let (has_update, old_digest, new_digest) = match check_remote_digest(&image_full).await {
+            let (has_update, old_digest, new_digest) = match check_remote_digest(&image_full).await
+            {
                 Ok((remote_digest, _)) => {
                     let has_update = if !image_id.is_empty() {
                         let local_short = crate::updates::digest::short_digest(&image_id);
-                        let remote_short =
-                            crate::updates::digest::short_digest(&remote_digest);
+                        let remote_short = crate::updates::digest::short_digest(&remote_digest);
                         local_short != remote_short
                     } else {
                         false
@@ -264,10 +263,7 @@ pub async fn update_check_worker(
                                 if policy.rollback_on_failure
                                     && !verify_container_healthy(&docker, &name).await
                                 {
-                                    tracing::warn!(
-                                        "update_check: rollback '{}'",
-                                        name
-                                    );
+                                    tracing::warn!("update_check: rollback '{}'", name);
                                     if let Some((backup_full, base, orig_tag)) = backup {
                                         rollback_container(
                                             &docker,
@@ -292,7 +288,12 @@ pub async fn update_check_worker(
                                         timestamp: crate::timezone::now_time_formatted(),
                                     });
                                     if notify {
-                                        notify_all(&settings, &name, "🔄 actualizado vía update-check").await;
+                                        notify_all(
+                                            &settings,
+                                            &name,
+                                            "🔄 actualizado vía update-check",
+                                        )
+                                        .await;
                                     }
                                     let _ = sqlite_update_has_update(&db_pool, &name, false).await;
                                     // Guardar remote digest para evitar re-detección en el siguiente ciclo

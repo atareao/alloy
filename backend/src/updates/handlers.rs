@@ -81,15 +81,25 @@ pub(crate) async fn recreate_container(
     {
         // If start fails, attempt rollback: remove the new container,
         // restore backup name, restart old container
-        tracing::warn!("recreate_container: start failed for '{}', attempting rollback: {}", name, e);
-        let _ = docker.remove_container(name, None::<RemoveContainerOptions>).await;
-        let _ = docker.rename_container(
-            &backup_name,
-            RenameContainerOptions {
-                name: name.to_string(),
-            },
-        ).await;
-        let _ = docker.start_container::<String>(name, None::<StartContainerOptions<String>>).await;
+        tracing::warn!(
+            "recreate_container: start failed for '{}', attempting rollback: {}",
+            name,
+            e
+        );
+        let _ = docker
+            .remove_container(name, None::<RemoveContainerOptions>)
+            .await;
+        let _ = docker
+            .rename_container(
+                &backup_name,
+                RenameContainerOptions {
+                    name: name.to_string(),
+                },
+            )
+            .await;
+        let _ = docker
+            .start_container::<String>(name, None::<StartContainerOptions<String>>)
+            .await;
         return Err(format!("start failed, rollback attempted: {}", e));
     }
 
@@ -210,8 +220,7 @@ pub async fn update_container_h(
         done: false,
         error: None,
     });
-    match recreate_container(&docker, &name, cid, image).await
-    {
+    match recreate_container(&docker, &name, cid, image).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
             let _ = update_tx.send(UpdateProgress {
@@ -357,13 +366,9 @@ pub async fn update_all_h(
             continue;
         }
         tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
-        match recreate_container(&docker, &name, &cid, &image).await
-        {
+        match recreate_container(&docker, &name, &cid, &image).await {
             Ok(_) => {
-                tracing::info!(
-                    "update_all_h: contenedor '{}' recreado correctamente",
-                    name
-                );
+                tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
                 let ts = crate::timezone::now_time_formatted();
                 let _ = notif_tx.send(NotifEvent {
                     container: name.clone(),
@@ -510,7 +515,10 @@ async fn check_and_apply_all(
         }))
         .await
         .unwrap_or_default();
-    tracing::info!("check_and_apply_all: verificando {} contenedores", containers.len());
+    tracing::info!(
+        "check_and_apply_all: verificando {} contenedores",
+        containers.len()
+    );
 
     let check_interval = {
         let s = settings.lock().await;
@@ -521,7 +529,8 @@ async fn check_and_apply_all(
     let raw_map: HashMap<String, (&bollard::models::ContainerSummary, String)> = raw_containers
         .iter()
         .filter_map(|ct| {
-            let name = ct.names
+            let name = ct
+                .names
                 .as_ref()
                 .and_then(|n| n.first())
                 .map(|n| crate::models::strip_name(n))?;
@@ -550,12 +559,19 @@ async fn check_and_apply_all(
         let (raw, image_id) = match raw_map.get(name.as_str()) {
             Some((ct, id)) => (*ct, id.clone()),
             None => {
-                tracing::warn!("check_and_apply_all [{}]: no encontrado en raw_containers, omitiendo", name);
+                tracing::warn!(
+                    "check_and_apply_all [{}]: no encontrado en raw_containers, omitiendo",
+                    name
+                );
                 continue;
             }
         };
 
-        tracing::info!("check_and_apply_all [{}]: verificando imagen {}", name, image_full);
+        tracing::info!(
+            "check_and_apply_all [{}]: verificando imagen {}",
+            name,
+            image_full
+        );
 
         match check_remote_digest(&image_full).await {
             Ok((remote_digest, _)) => {
@@ -574,8 +590,15 @@ async fn check_and_apply_all(
 
                 tracing::info!(
                     "check_and_apply_all [{}]: local={} remote={} has_update={} (using={})",
-                    name, local_short, remote_short, has_update,
-                    if !last_remote_digest.is_empty() { "last_remote_digest" } else { "image_id" }
+                    name,
+                    local_short,
+                    remote_short,
+                    has_update,
+                    if !last_remote_digest.is_empty() {
+                        "last_remote_digest"
+                    } else {
+                        "image_id"
+                    }
                 );
 
                 // Update has_update in container and DB
@@ -584,10 +607,20 @@ async fn check_and_apply_all(
                     let conn = db_pool.get().await.unwrap();
                     let conn_lock = conn.lock().unwrap();
                     if let Err(e) = db::update_container_has_update(&conn_lock, &name, has_update) {
-                        tracing::error!("check_and_apply_all: error updating has_update for '{}': {}", name, e);
+                        tracing::error!(
+                            "check_and_apply_all: error updating has_update for '{}': {}",
+                            name,
+                            e
+                        );
                     }
-                    if let Err(e) = db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest) {
-                        tracing::error!("check_and_apply_all: error storing last_remote_digest for '{}': {}", name, e);
+                    if let Err(e) =
+                        db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest)
+                    {
+                        tracing::error!(
+                            "check_and_apply_all: error storing last_remote_digest for '{}': {}",
+                            name,
+                            e
+                        );
                     }
                     drop(conn_lock);
                 }
@@ -595,7 +628,8 @@ async fn check_and_apply_all(
                 // If has_update and running → apply policy inline
                 if has_update && c.state == "running" {
                     let cid = raw.id.as_deref().unwrap_or("").to_string();
-                    let compose_project = raw.labels
+                    let compose_project = raw
+                        .labels
                         .as_ref()
                         .and_then(|l| l.get(crate::models::LABEL_COMPOSE_PROJECT))
                         .cloned();
@@ -616,7 +650,9 @@ async fn check_and_apply_all(
                     let (default_action, default_cleanup, default_rollback) = {
                         let s = settings.lock().await;
                         (
-                            s.default_update_action.clone().unwrap_or_else(|| "pull-restart".into()),
+                            s.default_update_action
+                                .clone()
+                                .unwrap_or_else(|| "pull-restart".into()),
                             s.default_cleanup_old_image.unwrap_or(false),
                             s.default_rollback_on_failure.unwrap_or(false),
                         )
@@ -629,21 +665,44 @@ async fn check_and_apply_all(
                         notify_events: false,
                     });
                     apply_single_policy(
-                        docker, settings, update_tx, notif_tx, update_history,
-                        db_pool, tx, &pending, &policy,
+                        docker,
+                        settings,
+                        update_tx,
+                        notif_tx,
+                        update_history,
+                        db_pool,
+                        tx,
+                        &pending,
+                        &policy,
                         &mut any_success,
-                    ).await;
+                    )
+                    .await;
                 }
             }
             Err(e) => {
                 if e.contains("429") {
-                    tracing::warn!("check_and_apply_all [{}]: rate limit (429) fetching digest, saltando", name);
+                    tracing::warn!(
+                        "check_and_apply_all [{}]: rate limit (429) fetching digest, saltando",
+                        name
+                    );
                 } else if e.contains("404") {
-                    tracing::warn!("check_and_apply_all [{}]: imagen remota no encontrada (404): {}", name, image_full);
+                    tracing::warn!(
+                        "check_and_apply_all [{}]: imagen remota no encontrada (404): {}",
+                        name,
+                        image_full
+                    );
                 } else if e.contains("403") {
-                    tracing::warn!("check_and_apply_all [{}]: acceso denegado (403) a: {}", name, image_full);
+                    tracing::warn!(
+                        "check_and_apply_all [{}]: acceso denegado (403) a: {}",
+                        name,
+                        image_full
+                    );
                 } else {
-                    tracing::warn!("check_and_apply_all [{}]: error consultando digest remoto: {}", name, e);
+                    tracing::warn!(
+                        "check_and_apply_all [{}]: error consultando digest remoto: {}",
+                        name,
+                        e
+                    );
                 }
             }
         }
@@ -658,11 +717,19 @@ async fn check_and_apply_all(
     {
         let conn = db_pool.get().await.unwrap();
         let mut s = settings.lock().await;
-        let cron = s.update_check_cron.clone().unwrap_or_else(|| "0 0 * * *".into());
+        let cron = s
+            .update_check_cron
+            .clone()
+            .unwrap_or_else(|| "0 0 * * *".into());
         let last_check = crate::timezone::now_formatted();
         let next_check = crate::timezone::next_cron_time(&cron).unwrap_or_default();
         for c in &containers {
-            let _ = db::update_container_check_times(&conn.lock().unwrap(), &c.name, &last_check, &next_check);
+            let _ = db::update_container_check_times(
+                &conn.lock().unwrap(),
+                &c.name,
+                &last_check,
+                &next_check,
+            );
         }
         s.update_check_last_run_at = Some(last_check);
         let _ = db::save_settings(&conn.lock().unwrap(), &s);
@@ -690,9 +757,16 @@ pub async fn check_all_h(
     State(update_policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
 ) -> Json<Vec<ContainerInfo>> {
     let containers = check_and_apply_all(
-        &docker, &db_pool, &tx, &update_tx, &settings,
-        &notif_tx, &update_history, &update_policies,
-    ).await;
+        &docker,
+        &db_pool,
+        &tx,
+        &update_tx,
+        &settings,
+        &notif_tx,
+        &update_history,
+        &update_policies,
+    )
+    .await;
     Json(containers)
 }
 
@@ -870,10 +944,8 @@ async fn apply_single_policy(
                         let mut hist = update_history.lock().await;
                         hist.push(entry);
                         let conn = db_pool.get().await.unwrap();
-                        let _ = db::append_update_history(
-                            &conn.lock().unwrap(),
-                            hist.last().unwrap(),
-                        );
+                        let _ =
+                            db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
                     }
                 }
             } else {
@@ -1013,11 +1085,23 @@ async fn apply_single_policy(
         {
             let conn = db_pool.get().await.unwrap();
             if let Err(e) = db::update_container_has_update(&conn.lock().unwrap(), &p.name, false) {
-                tracing::error!("apply_single_policy: error clearing has_update for '{}': {}", p.name, e);
+                tracing::error!(
+                    "apply_single_policy: error clearing has_update for '{}': {}",
+                    p.name,
+                    e
+                );
             }
             if !new_digest.is_empty() {
-                if let Err(e) = db::update_container_last_remote_digest(&conn.lock().unwrap(), &p.name, &new_digest) {
-                    tracing::error!("apply_single_policy: error storing last_remote_digest for '{}': {}", p.name, e);
+                if let Err(e) = db::update_container_last_remote_digest(
+                    &conn.lock().unwrap(),
+                    &p.name,
+                    &new_digest,
+                ) {
+                    tracing::error!(
+                        "apply_single_policy: error storing last_remote_digest for '{}': {}",
+                        p.name,
+                        e
+                    );
                 }
             } else {
                 tracing::warn!("apply_single_policy: no se pudo obtener digest remoto para '{}', last_remote_digest no actualizado", p.name);
@@ -1049,10 +1133,7 @@ async fn apply_single_policy(
             log_prune_result("policy.cleanup_old_image", &result);
         }
     } else {
-        tracing::warn!(
-            "apply_single_policy: fallo/no-hubo-éxito '{}'",
-            p.name
-        );
+        tracing::warn!("apply_single_policy: fallo/no-hubo-éxito '{}'", p.name);
     }
 }
 
@@ -1104,9 +1185,18 @@ async fn apply_policies_background(
             },
         };
         apply_single_policy(
-            docker, settings, update_tx, notif_tx, update_history,
-            db_pool, tx, p, &policy, &mut any_success,
-        ).await;
+            docker,
+            settings,
+            update_tx,
+            notif_tx,
+            update_history,
+            db_pool,
+            tx,
+            p,
+            &policy,
+            &mut any_success,
+        )
+        .await;
     }
 
     // Safety net: limpiar dangling images que hayan podido quedar
@@ -1171,7 +1261,10 @@ pub(crate) async fn verify_container_healthy(docker: &Docker, name: &str) -> boo
 }
 
 /// Tag current image as backup for rollback: image:tag → image:rollback-{ts}
-pub(crate) async fn tag_backup_image(docker: &Docker, image: &str) -> Option<(String, String, String)> {
+pub(crate) async fn tag_backup_image(
+    docker: &Docker,
+    image: &str,
+) -> Option<(String, String, String)> {
     let ts = crate::timezone::now().format("%Y%m%d%H%M%S").to_string();
     if let Some((base, original_tag)) = image.rsplit_once(':') {
         let backup_full = format!("{}:rollback-{}", base, ts);

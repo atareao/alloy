@@ -295,7 +295,10 @@ pub async fn fetch_containers(
                 registry_url,
                 last_check: check_times_map.get(&name).and_then(|(lc, _)| lc.clone()),
                 next_check: check_times_map.get(&name).and_then(|(_, nc)| nc.clone()),
-                last_remote_digest: last_remote_digest_map.get(&name).cloned().unwrap_or_default(),
+                last_remote_digest: last_remote_digest_map
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default(),
             })
         })
         .collect()

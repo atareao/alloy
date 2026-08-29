@@ -130,59 +130,56 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
     let repo = parsed.repo.clone();
     let tag = parsed.tag.clone();
 
-    let config_digest = match registry_host.as_str() {
-        "docker.io" => {
-            let token_url = format!(
+    let config_digest =
+        match registry_host.as_str() {
+            "docker.io" => {
+                let token_url = format!(
                 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
                 repo
             );
-            let token = fetch_token(client, &token_url, &repo, &tag).await?;
-            resolve_config_digest(client, "registry-1.docker.io", &repo, &tag, Some(&token)).await?
-        }
-        "ghcr.io" => {
-            let token_url = format!(
-                "https://ghcr.io/token?service=ghcr.io&scope=repository:{}:pull",
-                repo
-            );
-            let token = fetch_token(client, &token_url, &repo, &tag).await?;
-            resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
-        }
-        other => {
-            // Unknown registry: probe for auth requirements first.
-            let probe_url = format!(
-                "https://{}/v2/{}/manifests/{}",
-                other, repo, tag
-            );
-            let probe = fetch_manifest(client, &probe_url, None).await?;
-            let status = probe.status();
+                let token = fetch_token(client, &token_url, &repo, &tag).await?;
+                resolve_config_digest(client, "registry-1.docker.io", &repo, &tag, Some(&token))
+                    .await?
+            }
+            "ghcr.io" => {
+                let token_url = format!(
+                    "https://ghcr.io/token?service=ghcr.io&scope=repository:{}:pull",
+                    repo
+                );
+                let token = fetch_token(client, &token_url, &repo, &tag).await?;
+                resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
+            }
+            other => {
+                // Unknown registry: probe for auth requirements first.
+                let probe_url = format!("https://{}/v2/{}/manifests/{}", other, repo, tag);
+                let probe = fetch_manifest(client, &probe_url, None).await?;
+                let status = probe.status();
 
-            if status == 401 || status == 403 {
-                // Parse Www-Authenticate to find the real token endpoint.
-                let auth_header = probe
-                    .headers()
-                    .get("www-authenticate")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                tracing::warn!(
+                if status == 401 || status == 403 {
+                    // Parse Www-Authenticate to find the real token endpoint.
+                    let auth_header = probe
+                        .headers()
+                        .get("www-authenticate")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("");
+                    tracing::warn!(
                     "check_remote_digest [{}:{}]: registry={} requiere auth, Www-Authenticate={:?}",
                     repo, tag, other, auth_header
                 );
-                let realm = parse_realm(auth_header)
-                    .unwrap_or_else(|| format!("https://{}/token", other));
-                let token_url = format!(
-                    "{}?service={}&scope=repository:{}:pull",
-                    realm, other, repo
-                );
-                let token = fetch_token(client, &token_url, &repo, &tag).await?;
-                resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
-            } else if status.is_success() {
-                // No auth needed — make the actual request (second call, but clean).
-                resolve_config_digest(client, other, &repo, &tag, None).await?
-            } else {
-                return Err(format!("manifest status: {}", status));
+                    let realm = parse_realm(auth_header)
+                        .unwrap_or_else(|| format!("https://{}/token", other));
+                    let token_url =
+                        format!("{}?service={}&scope=repository:{}:pull", realm, other, repo);
+                    let token = fetch_token(client, &token_url, &repo, &tag).await?;
+                    resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
+                } else if status.is_success() {
+                    // No auth needed — make the actual request (second call, but clean).
+                    resolve_config_digest(client, other, &repo, &tag, None).await?
+                } else {
+                    return Err(format!("manifest status: {}", status));
+                }
             }
-        }
-    };
+        };
 
     tracing::debug!(
         "check_remote_digest [{}:{}]: digest remoto = {}",
@@ -266,10 +263,13 @@ async fn fetch_token(
     // Store in cache
     {
         let mut cache = token_cache().lock().unwrap();
-        cache.insert(cache_key, CachedToken {
-            token: token.clone(),
-            fetched_at: Instant::now(),
-        });
+        cache.insert(
+            cache_key,
+            CachedToken {
+                token: token.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
     }
     Ok(token)
 }
