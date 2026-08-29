@@ -11,6 +11,7 @@ use cookie::{Cookie, SameSite};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -261,6 +262,14 @@ async fn auth_logout() -> Response {
 
 // ── Middleware ──────────────────────────────────────────────
 
+/// Track recently logged session expirations to avoid duplicate logs
+/// from concurrent SSE / REST connections when idle timeout fires.
+/// Entries older than 10 seconds are cleaned up on each access.
+fn session_expiry_log() -> &'static Mutex<HashMap<String, Instant>> {
+    static LOG: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    LOG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 /// Helper: build a JSON 401 response for session expiry / auth failure.
 fn unauthorized_json(session_expired: bool, detail: &str) -> Response {
     (
@@ -320,12 +329,22 @@ pub async fn auth_middleware(
         // Check max session duration (since login)
         let session_elapsed = now.saturating_sub(claims.iat);
         if session_elapsed > max_duration_secs as usize {
-            tracing::info!(
-                "Session expired (max duration): user={}, elapsed={}s > max={}s",
-                claims.sub,
-                session_elapsed,
-                max_duration_secs
-            );
+            let mut log_cache = session_expiry_log().lock().unwrap();
+            let dedup_key = format!("maxdur:{}", claims.sub);
+            let should_log = log_cache
+                .get(&dedup_key)
+                .map(|t| t.elapsed() > std::time::Duration::from_secs(5))
+                .unwrap_or(true);
+            if should_log {
+                tracing::info!(
+                    "Session expired (max duration): user={}, elapsed={}s > max={}s",
+                    claims.sub,
+                    session_elapsed,
+                    max_duration_secs
+                );
+                log_cache.insert(dedup_key, Instant::now());
+            }
+            log_cache.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(10));
             return Err(Box::new(unauthorized_json(
                 true,
                 "Session expired: maximum duration reached. Please log in again.",
@@ -335,12 +354,25 @@ pub async fn auth_middleware(
         // Check idle timeout
         let idle_elapsed = now.saturating_sub(claims.last_active);
         if idle_elapsed > idle_timeout_secs as usize {
-            tracing::info!(
-                "Session expired (idle timeout): user={}, idle={}s > timeout={}s",
-                claims.sub,
-                idle_elapsed,
-                idle_timeout_secs
-            );
+            // Dedup: only log once per user within a 5-second window
+            // to avoid flooding logs from concurrent SSE connections.
+            let mut log_cache = session_expiry_log().lock().unwrap();
+            let dedup_key = format!("idle:{}", claims.sub);
+            let should_log = log_cache
+                .get(&dedup_key)
+                .map(|t| t.elapsed() > std::time::Duration::from_secs(5))
+                .unwrap_or(true);
+            if should_log {
+                tracing::info!(
+                    "Session expired (idle timeout): user={}, idle={}s > timeout={}s",
+                    claims.sub,
+                    idle_elapsed,
+                    idle_timeout_secs
+                );
+                log_cache.insert(dedup_key, Instant::now());
+            }
+            // Cleanup stale entries (>10s old)
+            log_cache.retain(|_, t| t.elapsed() < std::time::Duration::from_secs(10));
             return Err(Box::new(unauthorized_json(
                 true,
                 "Session expired: inactivity timeout. Please log in again.",
