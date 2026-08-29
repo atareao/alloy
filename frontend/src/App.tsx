@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { showNotification } from "@mantine/notifications";
 import {
@@ -16,12 +16,15 @@ import type {
   NotifEvent,
   HistoryEntry,
   AppConfig,
+  UpdateCheckConfig,
 } from "./types";
 import { apiFetch } from "./api";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
 import HistoryPage from "./HistoryPage";
+import BatchProgress from "./components/BatchProgress";
+import SummaryDialog from "./components/SummaryDialog";
 
 interface AppProps {
   colorScheme: "dark" | "light";
@@ -221,6 +224,175 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     setProgress(new Map());
   }, []);
 
+  // ── Batch check/update state (lives in App to survive tab switches) ──
+  type CheckAllPhase = "idle" | "checking" | "updating";
+
+  interface CheckAllResults {
+    total: number;
+    updated: number;
+    uptodate: number;
+    failed: number;
+    done: number;
+    errors: string[];
+  }
+
+  const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
+  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+  const [batchCurrentItem, setBatchCurrentItem] = useState("");
+  const cancelBatchRef = useRef(false);
+  const pendingTotalRef = useRef(0);
+  const [checkResults, setCheckResults] = useState<CheckAllResults>({
+    total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [],
+  });
+  const [updateResults, setUpdateResults] = useState<CheckAllResults>({
+    total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [],
+  });
+  const [showSummary, setShowSummary] = useState(false);
+  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
+
+  // Fetch update check config on mount (for last/next check times)
+  const fetchCheckConfig = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/update-check/config");
+      if (res.ok) {
+        setCheckConfig(await res.json());
+      }
+    } catch {/* ignore */}
+  }, []);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    fetchCheckConfig();
+  }, [authenticated, fetchCheckConfig]);
+
+  // Detect in-progress updates on reconnect (e.g. after logout/login)
+  // If SSE delivers progress entries and batchPhase is idle, infer a batch is running
+  useEffect(() => {
+    if (batchPhase !== "idle") return;
+    let hasActive = false;
+    progress.forEach((p) => {
+      if (!p.done) hasActive = true;
+    });
+    if (hasActive) {
+      setBatchPhase("updating");
+      // Don't set pendingTotalRef — we don't know the total yet.
+      // The completion check below falls back to "all progress entries done".
+      setBatchProgress({ current: 0, total: 0 });
+      setBatchCurrentItem("⬆️ Retomando...");
+    }
+  }, [progress, batchPhase]);
+
+  // Monitor progress map to advance batch progress bar
+  useEffect(() => {
+    if (batchPhase === "idle") return;
+    let doneCount = 0;
+    let currentItem = "";
+    progress.forEach((p) => {
+      if (batchPhase === "updating") {
+        const isUpdate =
+          p.status.startsWith("🔄") ||
+          p.status.startsWith("✅ actualizado") ||
+          p.status.startsWith("✅ pulled") ||
+          p.status.startsWith("✅ stack") ||
+          p.status.startsWith("❌") ||
+          p.status.startsWith("⚠️") ||
+          p.status.startsWith("📥") ||
+          p.status.startsWith("✅ Updated");
+        if (!isUpdate) return;
+      }
+      if (p.done) doneCount++;
+      else if (currentItem === "") currentItem = p.container;
+    });
+    setBatchProgress((prev) =>
+      doneCount !== prev.current ? { ...prev, current: doneCount } : prev,
+    );
+    if (currentItem) setBatchCurrentItem(currentItem);
+    if (
+      batchPhase === "updating" &&
+      doneCount > 0 &&
+      (doneCount >= pendingTotalRef.current ||
+        // Recovery mode: no pendingTotalRef set — complete when all progress entries are done
+        (pendingTotalRef.current === 0 &&
+          progress.size > 0 &&
+          Array.from(progress.values()).every((p) => p.done)))
+    ) {
+      setTimeout(() => {
+        setBatchPhase("idle");
+        setShowSummary(true);
+        // Count results from live progress map
+        let done = 0, failed = 0;
+        progress.forEach((p) => {
+          if (p.done) {
+            if (p.error || p.status.startsWith("❌") || p.status.startsWith("⚠️")) {
+              failed++;
+            } else {
+              done++;
+            }
+          }
+        });
+        const total = done + failed;
+        if (total > 0) {
+          showNotification({
+            title: "✅ Batch completado",
+            message: failed > 0
+              ? `${total} containers · ${done} ok · ${failed} errores`
+              : `${total} containers actualizados correctamente`,
+            color: failed > 0 ? "yellow" : "green",
+            autoClose: 8000,
+          });
+        }
+      }, 1500);
+    }
+  }, [progress, batchPhase]);
+
+  // checkAll: POST /api/check-all, then auto-update containers with pending updates
+  const checkAll = useCallback(async () => {
+    cancelBatchRef.current = false;
+    clearProgress();
+    setBatchPhase("checking");
+    setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [] });
+    setUpdateResults({ total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [] });
+    setBatchProgress({ current: 0, total: containers.length });
+    setBatchCurrentItem("🔍 Verificando...");
+    setShowSummary(false);
+    let updatedCount = 0;
+    let uptodateCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
+    try {
+      const res = await apiFetch("/api/check-all", { method: "POST" });
+      if (res.ok) {
+        const updated: ContainerInfo[] = await res.json();
+        setContainers((prev) =>
+          prev.map((c) => updated.find((u) => u.name === c.name) || c),
+        );
+        updatedCount = updated.filter((c) => c.has_update).length;
+        uptodateCount = updated.filter((c) => !c.has_update).length;
+      } else {
+        failedCount = containers.length;
+        errors.push(`HTTP ${res.status}`);
+      }
+    } catch (e: any) {
+      failedCount = containers.length;
+      errors.push(`${e.message || "unknown error"}`);
+    }
+    setCheckResults({ total: containers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, done: 0, errors });
+    setBatchProgress({ current: containers.length, total: containers.length });
+    setBatchCurrentItem("");
+    fetchCheckConfig();
+    if (updatedCount > 0) {
+      setBatchPhase("updating");
+      pendingTotalRef.current = updatedCount;
+      setBatchProgress({ current: 0, total: updatedCount });
+      setBatchCurrentItem("⬆️ Aplicando políticas...");
+    } else {
+      setTimeout(() => {
+        setBatchPhase("idle");
+        setShowSummary(true);
+      }, 500);
+    }
+  }, [containers, clearProgress, setContainers, fetchCheckConfig]);
+
   const logout = () => {
     window.location.href = "/api/auth/logout";
   };
@@ -293,13 +465,28 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </Group>
         </Stack>
 
+        <BatchProgress
+          phase={batchPhase}
+          batchProgress={batchProgress}
+          batchCurrentItem={batchCurrentItem}
+          checkResults={checkResults}
+          updateResults={updateResults}
+          onCancel={() => { cancelBatchRef.current = true; }}
+        />
+
         {view === "dashboard" && (
           <DashboardPage
             containers={containers}
             setContainers={setContainers}
             progress={progress}
             containersLoaded={containersLoaded}
-            clearProgress={clearProgress}
+            batchPhase={batchPhase}
+            checkResults={checkResults}
+            updateResults={updateResults}
+            showSummary={showSummary}
+            setShowSummary={setShowSummary}
+            checkConfig={checkConfig}
+            onCheckAll={checkAll}
           />
         )}
         {view === "history" && (
@@ -313,6 +500,14 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             setColorScheme={setColorScheme}
           />
         )}
+
+        <SummaryDialog
+          opened={showSummary}
+          onClose={() => setShowSummary(false)}
+          checkResults={checkResults}
+          updateResults={updateResults}
+          phase={batchPhase}
+        />
       </Container>
     </AppShell>
   );

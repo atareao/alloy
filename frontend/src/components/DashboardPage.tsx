@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
   Badge,
@@ -23,10 +23,10 @@ import type {
 import { apiFetch } from "../api";
 import ContainerTable from "./ContainerTable";
 import ContainerRow from "./ContainerRow";
-import BatchProgress from "./BatchProgress";
 import InspectModal from "./InspectModal";
 import LogsModal from "./LogsModal";
 import SummaryDialog from "./SummaryDialog";
+import type { BatchResults } from "./BatchProgress";
 
 // ── Props ────────────────────────────────────────────────────
 interface DashboardPageProps {
@@ -34,26 +34,26 @@ interface DashboardPageProps {
   setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
   progress: Map<string, UpdateProgress>;
   containersLoaded: boolean;
-  clearProgress: () => void;
-}
-
-// ── Types ────────────────────────────────────────────────────
-type CheckAllPhase = "idle" | "checking" | "updating";
-
-interface CheckAllResults {
-  total: number;
-  updated: number;
-  uptodate: number;
-  failed: number;
-  done: number;
-  errors: string[];
+  // Batch state (managed in App to survive tab switches)
+  batchPhase: "idle" | "checking" | "updating";
+  checkResults: BatchResults;
+  updateResults: BatchResults;
+  showSummary: boolean;
+  setShowSummary: (v: boolean) => void;
+  checkConfig: UpdateCheckConfig | null;
+  onCheckAll: () => void;
 }
 
 export default function DashboardPage({
   containers,
-  setContainers,
   progress,
-  clearProgress,
+  batchPhase,
+  checkResults,
+  updateResults,
+  showSummary,
+  setShowSummary,
+  checkConfig,
+  onCheckAll,
 }: DashboardPageProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
 
@@ -70,41 +70,12 @@ export default function DashboardPage({
   const [logError, setLogError] = useState<string | null>(null);
   const [logTimeout, setLogTimeout] = useState(false);
   const [loadingActions, setLoadingActions] = useState<Record<string, string>>({});
-  const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
-  const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-  const [batchCurrentItem, setBatchCurrentItem] = useState("");
-  const cancelBatchRef = useRef(false);
-  const pendingTotalRef = useRef(0);
-  const [checkResults, setCheckResults] = useState<CheckAllResults>({
-    total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [],
-  });
-  const [updateResults, setUpdateResults] = useState<CheckAllResults>({
-    total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [],
-  });
-  const [showSummary, setShowSummary] = useState(false);
   const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<string[]>([]);
   const [showPendingUpdates, setShowPendingUpdates] = useState(false);
-
-  // ── Update check config (from API) ────────────────────────
-  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
-
-  // Fetch update check config on mount (for last/next check times)
-  const fetchCheckConfig = useCallback(async () => {
-    try {
-      const res = await apiFetch("/api/update-check/config");
-      if (res.ok) {
-        setCheckConfig(await res.json());
-      }
-    } catch {/* ignore */}
-  }, []);
-
-  useEffect(() => {
-    fetchCheckConfig();
-  }, [fetchCheckConfig]);
 
   // ── Computed ──────────────────────────────────────────────
   const containerInfo = useMemo(() => {
@@ -183,42 +154,6 @@ export default function DashboardPage({
   };
 
   // ── Effects ───────────────────────────────────────────────
-  useEffect(() => {
-    if (batchPhase === "idle") return;
-    let doneCount = 0;
-    let currentItem = "";
-    progress.forEach((p) => {
-      if (batchPhase === "updating") {
-        const isUpdate =
-          p.status.startsWith("🔄") ||
-          p.status.startsWith("✅ actualizado") ||
-          p.status.startsWith("✅ pulled") ||
-          p.status.startsWith("✅ stack") ||
-          p.status.startsWith("❌") ||
-          p.status.startsWith("⚠️") ||
-          p.status.startsWith("📥") ||
-          p.status.startsWith("✅ Updated");
-        if (!isUpdate) return;
-      }
-      if (p.done) doneCount++;
-      else if (currentItem === "") currentItem = p.container;
-    });
-    setBatchProgress((prev) =>
-      doneCount !== prev.current ? { ...prev, current: doneCount } : prev,
-    );
-    if (currentItem) setBatchCurrentItem(currentItem);
-    if (
-      batchPhase === "updating" &&
-      doneCount > 0 &&
-      doneCount >= pendingTotalRef.current
-    ) {
-      setTimeout(() => {
-        setBatchPhase("idle");
-        setShowSummary(true);
-      }, 1500);
-    }
-  }, [progress, batchPhase]);
-
   useEffect(() => {
     apiFetch("/api/update-policies")
       .then((res) => res.json())
@@ -344,54 +279,6 @@ export default function DashboardPage({
       delete next[project];
       return next;
     });
-  };
-
-  const checkAll = async () => {
-    cancelBatchRef.current = false;
-    clearProgress();
-    setBatchPhase("checking");
-    setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [] });
-    setUpdateResults({ total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [] });
-    setBatchProgress({ current: 0, total: containers.length });
-    setBatchCurrentItem("🔍 Verificando...");
-    setShowSummary(false);
-    let updatedCount = 0;
-    let uptodateCount = 0;
-    let failedCount = 0;
-    const errors: string[] = [];
-    try {
-      const res = await apiFetch("/api/check-all", { method: "POST" });
-      if (res.ok) {
-        const updated: ContainerInfo[] = await res.json();
-        setContainers((prev) =>
-          prev.map((c) => updated.find((u) => u.name === c.name) || c),
-        );
-        updatedCount = updated.filter((c) => c.has_update).length;
-        uptodateCount = updated.filter((c) => !c.has_update).length;
-      } else {
-        failedCount = containers.length;
-        errors.push(`HTTP ${res.status}`);
-      }
-    } catch (e: any) {
-      failedCount = containers.length;
-      errors.push(`${e.message || "unknown error"}`);
-    }
-    setCheckResults({ total: containers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, done: 0, errors });
-    setBatchProgress({ current: containers.length, total: containers.length });
-    setBatchCurrentItem("");
-    // Re-fetch check config to get updated last/next run times
-    fetchCheckConfig();
-    if (updatedCount > 0) {
-      setBatchPhase("updating");
-      pendingTotalRef.current = updatedCount;
-      setBatchProgress({ current: 0, total: updatedCount });
-      setBatchCurrentItem("⬆️ Aplicando políticas...");
-    } else {
-      setTimeout(() => {
-        setBatchPhase("idle");
-        setShowSummary(true);
-      }, 500);
-    }
   };
 
   // ── Render props ──────────────────────────────────────────
@@ -538,16 +425,6 @@ export default function DashboardPage({
         </Paper>
       </SimpleGrid>
 
-      {/* Batch progress */}
-      <BatchProgress
-        phase={batchPhase}
-        batchProgress={batchProgress}
-        batchCurrentItem={batchCurrentItem}
-        checkResults={checkResults}
-        updateResults={updateResults}
-        onCancel={() => { cancelBatchRef.current = true; }}
-      />
-
       {/* Container table (search + filters + groups) */}
       {batchPhase === "idle" && (
         <ContainerTable
@@ -561,7 +438,7 @@ export default function DashboardPage({
           setShowPendingUpdates={setShowPendingUpdates}
           availableStates={availableStates}
           isMobile={isMobile}
-          onCheckAll={checkAll}
+          onCheckAll={onCheckAll}
           lastCheck={globalLastCheck}
           nextCheck={globalNextCheck}
           expandedStacks={expandedStacks}
