@@ -1,4 +1,15 @@
 # Changelog
+## [0.20.7] - 2026-08-29
+
+### Bug Fixes
+
+- Persist batch state across tab switches and after logout/login
+- Batch-state-persist-across-tabs
+## [0.20.6] - 2026-08-27
+
+### Miscellaneous Tasks
+
+- Release v0.20.6
 ## [0.20.6] - 2026-08-27
 
 ### Bug Fixes
