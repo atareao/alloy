@@ -90,6 +90,7 @@ mod tests {
                 registry_url: "https://hub.docker.com/_/nginx".into(),
                 last_check: None,
                 next_check: None,
+                last_remote_digest: String::new(),
             }],
         };
 
@@ -123,6 +124,7 @@ mod tests {
                     registry_url: String::new(),
                     last_check: None,
                     next_check: None,
+                    last_remote_digest: String::new(),
                 },
                 ContainerInfo {
                     id: "2".into(),
@@ -140,6 +142,7 @@ mod tests {
                     registry_url: String::new(),
                     last_check: None,
                     next_check: None,
+                    last_remote_digest: String::new(),
                 },
             ],
         };
@@ -179,6 +182,7 @@ mod tests {
                 registry_url: String::new(),
                 last_check: None,
                 next_check: None,
+                last_remote_digest: String::new(),
             }],
         };
 
@@ -213,6 +217,7 @@ mod tests {
                     registry_url: String::new(),
                     last_check: None,
                     next_check: None,
+                    last_remote_digest: String::new(),
                 }],
             })
             .unwrap();

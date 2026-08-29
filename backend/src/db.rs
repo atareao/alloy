@@ -78,6 +78,9 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
     let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN last_check TEXT;");
     let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN next_check TEXT;");
 
+    // Migración para last_remote_digest
+    let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN last_remote_digest TEXT NOT NULL DEFAULT '';");
+
     Ok(pool)
 }
 
@@ -136,8 +139,8 @@ pub fn test_pool() -> DbPool {
 pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlResult<()> {
     conn.execute("DELETE FROM containers", [])?;
     let mut stmt = conn.prepare(
-        "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))",
+        "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, last_remote_digest, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))",
     )?;
     for c in containers {
         stmt.execute(params![
@@ -155,6 +158,7 @@ pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlRe
             c.registry_url,
             c.last_check,
             c.next_check,
+            c.last_remote_digest,
         ])?;
     }
     Ok(())
@@ -163,11 +167,12 @@ pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlRe
 #[allow(dead_code)]
 pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check FROM containers ORDER BY name",
+        "SELECT id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, last_remote_digest FROM containers ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
         let ports_str: String = row.get(7)?;
         let ports: Vec<String> = serde_json::from_str(&ports_str).unwrap_or_default();
+        let lrd: String = row.get(14)?;
         Ok(ContainerInfo {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -184,6 +189,7 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
             registry_url: row.get(11)?,
             last_check: row.get(12)?,
             next_check: row.get(13)?,
+            last_remote_digest: lrd,
         })
     })?;
     let mut result = Vec::new();
@@ -201,6 +207,18 @@ pub fn update_container_has_update(
     conn.execute(
         "UPDATE containers SET has_update = ?1, updated_at = datetime('now') WHERE name = ?2",
         params![has_update as i32, name],
+    )?;
+    Ok(())
+}
+
+pub fn update_container_last_remote_digest(
+    conn: &Connection,
+    name: &str,
+    digest: &str,
+) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE containers SET last_remote_digest = ?1, updated_at = datetime('now') WHERE name = ?2",
+        params![digest, name],
     )?;
     Ok(())
 }
@@ -415,6 +433,7 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .cloned()
             .filter(|s| !s.is_empty()),
         pull_timeout_secs: map.get("pull_timeout_secs").and_then(|v| v.parse().ok()),
+        check_interval_ms: map.get("check_interval_ms").and_then(|v| v.parse().ok()),
     })
 }
 
@@ -455,6 +474,10 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
             "pull_timeout_secs",
             settings.pull_timeout_secs.map(|v| v.to_string()),
         ),
+        (
+            "check_interval_ms",
+            settings.check_interval_ms.map(|v| v.to_string()),
+        ),
     ];
 
     for (key, value) in pairs {
@@ -482,7 +505,7 @@ mod tests {
                 state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
                 ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
                 has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
-                last_check TEXT, next_check TEXT,
+                last_check TEXT, next_check TEXT, last_remote_digest TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS update_history (
@@ -527,6 +550,7 @@ mod tests {
             updating: false,
             last_check: None,
             next_check: None,
+            last_remote_digest: String::new(),
         }];
         save_containers(&conn, &containers).unwrap();
         let loaded = load_containers(&conn).unwrap();
@@ -553,6 +577,7 @@ mod tests {
             updating: false,
             last_check: None,
             next_check: None,
+            last_remote_digest: String::new(),
         }];
         save_containers(&conn, &c1).unwrap();
         let c2 = vec![ContainerInfo {
@@ -571,6 +596,7 @@ mod tests {
             updating: false,
             last_check: None,
             next_check: None,
+            last_remote_digest: String::new(),
         }];
         save_containers(&conn, &c2).unwrap();
         let loaded = load_containers(&conn).unwrap();
@@ -604,6 +630,7 @@ mod tests {
             updating: false,
             last_check: None,
             next_check: None,
+            last_remote_digest: String::new(),
         }];
         save_containers(&conn, &containers).unwrap();
         update_container_has_update(&conn, "test", true).unwrap();

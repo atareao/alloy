@@ -20,6 +20,8 @@ pub struct ContainerInfo {
     pub last_check: Option<String>,
     #[serde(default)]
     pub next_check: Option<String>,
+    #[serde(default)]
+    pub last_remote_digest: String, // stores last verified remote config digest
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -194,6 +196,12 @@ pub struct Settings {
     /// Aumentar para imágenes muy grandes (>500MB) o conexiones lentas.
     #[serde(default)]
     pub pull_timeout_secs: Option<u64>,
+
+    /// Intervalo en milisegundos entre verificaciones de digest de cada contenedor
+    /// en check_all_h y update_check_worker. Default: 2000 (2s).
+    /// Aumentar para evitar rate limiting en registries públicos.
+    #[serde(default)]
+    pub check_interval_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -262,6 +270,9 @@ pub struct UpdateCheckConfig {
     /// Timeout en segundos para pull de imágenes. Default: 1800 (30 min).
     #[serde(default)]
     pub pull_timeout_secs: Option<u64>,
+    /// Intervalo en ms entre verificaciones de cada contenedor.
+    #[serde(default)]
+    pub check_interval_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
