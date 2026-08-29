@@ -79,7 +79,9 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
     let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN next_check TEXT;");
 
     // Migración para last_remote_digest
-    let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN last_remote_digest TEXT NOT NULL DEFAULT '';");
+    let _ = conn.execute_batch(
+        "ALTER TABLE containers ADD COLUMN last_remote_digest TEXT NOT NULL DEFAULT '';",
+    );
 
     Ok(pool)
 }
