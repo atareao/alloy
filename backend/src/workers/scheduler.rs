@@ -1,5 +1,5 @@
 use bollard::{
-    container::{InspectContainerOptions, ListContainersOptions, RestartContainerOptions},
+    container::{InspectContainerOptions, ListContainersOptions},
     Docker,
 };
 use chrono::Timelike;
@@ -13,7 +13,10 @@ use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest;
-use crate::updates::handlers::{log_prune_result, prune_dangling_images};
+use crate::updates::handlers::{
+    log_prune_result, prune_dangling_images, recreate_container,
+    rollback_container, tag_backup_image, verify_container_healthy,
+};
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
 /// Revisa todas las imágenes, marca las que tienen actualización pendiente en DB,
@@ -94,51 +97,7 @@ pub async fn update_check_worker(
             }
         }
 
-        // 2. Revisar cada contenedor para detectar actualizaciones
-        let tasks: Vec<_> = containers
-            .iter()
-            .map(|c| {
-                let name = c
-                    .names
-                    .as_ref()
-                    .and_then(|n| n.first())
-                    .map(|n| crate::models::strip_name(n))
-                    .unwrap_or_default();
-                let raw_image = c.image.as_deref().unwrap_or("");
-                let image_full = if raw_image.starts_with("sha256:") {
-                    c.id.as_ref()
-                        .and_then(|cid| resolved_images.get(cid))
-                        .map(|s| s.as_str())
-                        .unwrap_or(raw_image)
-                        .to_string()
-                } else {
-                    raw_image.to_string()
-                };
-                let image_id = c.image_id.clone().unwrap_or_default();
-                let cid = c.id.clone().unwrap_or_default();
-                async move {
-                    if image_full.is_empty() {
-                        return (name, false, image_full, cid, String::new(), String::new());
-                    }
-                    match check_remote_digest(&image_full).await {
-                        Ok((remote_digest, _)) => {
-                            let has_update = if !image_id.is_empty() {
-                                let local_short = crate::updates::digest::short_digest(&image_id);
-                                let remote_short =
-                                    crate::updates::digest::short_digest(&remote_digest);
-                                local_short != remote_short
-                            } else {
-                                false
-                            };
-                            (name, has_update, image_full, cid, image_id, remote_digest)
-                        }
-                        Err(_) => (name, false, image_full, cid, String::new(), String::new()),
-                    }
-                }
-            })
-            .collect();
-
-        // 3. Obtener políticas
+        // 2. Obtener políticas
         let policies = {
             let p = update_policies.lock().await;
             let map: HashMap<String, UpdatePolicy> = p
@@ -161,13 +120,63 @@ pub async fn update_check_worker(
             s.update_check_notify.unwrap_or(false)
         };
 
-        // 4. Procesar resultados: persistir en DB y aplicar políticas
+        // 3. Revisar cada contenedor secuencialmente y aplicar políticas
+        let check_interval_ms = {
+            let s = settings.lock().await;
+            s.check_interval_ms.unwrap_or(2000)
+        };
         let mut updated_count = 0u32;
-        for (name, has_update, image_full, cid, old_digest, new_digest) in
-            futures::future::join_all(tasks).await
-        {
+
+        for c in &containers {
+            let name = c
+                .names
+                .as_ref()
+                .and_then(|n| n.first())
+                .map(|n| crate::models::strip_name(n))
+                .unwrap_or_default();
+            let raw_image = c.image.as_deref().unwrap_or("");
+            let image_full = if raw_image.starts_with("sha256:") {
+                c.id
+                    .as_ref()
+                    .and_then(|cid| resolved_images.get(cid))
+                    .map(|s| s.as_str())
+                    .unwrap_or(raw_image)
+                    .to_string()
+            } else {
+                raw_image.to_string()
+            };
+            let image_id = c.image_id.clone().unwrap_or_default();
+            let cid = c.id.clone().unwrap_or_default();
+
+            if image_full.is_empty() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+                continue;
+            }
+
+            // Check remote digest for this container
+            let (has_update, old_digest, new_digest) = match check_remote_digest(&image_full).await {
+                Ok((remote_digest, _)) => {
+                    let has_update = if !image_id.is_empty() {
+                        let local_short = crate::updates::digest::short_digest(&image_id);
+                        let remote_short =
+                            crate::updates::digest::short_digest(&remote_digest);
+                        local_short != remote_short
+                    } else {
+                        false
+                    };
+                    let old_digest = image_id;
+                    (has_update, old_digest, remote_digest)
+                }
+                Err(_) => {
+                    let _ = sqlite_update_has_update(&db_pool, &name, false).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+                    continue;
+                }
+            };
+
             let _ = sqlite_update_has_update(&db_pool, &name, has_update).await;
-            if !has_update || name.is_empty() || image_full.is_empty() {
+            if !has_update || name.is_empty() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
                 continue;
             }
 
@@ -189,6 +198,7 @@ pub async fn update_check_worker(
                     done: true,
                     error: None,
                 });
+                tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
                 continue;
             }
 
@@ -243,41 +253,95 @@ pub async fn update_check_worker(
                 }
                 UpdateAction::PullRestart => {
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+                    let backup = if policy.rollback_on_failure {
+                        tag_backup_image(&docker, &image_full).await
+                    } else {
+                        None
+                    };
                     if pull_image(&docker, &image_full, pull_timeout).await {
-                        let _ = docker
-                            .restart_container(&cid, None::<RestartContainerOptions>)
-                            .await;
-                        let _ = notif_tx.send(NotifEvent {
-                            container: name.clone(),
-                            status: "🔄 actualizado (update-check)".into(),
-                            timestamp: crate::timezone::now_time_formatted(),
-                        });
-                        if notify {
-                            notify_all(&settings, &name, "🔄 actualizado vía update-check").await;
+                        match recreate_container(&docker, &name, &cid, &image_full).await {
+                            Ok(_) => {
+                                if policy.rollback_on_failure
+                                    && !verify_container_healthy(&docker, &name).await
+                                {
+                                    tracing::warn!(
+                                        "update_check: rollback '{}'",
+                                        name
+                                    );
+                                    if let Some((backup_full, base, orig_tag)) = backup {
+                                        rollback_container(
+                                            &docker,
+                                            &cid,
+                                            &base,
+                                            &orig_tag,
+                                            &backup_full,
+                                            &image_full,
+                                        )
+                                        .await;
+                                    }
+                                    let _ = update_tx.send(UpdateProgress {
+                                        container: name.clone(),
+                                        status: "⚠️ rollback aplicado (update-check)".into(),
+                                        done: true,
+                                        error: Some("container no healthy".into()),
+                                    });
+                                } else {
+                                    let _ = notif_tx.send(NotifEvent {
+                                        container: name.clone(),
+                                        status: "🔄 actualizado (update-check)".into(),
+                                        timestamp: crate::timezone::now_time_formatted(),
+                                    });
+                                    if notify {
+                                        notify_all(&settings, &name, "🔄 actualizado vía update-check").await;
+                                    }
+                                    let _ = sqlite_update_has_update(&db_pool, &name, false).await;
+                                    // Guardar remote digest para evitar re-detección en el siguiente ciclo
+                                    {
+                                        let conn = db_pool.get().await.unwrap();
+                                        let _ = db::update_container_last_remote_digest(
+                                            &conn.lock().unwrap(),
+                                            &name,
+                                            &new_digest,
+                                        );
+                                    }
+                                    _ = sqlite_append_update(
+                                        &db_pool,
+                                        &update_history,
+                                        &name,
+                                        &image_full,
+                                        &old_digest,
+                                        &new_digest,
+                                        "update-check-restart",
+                                        start.elapsed().as_millis() as u64,
+                                    )
+                                    .await;
+                                    let _ = update_tx.send(UpdateProgress {
+                                        container: name.clone(),
+                                        status: "✅ actualizado + reiniciado (update-check)".into(),
+                                        done: true,
+                                        error: None,
+                                    });
+                                    if policy.cleanup_old_image {
+                                        let result = prune_dangling_images(&docker).await;
+                                        log_prune_result("scheduler-restart", &result);
+                                    }
+                                    updated_count += 1;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "update_check: recreate_container failed for '{}': {}",
+                                    name,
+                                    e
+                                );
+                                let _ = update_tx.send(UpdateProgress {
+                                    container: name.clone(),
+                                    status: "❌ error al recrear contenedor".into(),
+                                    done: true,
+                                    error: Some(e.to_string()),
+                                });
+                            }
                         }
-                        let _ = sqlite_update_has_update(&db_pool, &name, false).await;
-                        _ = sqlite_append_update(
-                            &db_pool,
-                            &update_history,
-                            &name,
-                            &image_full,
-                            &old_digest,
-                            &new_digest,
-                            "update-check-restart",
-                            start.elapsed().as_millis() as u64,
-                        )
-                        .await;
-                        let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
-                            status: "✅ actualizado + reiniciado (update-check)".into(),
-                            done: true,
-                            error: None,
-                        });
-                        if policy.cleanup_old_image {
-                            let result = prune_dangling_images(&docker).await;
-                            log_prune_result("scheduler-restart", &result);
-                        }
-                        updated_count += 1;
                     } else {
                         let _ = update_tx.send(UpdateProgress {
                             container: name.clone(),
@@ -352,7 +416,14 @@ pub async fn update_check_worker(
                     });
                 }
             }
+
+            // Sleep between containers
+            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
         }
+
+        // Safety-net prune at end
+        let result = prune_dangling_images(&docker).await;
+        log_prune_result("scheduler-safety-net", &result);
 
         // Actualizar last_check y next_check para todos los contenedores
         let last_check = crate::timezone::now_formatted();
