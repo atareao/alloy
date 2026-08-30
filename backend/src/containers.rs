@@ -136,6 +136,33 @@ pub async fn fetch_containers(
         map
     };
 
+    // Step 2c: Read persisted last_remote_digest from DB
+    let last_remote_digest_map: std::collections::HashMap<String, String> = {
+        let conn = match db_pool.get().await {
+            Ok(c) => c,
+            Err(_) => {
+                tracing::warn!("fetch_containers: last_remote_digest DB error");
+                return Vec::new();
+            }
+        };
+        let guard = conn.lock().unwrap();
+        let mut stmt = match guard.prepare(
+            "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = match stmt.query_map([], |row| {
+            let name: String = row.get(0)?;
+            let digest: String = row.get(1)?;
+            Ok((name, digest))
+        }) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     // Step 3: Build ContainerInfo list (now all image names are resolved)
     containers
         .iter()
@@ -268,6 +295,10 @@ pub async fn fetch_containers(
                 registry_url,
                 last_check: check_times_map.get(&name).and_then(|(lc, _)| lc.clone()),
                 next_check: check_times_map.get(&name).and_then(|(_, nc)| nc.clone()),
+                last_remote_digest: last_remote_digest_map
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default(),
             })
         })
         .collect()

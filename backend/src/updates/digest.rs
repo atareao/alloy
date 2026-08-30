@@ -1,4 +1,26 @@
 use crate::state::http_client;
+use bollard::Docker;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+use tokio::sync::Semaphore;
+
+/// Semaphore to limit concurrent registry manifest fetches to prevent 429 rate limiting.
+fn digest_semaphore() -> &'static Semaphore {
+    static SEMAPHORE: OnceLock<Semaphore> = OnceLock::new();
+    SEMAPHORE.get_or_init(|| Semaphore::new(4))
+}
+
+struct CachedToken {
+    token: String,
+    fetched_at: Instant,
+}
+
+/// Cache tokens per registry to avoid redundant auth requests.
+fn token_cache() -> &'static Mutex<HashMap<String, CachedToken>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedToken>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Parsed image reference with registry, repo, tag, and digest-only flag.
 pub struct ImageRef {
@@ -95,7 +117,25 @@ pub fn parse_image_ref(image_full: &str) -> ImageRef {
 ///
 /// For multi-arch (manifest list) images this performs a second request to
 /// resolve the platform-specific manifest and extract its `config.digest`.
-pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), String> {
+///
+/// If the HTTP-based check fails with 401/403 (registry requires auth),
+/// falls back to `docker.inspect_registry_image()` which uses the Docker
+/// daemon's credentials (~/.docker/config.json).
+pub async fn check_remote_digest_with_docker(
+    image_full: &str,
+    docker: &Docker,
+) -> Result<(String, String), String> {
+    check_remote_digest_impl(image_full, Some(docker)).await
+}
+
+async fn check_remote_digest_impl(
+    image_full: &str,
+    docker: Option<&Docker>,
+) -> Result<(String, String), String> {
+    let _permit = digest_semaphore()
+        .acquire()
+        .await
+        .map_err(|e| format!("semaphore: {}", e))?;
     let client = http_client();
     let parsed = parse_image_ref(image_full);
     if parsed.digest_only {
@@ -105,11 +145,25 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
     let repo = parsed.repo.clone();
     let tag = parsed.tag.clone();
 
+    tracing::info!(
+        "check_remote_digest: image={} registry={} repo={} tag={}",
+        image_full,
+        registry_host,
+        repo,
+        tag
+    );
+
     let config_digest = match registry_host.as_str() {
         "docker.io" => {
             let token_url = format!(
                 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
                 repo
+            );
+            tracing::info!(
+                "check_remote_digest [{}:{}]: docker.io, token_url={}",
+                repo,
+                tag,
+                token_url
             );
             let token = fetch_token(client, &token_url, &repo, &tag).await?;
             resolve_config_digest(client, "registry-1.docker.io", &repo, &tag, Some(&token)).await?
@@ -119,17 +173,34 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
                 "https://ghcr.io/token?service=ghcr.io&scope=repository:{}:pull",
                 repo
             );
+            tracing::info!(
+                "check_remote_digest [{}:{}]: ghcr.io, token_url={}",
+                repo,
+                tag,
+                token_url
+            );
             let token = fetch_token(client, &token_url, &repo, &tag).await?;
             resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
         }
         other => {
             // Unknown registry: probe for auth requirements first.
-            let probe_url = format!(
-                "https://{}/v2/{}/manifests/{}",
-                other, repo, tag
+            let probe_url = format!("https://{}/v2/{}/manifests/{}", other, repo, tag);
+            tracing::info!(
+                "check_remote_digest [{}:{}]: registry={} probe_url={}",
+                repo,
+                tag,
+                other,
+                probe_url
             );
             let probe = fetch_manifest(client, &probe_url, None).await?;
             let status = probe.status();
+
+            tracing::info!(
+                "check_remote_digest [{}:{}]: probe status={}",
+                repo,
+                tag,
+                status
+            );
 
             if status == 401 || status == 403 {
                 // Parse Www-Authenticate to find the real token endpoint.
@@ -138,11 +209,54 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
                     .get("www-authenticate")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("");
-                let realm = parse_realm(auth_header)
-                    .unwrap_or_else(|| format!("https://{}/token", other));
-                let token_url = format!(
-                    "{}?service={}&scope=repository:{}:pull",
-                    realm, other, repo
+                tracing::warn!(
+                    "check_remote_digest [{}:{}]: registry={} requiere auth, Www-Authenticate={:?}",
+                    repo,
+                    tag,
+                    other,
+                    auth_header
+                );
+
+                // Intentar fallback con Docker daemon si está disponible
+                if let Some(d) = docker {
+                    tracing::info!(
+                        "check_remote_digest [{}:{}]: fallback a docker.inspect_registry_image()",
+                        repo,
+                        tag
+                    );
+                    match d.inspect_registry_image(image_full, None).await {
+                        Ok(dist) => {
+                            if let Some(digest) = dist.descriptor.digest {
+                                tracing::info!(
+                                    "check_remote_digest [{}:{}]: Docker fallback OK digest={}",
+                                    repo,
+                                    tag,
+                                    short_digest(&digest)
+                                );
+                                return Ok((digest, tag));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "check_remote_digest [{}:{}]: Docker fallback falló: {}",
+                                repo,
+                                tag,
+                                e
+                            );
+                        }
+                    }
+                }
+
+                let realm =
+                    parse_realm(auth_header).unwrap_or_else(|| format!("https://{}/token", other));
+                let token_url =
+                    format!("{}?service={}&scope=repository:{}:pull", realm, other, repo);
+                tracing::info!(
+                    "check_remote_digest [{}:{}]: realm={} token_url={}",
+                    repo,
+                    tag,
+                    realm,
+                    token_url
                 );
                 let token = fetch_token(client, &token_url, &repo, &tag).await?;
                 resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
@@ -155,8 +269,8 @@ pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), S
         }
     };
 
-    tracing::debug!(
-        "check_remote_digest [{}:{}]: digest remoto = {}",
+    tracing::info!(
+        "check_remote_digest [{}:{}]: OK digest={}",
         repo,
         tag,
         short_digest(&config_digest)
@@ -193,6 +307,17 @@ async fn fetch_token(
         tag,
         token_url
     );
+    // Check cache first — tokens are valid for 5 minutes
+    let cache_key = format!("{}:{}", token_url, repo);
+    {
+        let cache = token_cache().lock().unwrap();
+        if let Some(cached) = cache.get(&cache_key) {
+            if cached.fetched_at.elapsed() < std::time::Duration::from_secs(300) {
+                tracing::debug!("fetch_token [{}:{}]: usando token cacheado", repo, tag);
+                return Ok(cached.token.clone());
+            }
+        }
+    }
     let token_resp = client.get(token_url).send().await.map_err(|e| {
         tracing::warn!(
             "fetch_token [{}:{}]: token request failed: {}",
@@ -219,15 +344,28 @@ async fn fetch_token(
         .json()
         .await
         .map_err(|e| format!("token parse failed: {}", e))?;
-    token_body["token"]
+    let token = token_body["token"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "no token".to_string())
+        .ok_or_else(|| "no token".to_string())?;
+    // Store in cache
+    {
+        let mut cache = token_cache().lock().unwrap();
+        cache.insert(
+            cache_key,
+            CachedToken {
+                token: token.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+    Ok(token)
 }
 
 /// Consulta el manifiesto en `https://{registry_host}/v2/{repo}/manifests/{reference}`
 /// y extrae el `config.digest`, resolviendo manifest lists multi-arch
 /// (seleccionando la plataforma actual con fallback a amd64/linux o al primero).
+/// Incluye reintentos con exponential backoff en caso de HTTP 429 (rate limit).
 async fn resolve_config_digest(
     client: &reqwest::Client,
     registry_host: &str,
@@ -245,17 +383,42 @@ async fn resolve_config_digest(
         reference,
         manifest_url
     );
-    let manifest_resp = fetch_manifest(client, &manifest_url, token).await?;
-    if !manifest_resp.status().is_success() {
-        let status = manifest_resp.status();
-        tracing::warn!(
-            "resolve_config_digest [{}:{}]: manifest HTTP {}",
-            repo,
-            reference,
-            status
-        );
-        return Err(format!("manifest status: {}", status));
-    }
+    // Fetch manifest with retry on 429 (rate limit)
+    let manifest_resp = {
+        let mut last_resp = fetch_manifest(client, &manifest_url, token).await?;
+        let mut status = last_resp.status();
+
+        if status == 429 {
+            for attempt in 1..=2 {
+                let delay_secs = 2u64 * attempt;
+                tracing::warn!(
+                    "resolve_config_digest [{}:{}]: HTTP 429, reintentando en {}s (intento {}/2)",
+                    repo,
+                    reference,
+                    delay_secs,
+                    attempt
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                last_resp = fetch_manifest(client, &manifest_url, token).await?;
+                status = last_resp.status();
+                if status != 429 {
+                    break;
+                }
+            }
+        }
+
+        if !status.is_success() {
+            tracing::warn!(
+                "resolve_config_digest [{}:{}]: manifest HTTP {}",
+                repo,
+                reference,
+                status
+            );
+            return Err(format!("manifest status: {}", status));
+        }
+
+        last_resp
+    };
 
     let content_type = manifest_resp
         .headers()
