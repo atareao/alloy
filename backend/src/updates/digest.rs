@@ -1,5 +1,5 @@
-use bollard::Docker;
 use crate::state::http_client;
+use bollard::Docker;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -147,106 +147,127 @@ async fn check_remote_digest_impl(
 
     tracing::info!(
         "check_remote_digest: image={} registry={} repo={} tag={}",
-        image_full, registry_host, repo, tag
+        image_full,
+        registry_host,
+        repo,
+        tag
     );
 
-    let config_digest =
-        match registry_host.as_str() {
-            "docker.io" => {
-                let token_url = format!(
+    let config_digest = match registry_host.as_str() {
+        "docker.io" => {
+            let token_url = format!(
                 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
                 repo
             );
-                tracing::info!(
-                    "check_remote_digest [{}:{}]: docker.io, token_url={}",
-                    repo, tag, token_url
-                );
-                let token = fetch_token(client, &token_url, &repo, &tag).await?;
-                resolve_config_digest(client, "registry-1.docker.io", &repo, &tag, Some(&token))
-                    .await?
-            }
-            "ghcr.io" => {
-                let token_url = format!(
-                    "https://ghcr.io/token?service=ghcr.io&scope=repository:{}:pull",
-                    repo
-                );
-                tracing::info!(
-                    "check_remote_digest [{}:{}]: ghcr.io, token_url={}",
-                    repo, tag, token_url
-                );
-                let token = fetch_token(client, &token_url, &repo, &tag).await?;
-                resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
-            }
-            other => {
-                // Unknown registry: probe for auth requirements first.
-                let probe_url = format!("https://{}/v2/{}/manifests/{}", other, repo, tag);
-                tracing::info!(
-                    "check_remote_digest [{}:{}]: registry={} probe_url={}",
-                    repo, tag, other, probe_url
-                );
-                let probe = fetch_manifest(client, &probe_url, None).await?;
-                let status = probe.status();
+            tracing::info!(
+                "check_remote_digest [{}:{}]: docker.io, token_url={}",
+                repo,
+                tag,
+                token_url
+            );
+            let token = fetch_token(client, &token_url, &repo, &tag).await?;
+            resolve_config_digest(client, "registry-1.docker.io", &repo, &tag, Some(&token)).await?
+        }
+        "ghcr.io" => {
+            let token_url = format!(
+                "https://ghcr.io/token?service=ghcr.io&scope=repository:{}:pull",
+                repo
+            );
+            tracing::info!(
+                "check_remote_digest [{}:{}]: ghcr.io, token_url={}",
+                repo,
+                tag,
+                token_url
+            );
+            let token = fetch_token(client, &token_url, &repo, &tag).await?;
+            resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
+        }
+        other => {
+            // Unknown registry: probe for auth requirements first.
+            let probe_url = format!("https://{}/v2/{}/manifests/{}", other, repo, tag);
+            tracing::info!(
+                "check_remote_digest [{}:{}]: registry={} probe_url={}",
+                repo,
+                tag,
+                other,
+                probe_url
+            );
+            let probe = fetch_manifest(client, &probe_url, None).await?;
+            let status = probe.status();
 
-                tracing::info!(
-                    "check_remote_digest [{}:{}]: probe status={}",
-                    repo, tag, status
-                );
+            tracing::info!(
+                "check_remote_digest [{}:{}]: probe status={}",
+                repo,
+                tag,
+                status
+            );
 
-                if status == 401 || status == 403 {
-                    // Parse Www-Authenticate to find the real token endpoint.
-                    let auth_header = probe
-                        .headers()
-                        .get("www-authenticate")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("");
-                    tracing::warn!(
+            if status == 401 || status == 403 {
+                // Parse Www-Authenticate to find the real token endpoint.
+                let auth_header = probe
+                    .headers()
+                    .get("www-authenticate")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                tracing::warn!(
                     "check_remote_digest [{}:{}]: registry={} requiere auth, Www-Authenticate={:?}",
-                    repo, tag, other, auth_header
+                    repo,
+                    tag,
+                    other,
+                    auth_header
                 );
 
-                    // Intentar fallback con Docker daemon si está disponible
-                    if let Some(d) = docker {
-                        tracing::info!(
-                            "check_remote_digest [{}:{}]: fallback a docker.inspect_registry_image()",
-                            repo, tag
-                        );
-                        match d.inspect_registry_image(image_full, None).await {
-                            Ok(dist) => {
-                                if let Some(digest) = dist.descriptor.digest {
-                                    tracing::info!(
-                                        "check_remote_digest [{}:{}]: Docker fallback OK digest={}",
-                                        repo, tag, short_digest(&digest)
-                                    );
-                                    return Ok((digest, tag));
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "check_remote_digest [{}:{}]: Docker fallback falló: {}",
-                                    repo, tag, e
+                // Intentar fallback con Docker daemon si está disponible
+                if let Some(d) = docker {
+                    tracing::info!(
+                        "check_remote_digest [{}:{}]: fallback a docker.inspect_registry_image()",
+                        repo,
+                        tag
+                    );
+                    match d.inspect_registry_image(image_full, None).await {
+                        Ok(dist) => {
+                            if let Some(digest) = dist.descriptor.digest {
+                                tracing::info!(
+                                    "check_remote_digest [{}:{}]: Docker fallback OK digest={}",
+                                    repo,
+                                    tag,
+                                    short_digest(&digest)
                                 );
+                                return Ok((digest, tag));
                             }
                         }
+                        Err(e) => {
+                            tracing::warn!(
+                                "check_remote_digest [{}:{}]: Docker fallback falló: {}",
+                                repo,
+                                tag,
+                                e
+                            );
+                        }
                     }
-
-                    let realm = parse_realm(auth_header)
-                        .unwrap_or_else(|| format!("https://{}/token", other));
-                    let token_url =
-                        format!("{}?service={}&scope=repository:{}:pull", realm, other, repo);
-                    tracing::info!(
-                        "check_remote_digest [{}:{}]: realm={} token_url={}",
-                        repo, tag, realm, token_url
-                    );
-                    let token = fetch_token(client, &token_url, &repo, &tag).await?;
-                    resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
-                } else if status.is_success() {
-                    // No auth needed — make the actual request (second call, but clean).
-                    resolve_config_digest(client, other, &repo, &tag, None).await?
-                } else {
-                    return Err(format!("manifest status: {}", status));
                 }
+
+                let realm =
+                    parse_realm(auth_header).unwrap_or_else(|| format!("https://{}/token", other));
+                let token_url =
+                    format!("{}?service={}&scope=repository:{}:pull", realm, other, repo);
+                tracing::info!(
+                    "check_remote_digest [{}:{}]: realm={} token_url={}",
+                    repo,
+                    tag,
+                    realm,
+                    token_url
+                );
+                let token = fetch_token(client, &token_url, &repo, &tag).await?;
+                resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
+            } else if status.is_success() {
+                // No auth needed — make the actual request (second call, but clean).
+                resolve_config_digest(client, other, &repo, &tag, None).await?
+            } else {
+                return Err(format!("manifest status: {}", status));
             }
-        };
+        }
+    };
 
     tracing::info!(
         "check_remote_digest [{}:{}]: OK digest={}",

@@ -139,29 +139,29 @@ pub async fn update_container_h(
 
     // Verificar digest remoto antes de hacer pull
     let image_id = container.image_id.as_deref().unwrap_or("").to_string();
-    let (needs_pull, remote_digest) = match crate::updates::digest::check_remote_digest_with_docker(image, &docker).await
-    {
-        Ok((digest, _)) => {
-            if !image_id.is_empty() {
-                let local_short = crate::updates::digest::short_digest(&image_id);
-                let remote_short = crate::updates::digest::short_digest(&digest);
-                (local_short != remote_short, digest)
-            } else {
-                (true, digest) // sin image_id local, asumimos que necesita pull
+    let (needs_pull, remote_digest) =
+        match crate::updates::digest::check_remote_digest_with_docker(image, &docker).await {
+            Ok((digest, _)) => {
+                if !image_id.is_empty() {
+                    let local_short = crate::updates::digest::short_digest(&image_id);
+                    let remote_short = crate::updates::digest::short_digest(&digest);
+                    (local_short != remote_short, digest)
+                } else {
+                    (true, digest) // sin image_id local, asumimos que necesita pull
+                }
             }
-        }
-        Err(e) => {
-            tracing::warn!(
-                "update_container [{}]: error verificando digest remoto: {}, NO se hará pull",
-                name,
-                e
-            );
-            return Err(AppError::Internal(format!(
-                "cannot check remote digest: {}",
-                e
-            )));
-        }
-    };
+            Err(e) => {
+                tracing::warn!(
+                    "update_container [{}]: error verificando digest remoto: {}, NO se hará pull",
+                    name,
+                    e
+                );
+                return Err(AppError::Internal(format!(
+                    "cannot check remote digest: {}",
+                    e
+                )));
+            }
+        };
 
     if !needs_pull {
         let _ = update_tx.send(UpdateProgress {
@@ -442,17 +442,18 @@ pub async fn check_update_h(
         (None, "unknown".into(), None, None, Some("no image".into()))
     } else {
         let local_tag = crate::updates::digest::parse_image_ref(image_full).tag;
-        let (remote_digest, remote_tag, error) = match check_remote_digest_with_docker(image_full, &docker).await {
-            Ok((digest, tag)) => (Some(digest), Some(tag), None),
-            Err(e) => {
-                tracing::warn!(
-                    "check_update [{}]: error obteniendo digest remoto: {}",
-                    name,
-                    e
-                );
-                (None, None, Some(e))
-            }
-        };
+        let (remote_digest, remote_tag, error) =
+            match check_remote_digest_with_docker(image_full, &docker).await {
+                Ok((digest, tag)) => (Some(digest), Some(tag), None),
+                Err(e) => {
+                    tracing::warn!(
+                        "check_update [{}]: error obteniendo digest remoto: {}",
+                        name,
+                        e
+                    );
+                    (None, None, Some(e))
+                }
+            };
         let has_update = match (&container.image_id, &remote_digest) {
             (Some(local_digest), Some(remote_digest)) => {
                 let local_short = crate::updates::digest::short_digest(local_digest);

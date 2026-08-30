@@ -155,35 +155,41 @@ pub async fn update_check_worker(
             }
 
             // Check remote digest for this container
-            let (has_update, old_digest, new_digest) = match crate::updates::digest::check_remote_digest_with_docker(&image_full, &docker).await
-            {
-                Ok((remote_digest, _)) => {
-                    // Usar last_remote_digest de DB si existe (comparación correcta),
-                    // fallback a image_id (Docker content hash) solo si es primera vez
-                    let local_ref = last_remote_digest_map
-                        .get(&name)
-                        .map(|s| s.as_str())
-                        .unwrap_or(&image_id);
-                    let has_update = if !local_ref.is_empty() {
-                        let local_short = crate::updates::digest::short_digest(local_ref);
-                        let remote_short = crate::updates::digest::short_digest(&remote_digest);
-                        local_short != remote_short
-                    } else {
-                        false
-                    };
-                    let old_digest = if last_remote_digest_map.contains_key(&name) {
-                        last_remote_digest_map.get(&name).cloned().unwrap_or_default()
-                    } else {
-                        image_id.clone()
-                    };
-                    (has_update, old_digest, remote_digest)
-                }
-                Err(_) => {
-                    let _ = sqlite_update_has_update(&db_pool, &name, false).await;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
-                    continue;
-                }
-            };
+            let (has_update, old_digest, new_digest) =
+                match crate::updates::digest::check_remote_digest_with_docker(&image_full, &docker)
+                    .await
+                {
+                    Ok((remote_digest, _)) => {
+                        // Usar last_remote_digest de DB si existe (comparación correcta),
+                        // fallback a image_id (Docker content hash) solo si es primera vez
+                        let local_ref = last_remote_digest_map
+                            .get(&name)
+                            .map(|s| s.as_str())
+                            .unwrap_or(&image_id);
+                        let has_update = if !local_ref.is_empty() {
+                            let local_short = crate::updates::digest::short_digest(local_ref);
+                            let remote_short = crate::updates::digest::short_digest(&remote_digest);
+                            local_short != remote_short
+                        } else {
+                            false
+                        };
+                        let old_digest = if last_remote_digest_map.contains_key(&name) {
+                            last_remote_digest_map
+                                .get(&name)
+                                .cloned()
+                                .unwrap_or_default()
+                        } else {
+                            image_id.clone()
+                        };
+                        (has_update, old_digest, remote_digest)
+                    }
+                    Err(_) => {
+                        let _ = sqlite_update_has_update(&db_pool, &name, false).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms))
+                            .await;
+                        continue;
+                    }
+                };
 
             let _ = sqlite_update_has_update(&db_pool, &name, has_update).await;
             if !has_update || name.is_empty() {
@@ -556,9 +562,9 @@ async fn load_last_remote_digest_map(db_pool: &DbPool) -> HashMap<String, String
         Err(_) => return HashMap::new(),
     };
     let guard = conn.lock().unwrap();
-    let mut stmt = match guard.prepare(
-        "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
-    ) {
+    let mut stmt = match guard
+        .prepare("SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''")
+    {
         Ok(s) => s,
         Err(_) => return HashMap::new(),
     };
