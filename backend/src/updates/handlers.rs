@@ -20,7 +20,7 @@ use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
-use crate::updates::digest::check_remote_digest;
+use crate::updates::digest::check_remote_digest_with_docker;
 use crate::workers::resolve_compose_file;
 use bollard::models::ImagePruneResponse;
 
@@ -139,7 +139,7 @@ pub async fn update_container_h(
 
     // Verificar digest remoto antes de hacer pull
     let image_id = container.image_id.as_deref().unwrap_or("").to_string();
-    let (needs_pull, remote_digest) = match crate::updates::digest::check_remote_digest(image).await
+    let (needs_pull, remote_digest) = match crate::updates::digest::check_remote_digest_with_docker(image, &docker).await
     {
         Ok((digest, _)) => {
             if !image_id.is_empty() {
@@ -298,7 +298,7 @@ pub async fn update_all_h(
     for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
         // Verificar digest remoto antes de hacer pull
         let (needs_pull, remote_digest) =
-            match crate::updates::digest::check_remote_digest(&image).await {
+            match crate::updates::digest::check_remote_digest_with_docker(&image, &docker).await {
                 Ok((digest, _)) => {
                     let has_update = image_id.as_ref().is_none_or(|local_digest| {
                         let local_short = crate::updates::digest::short_digest(local_digest);
@@ -442,7 +442,7 @@ pub async fn check_update_h(
         (None, "unknown".into(), None, None, Some("no image".into()))
     } else {
         let local_tag = crate::updates::digest::parse_image_ref(image_full).tag;
-        let (remote_digest, remote_tag, error) = match check_remote_digest(image_full).await {
+        let (remote_digest, remote_tag, error) = match check_remote_digest_with_docker(image_full, &docker).await {
             Ok((digest, tag)) => (Some(digest), Some(tag), None),
             Err(e) => {
                 tracing::warn!(
@@ -573,7 +573,7 @@ async fn check_and_apply_all(
             image_full
         );
 
-        match check_remote_digest(&image_full).await {
+        match check_remote_digest_with_docker(&image_full, docker).await {
             Ok((remote_digest, _)) => {
                 let local_ref = if !last_remote_digest.is_empty() {
                     &last_remote_digest
@@ -1080,7 +1080,7 @@ async fn apply_single_policy(
         let new_digest = if let Some(d) = &p.remote_digest {
             d.clone()
         } else {
-            check_remote_digest_on_image(&p.image_full).await
+            check_remote_digest_on_image(&p.image_full, docker).await
         };
         {
             let conn = db_pool.get().await.unwrap();
@@ -1302,10 +1302,10 @@ pub(crate) async fn rollback_container(
         .await;
 }
 
-/// Llama a `check_remote_digest` con la referencia de imagen completa.
+/// Llama a `check_remote_digest_with_docker` con la referencia de imagen completa.
 /// Retorna el digest remoto o cadena vacía si falla la consulta.
-async fn check_remote_digest_on_image(image_full: &str) -> String {
-    match crate::updates::digest::check_remote_digest(image_full).await {
+async fn check_remote_digest_on_image(image_full: &str, docker: &Docker) -> String {
+    match crate::updates::digest::check_remote_digest_with_docker(image_full, docker).await {
         Ok((digest, _)) => digest,
         Err(_) => String::new(),
     }
