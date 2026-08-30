@@ -1,4 +1,46 @@
 # Changelog
+## [0.21.0] - 2026-08-30
+
+### Bug Fixes
+
+- Parse Www-Authenticate realm for private registries; fix isSuccess for update-check status
+- Merge update-check-digest-fix into develop
+- Merge history-status-tooltip into develop
+- *(scheduler)* Use recreate_container instead of restart_container for PullRestart policy
+- Merge batch-state-persist-across-tabs into develop
+- *(scheduler)* Use last_remote_digest from DB + Docker daemon fallback for registry auth (#48)
+
+### Features
+
+- Make notify_events toggle functional per container
+- *(db)* Add last_remote_digest tracking and check_interval_ms setting
+- *(updates)* Add token cache, rate-limit semaphore, and 429 retry for digest checks
+- *(auth)* Deduplicate session expiry logs from concurrent connections
+
+### Miscellaneous Tasks
+
+- Bump version to 0.20.6
+- Fix formatting for pre-commit compliance
+- Sync Cargo.lock after release merge
+- Bump version to 0.20.8
+- Fix formatting
+- Sync Cargo.lock after release merge
+
+### Other
+
+- Merge v0.20.1 into develop
+- Merge v0.20.6 into develop
+- Merge v0.20.8 into develop
+- Merge develop into main (v0.20.8 + backlog)
+
+### Refactor
+
+- *(updates)* Extract check_and_apply_all and apply_single_policy from background loop
+## [0.20.8] - 2026-08-29
+
+### Miscellaneous Tasks
+
+- Release v0.20.8
 ## [0.20.7] - 2026-08-29
 
 ### Bug Fixes
