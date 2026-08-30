@@ -128,12 +128,6 @@ pub async fn check_remote_digest_with_docker(
     check_remote_digest_impl(image_full, Some(docker)).await
 }
 
-/// Wrapper sin Docker, mantiene compatibilidad con callers que no tienen acceso al daemon.
-/// Para usar el fallback del daemon, llame a `check_remote_digest_with_docker`.
-pub async fn check_remote_digest(image_full: &str) -> Result<(String, String), String> {
-    check_remote_digest_impl(image_full, None).await
-}
-
 async fn check_remote_digest_impl(
     image_full: &str,
     docker: Option<&Docker>,
