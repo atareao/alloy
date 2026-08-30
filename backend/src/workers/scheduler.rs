@@ -12,7 +12,6 @@ use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
-use crate::updates::digest::check_remote_digest;
 use crate::updates::handlers::{
     log_prune_result, prune_dangling_images, recreate_container, rollback_container,
     tag_backup_image, verify_container_healthy,
@@ -97,6 +96,9 @@ pub async fn update_check_worker(
             }
         }
 
+        // 1b. Cargar last_remote_digest de la DB para comparación correcta
+        let last_remote_digest_map = load_last_remote_digest_map(&db_pool).await;
+
         // 2. Obtener políticas
         let policies = {
             let p = update_policies.lock().await;
@@ -153,17 +155,27 @@ pub async fn update_check_worker(
             }
 
             // Check remote digest for this container
-            let (has_update, old_digest, new_digest) = match check_remote_digest(&image_full).await
+            let (has_update, old_digest, new_digest) = match crate::updates::digest::check_remote_digest_with_docker(&image_full, &docker).await
             {
                 Ok((remote_digest, _)) => {
-                    let has_update = if !image_id.is_empty() {
-                        let local_short = crate::updates::digest::short_digest(&image_id);
+                    // Usar last_remote_digest de DB si existe (comparación correcta),
+                    // fallback a image_id (Docker content hash) solo si es primera vez
+                    let local_ref = last_remote_digest_map
+                        .get(&name)
+                        .map(|s| s.as_str())
+                        .unwrap_or(&image_id);
+                    let has_update = if !local_ref.is_empty() {
+                        let local_short = crate::updates::digest::short_digest(local_ref);
                         let remote_short = crate::updates::digest::short_digest(&remote_digest);
                         local_short != remote_short
                     } else {
                         false
                     };
-                    let old_digest = image_id;
+                    let old_digest = if last_remote_digest_map.contains_key(&name) {
+                        last_remote_digest_map.get(&name).cloned().unwrap_or_default()
+                    } else {
+                        image_id.clone()
+                    };
                     (has_update, old_digest, remote_digest)
                 }
                 Err(_) => {
@@ -533,6 +545,32 @@ pub async fn resolve_compose_file(docker: &Docker, project: &str) -> Option<Stri
                 .map(|dir| format!("{}/docker-compose.yml", dir))
         })
         .filter(|p| std::path::Path::new(p).exists())
+}
+
+/// Carga el mapa de nombre → last_remote_digest desde la DB.
+/// Se usa para comparar contra el digest remoto actual y evitar
+/// re-descargar imágenes que no han cambiado.
+async fn load_last_remote_digest_map(db_pool: &DbPool) -> HashMap<String, String> {
+    let conn = match db_pool.get().await {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+    let guard = conn.lock().unwrap();
+    let mut stmt = match guard.prepare(
+        "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
+    ) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = match stmt.query_map([], |row| {
+        let name: String = row.get(0)?;
+        let digest: String = row.get(1)?;
+        Ok((name, digest))
+    }) {
+        Ok(r) => r,
+        Err(_) => return HashMap::new(),
+    };
+    rows.filter_map(|r| r.ok()).collect()
 }
 
 #[cfg(test)]
