@@ -1,4 +1,9 @@
 # Changelog
+## [0.21.1] - 2026-08-31
+
+### Bug Fixes
+
+- *(update)* Progressive retries, docker-daemon-first auth, suppress duplicate notifications
 ## [0.21.0] - 2026-08-30
 
 ### Bug Fixes
@@ -25,6 +30,7 @@
 - Bump version to 0.20.8
 - Fix formatting
 - Sync Cargo.lock after release merge
+- Release v0.21.0
 
 ### Other
 
