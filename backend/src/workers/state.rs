@@ -1,6 +1,6 @@
 use bollard::{container::InspectContainerOptions, system::EventsOptions, Docker};
 use futures::{pin_mut, StreamExt};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -79,6 +79,7 @@ async fn refresh(
     notif_tx: &broadcast::Sender<NotifEvent>,
     previous_states: &mut HashMap<String, String>,
     db_pool: &DbPool,
+    update_in_progress: &Arc<Mutex<HashSet<String>>>,
 ) {
     let containers = fetch_containers(docker, &None, db_pool).await;
     *cache.write().await = Some(containers.clone());
@@ -97,6 +98,17 @@ async fn refresh(
             .unwrap_or("");
         let curr = c.state.as_str();
         if !prev.is_empty() && prev != curr {
+            // Skip notifications for containers currently being updated by scheduler
+            {
+                let in_progress = update_in_progress.lock().await;
+                if in_progress.contains(&c.name) {
+                    tracing::debug!(
+                        "state_worker: omitiendo notificación para '{}' (update in progress)",
+                        c.name
+                    );
+                    continue;
+                }
+            }
             let should_notify = policies
                 .iter()
                 .find(|p| p.container == c.name)
@@ -128,11 +140,11 @@ async fn refresh(
         previous_states.insert(c.name.clone(), c.state.clone());
     }
     // Remove stale entries (containers that no longer exist)
-    let current_names: std::collections::HashSet<String> =
-        containers.iter().map(|c| c.name.clone()).collect();
+    let current_names: HashSet<String> = containers.iter().map(|c| c.name.clone()).collect();
     previous_states.retain(|k, _| current_names.contains(k));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn state_worker(
     docker: Docker,
     settings: Arc<Mutex<Settings>>,
@@ -141,6 +153,7 @@ pub async fn state_worker(
     cached_containers: CachedContainers,
     notif_tx: broadcast::Sender<NotifEvent>,
     db_pool: DbPool,
+    update_in_progress: Arc<Mutex<HashSet<String>>>,
 ) {
     let relevant_actions = [
         "start", "stop", "die", "kill", "pause", "unpause", "restart", "create", "destroy",
@@ -158,6 +171,7 @@ pub async fn state_worker(
         &notif_tx,
         &mut previous_states,
         &db_pool,
+        &update_in_progress,
     )
     .await;
 
@@ -173,32 +187,32 @@ pub async fn state_worker(
 
         loop {
             tokio::select! {
-                            event = stream.next() => {
-                                match event {
-                                    Some(Ok(evt)) => {
-                                        if evt.typ == Some(bollard::models::EventMessageTypeEnum::CONTAINER) {
-                                            if let Some(ref action) = evt.action {
-                                                if relevant_actions.contains(&action.as_str()) {
-                                                    tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
-            refresh(&docker,  &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool).await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Some(Err(e)) => {
-                                        tracing::warn!("Docker events stream error: {} — reconnecting", e);
-                                        break;
-                                    }
-                                    None => {
-                                        tracing::warn!("Docker events stream ended — reconnecting");
-                                        break;
+                event = stream.next() => {
+                    match event {
+                        Some(Ok(evt)) => {
+                            if evt.typ == Some(bollard::models::EventMessageTypeEnum::CONTAINER) {
+                                if let Some(ref action) = evt.action {
+                                    if relevant_actions.contains(&action.as_str()) {
+                                        tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
+                                        refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool, &update_in_progress).await;
                                     }
                                 }
                             }
-                            _ = fallback.tick() => {
-                                refresh(&docker,  &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool).await;
-                            }
                         }
+                        Some(Err(e)) => {
+                            tracing::warn!("Docker events stream error: {} — reconnecting", e);
+                            break;
+                        }
+                        None => {
+                            tracing::warn!("Docker events stream ended — reconnecting");
+                            break;
+                        }
+                    }
+                }
+                _ = fallback.tick() => {
+                    refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool, &update_in_progress).await;
+                }
+            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

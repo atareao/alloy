@@ -1,5 +1,5 @@
 use bollard::Docker;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
@@ -135,6 +135,10 @@ pub struct AppState {
     pub cached_containers: CachedContainers,
     pub settings: Arc<Mutex<Settings>>,
     pub db: DbPool,
+    /// Set of container names currently being updated by the scheduler.
+    /// The state worker checks this set and skips notifications for these
+    /// containers to avoid duplicate alerts during scheduled updates.
+    pub update_in_progress: Arc<Mutex<HashSet<String>>>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
