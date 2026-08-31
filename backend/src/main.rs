@@ -12,7 +12,7 @@ mod timezone;
 mod updates;
 mod workers;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_http::cors::CorsLayer;
@@ -173,6 +173,7 @@ async fn main() {
         cached_containers: cached_containers.clone(),
         settings: settings.clone(),
         db: db_pool.clone(),
+        update_in_progress: Arc::new(Mutex::new(HashSet::new())),
     };
 
     // Spawn workers
@@ -184,6 +185,7 @@ async fn main() {
         cached_containers,
         notif_tx.clone(),
         db_pool.clone(),
+        state.update_in_progress.clone(),
     ));
     tokio::spawn(update_check_worker(
         docker.clone(),
@@ -193,6 +195,7 @@ async fn main() {
         notif_tx.clone(),
         update_history.clone(),
         db_pool.clone(),
+        state.update_in_progress.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
     tokio::spawn(cleanup_worker(docker.clone()));

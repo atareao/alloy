@@ -183,7 +183,38 @@ async fn check_remote_digest_impl(
             resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
         }
         other => {
-            // Unknown registry: probe for auth requirements first.
+            // Unknown registry: try Docker daemon FIRST (has credentials configured).
+            if let Some(d) = docker {
+                tracing::info!(
+                    "check_remote_digest [{}:{}]: registry={} — intentando Docker daemon primero",
+                    repo,
+                    tag,
+                    other
+                );
+                match d.inspect_registry_image(image_full, None).await {
+                    Ok(dist) => {
+                        if let Some(digest) = dist.descriptor.digest {
+                            tracing::info!(
+                                "check_remote_digest [{}:{}]: Docker daemon OK digest={}",
+                                repo,
+                                tag,
+                                short_digest(&digest)
+                            );
+                            return Ok((digest, tag));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::info!(
+                            "check_remote_digest [{}:{}]: Docker daemon falló (seguimos con HTTP): {}",
+                            repo,
+                            tag,
+                            e
+                        );
+                    }
+                }
+            }
+
+            // Fallback: HTTP probe for auth requirements.
             let probe_url = format!("https://{}/v2/{}/manifests/{}", other, repo, tag);
             tracing::info!(
                 "check_remote_digest [{}:{}]: registry={} probe_url={}",
@@ -217,36 +248,6 @@ async fn check_remote_digest_impl(
                     auth_header
                 );
 
-                // Intentar fallback con Docker daemon si está disponible
-                if let Some(d) = docker {
-                    tracing::info!(
-                        "check_remote_digest [{}:{}]: fallback a docker.inspect_registry_image()",
-                        repo,
-                        tag
-                    );
-                    match d.inspect_registry_image(image_full, None).await {
-                        Ok(dist) => {
-                            if let Some(digest) = dist.descriptor.digest {
-                                tracing::info!(
-                                    "check_remote_digest [{}:{}]: Docker fallback OK digest={}",
-                                    repo,
-                                    tag,
-                                    short_digest(&digest)
-                                );
-                                return Ok((digest, tag));
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "check_remote_digest [{}:{}]: Docker fallback falló: {}",
-                                repo,
-                                tag,
-                                e
-                            );
-                        }
-                    }
-                }
-
                 let realm =
                     parse_realm(auth_header).unwrap_or_else(|| format!("https://{}/token", other));
                 let token_url =
@@ -261,7 +262,7 @@ async fn check_remote_digest_impl(
                 let token = fetch_token(client, &token_url, &repo, &tag).await?;
                 resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
             } else if status.is_success() {
-                // No auth needed — make the actual request (second call, but clean).
+                // No auth needed — make the actual request.
                 resolve_config_digest(client, other, &repo, &tag, None).await?
             } else {
                 return Err(format!("manifest status: {}", status));
