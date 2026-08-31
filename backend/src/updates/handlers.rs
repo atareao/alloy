@@ -1252,13 +1252,38 @@ pub(crate) fn log_prune_result(
     }
 }
 
-/// Verify a container is running after a restart
+/// Verify a container is running after a restart, with progressive backoff.
+/// Sleeps 3s, 6s, then 12s between checks. Returns true as soon as the
+/// container is running, false after all three attempts fail.
 pub(crate) async fn verify_container_healthy(docker: &Docker, name: &str) -> bool {
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-    match find_container_by_name(docker, name).await {
-        Ok(c) => c.state.as_deref() == Some("running"),
-        Err(_) => false,
+    let delays = [3u64, 6, 12];
+    for delay in &delays {
+        tokio::time::sleep(std::time::Duration::from_secs(*delay)).await;
+        match find_container_by_name(docker, name).await {
+            Ok(c) if c.state.as_deref() == Some("running") => return true,
+            Ok(c) => {
+                tracing::debug!(
+                    "verify_container_healthy [{}]: state={:?}, retrying in {}s",
+                    name,
+                    c.state,
+                    delay
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "verify_container_healthy [{}]: find error={}, retrying in {}s",
+                    name,
+                    e,
+                    delay
+                );
+            }
+        }
     }
+    tracing::warn!(
+        "verify_container_healthy [{}]: no healthy after 3 attempts (21s total)",
+        name
+    );
+    false
 }
 
 /// Tag current image as backup for rollback: image:tag → image:rollback-{ts}

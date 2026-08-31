@@ -3,7 +3,7 @@ use bollard::{
     Docker,
 };
 use chrono::Timelike;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
@@ -20,6 +20,7 @@ use crate::updates::handlers::{
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
 /// Revisa todas las imágenes, marca las que tienen actualización pendiente en DB,
 /// y aplica las políticas configuradas (pull, restart, prune).
+#[allow(clippy::too_many_arguments)]
 pub async fn update_check_worker(
     docker: Docker,
     settings: Arc<Mutex<Settings>>,
@@ -28,6 +29,7 @@ pub async fn update_check_worker(
     notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: DbPool,
+    update_in_progress: Arc<Mutex<HashSet<String>>>,
 ) {
     let mut tick = tokio::time::interval(tokio::time::Duration::from_secs(60));
     loop {
@@ -413,6 +415,11 @@ pub async fn update_check_worker(
                                         log_prune_result("scheduler-safety", &result);
                                     }
                                     updated_count += 1;
+                                    // Remove from suppression set
+                                    {
+                                        let mut in_progress = update_in_progress.lock().await;
+                                        in_progress.remove(&name);
+                                    }
                                 }
                                 _ => {
                                     let _ = update_tx.send(UpdateProgress {
@@ -421,6 +428,11 @@ pub async fn update_check_worker(
                                         done: true,
                                         error: Some("docker compose pull failed".into()),
                                     });
+                                    // Remove from suppression set on error too
+                                    {
+                                        let mut in_progress = update_in_progress.lock().await;
+                                        in_progress.remove(&name);
+                                    }
                                 }
                             }
                         }
