@@ -592,12 +592,17 @@ async fn check_and_apply_all(
         );
 
         // Send progress event so frontend shows live feedback
-        let _ = update_tx.send(UpdateProgress {
+        let send_result = update_tx.send(UpdateProgress {
             container: name.clone(),
             status: format!("🔍 Verificando {}...", image_full),
             done: false,
             error: None,
         });
+        tracing::info!(
+            "check_and_apply_all [{}]: enviado UpdateProgress (checking) receivers={}",
+            name,
+            send_result.map_or(0, |n| n)
+        );
 
         match check_remote_digest_with_docker(&image_full, docker).await {
             Ok((remote_digest, _)) => {
@@ -710,12 +715,17 @@ async fn check_and_apply_all(
                     } else {
                         "⏹️ No aplicable (no running)"
                     };
-                    let _ = update_tx.send(UpdateProgress {
+                    let send_result = update_tx.send(UpdateProgress {
                         container: name.clone(),
                         status: status.into(),
                         done: true,
                         error: None,
                     });
+                    tracing::info!(
+                        "check_and_apply_all [{}]: enviado UpdateProgress (done) receivers={}",
+                        name,
+                        send_result.map_or(0, |n| n)
+                    );
                 }
             }
             Err(e) => {
@@ -743,12 +753,17 @@ async fn check_and_apply_all(
                         e
                     );
                 }
-                let _ = update_tx.send(UpdateProgress {
+                let send_result = update_tx.send(UpdateProgress {
                     container: name.clone(),
                     status: format!("❌ Error: {}", e),
                     done: true,
                     error: Some(e.clone()),
                 });
+                tracing::info!(
+                    "check_and_apply_all [{}]: enviado UpdateProgress (error) receivers={}",
+                    name,
+                    send_result.map_or(0, |n| n)
+                );
             }
         }
 
