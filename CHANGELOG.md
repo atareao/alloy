@@ -1,10 +1,20 @@
 # Changelog
+## [0.21.3] - 2026-09-05
+
+### Bug Fixes
+
+- Redirect to login on any 401, not just session_expired
+- Redirect to login on any 401, not just session_expired
 ## [0.21.2] - 2026-09-05
 
 ### Bug Fixes
 
 - Preserve host_config and networking_config on container recreate
 - Preserve host_config and networking_config on container recreate
+
+### Miscellaneous Tasks
+
+- Release v0.21.2
 ## [0.21.1] - 2026-08-31
 
 ### Bug Fixes
