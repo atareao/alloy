@@ -591,6 +591,14 @@ async fn check_and_apply_all(
             image_full
         );
 
+        // Send progress event so frontend shows live feedback
+        let _ = update_tx.send(UpdateProgress {
+            container: name.clone(),
+            status: format!("🔍 Verificando {}...", image_full),
+            done: false,
+            error: None,
+        });
+
         match check_remote_digest_with_docker(&image_full, docker).await {
             Ok((remote_digest, _)) => {
                 let local_ref = if !last_remote_digest.is_empty() {
@@ -695,6 +703,19 @@ async fn check_and_apply_all(
                         &mut any_success,
                     )
                     .await;
+                } else {
+                    // No update needed — mark check as done
+                    let status = if !has_update {
+                        "✅ Sin cambios"
+                    } else {
+                        "⏹️ No aplicable (no running)"
+                    };
+                    let _ = update_tx.send(UpdateProgress {
+                        container: name.clone(),
+                        status: status.into(),
+                        done: true,
+                        error: None,
+                    });
                 }
             }
             Err(e) => {
@@ -722,6 +743,12 @@ async fn check_and_apply_all(
                         e
                     );
                 }
+                let _ = update_tx.send(UpdateProgress {
+                    container: name.clone(),
+                    status: format!("❌ Error: {}", e),
+                    done: true,
+                    error: Some(e.clone()),
+                });
             }
         }
 
