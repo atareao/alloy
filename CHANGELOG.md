@@ -1,9 +1,19 @@
 # Changelog
+## [0.21.8] - 2026-09-05
+
+### Bug Fixes
+
+- Send UpdateProgress events during check phase for live UX feedback
+- Send UpdateProgress events during check phase for live UX feedback
 ## [0.21.7] - 2026-09-05
 
 ### Bug Fixes
 
 - Copy build.rs into Docker build container
+
+### Miscellaneous Tasks
+
+- Release v0.21.7
 ## [0.21.6] - 2026-09-05
 
 ### Bug Fixes
