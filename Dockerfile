@@ -29,7 +29,7 @@ RUN touch src/main.rs && \
 # ═══════════════════════════════════════════════════════════════
 FROM docker.io/library/node:23-alpine AS frontend-builder
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN npm install -g pnpm@11.21.0
 
 WORKDIR /build
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
