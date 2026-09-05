@@ -1,10 +1,20 @@
 # Changelog
+## [0.21.9] - 2026-09-05
+
+### Miscellaneous Tasks
+
+- Add logging to debug UpdateProgress delivery during check phase
+- Add logging to debug UpdateProgress delivery
 ## [0.21.8] - 2026-09-05
 
 ### Bug Fixes
 
 - Send UpdateProgress events during check phase for live UX feedback
 - Send UpdateProgress events during check phase for live UX feedback
+
+### Miscellaneous Tasks
+
+- Release v0.21.8
 ## [0.21.7] - 2026-09-05
 
 ### Bug Fixes
