@@ -1,10 +1,17 @@
 # Changelog
+## [0.21.10] - 2026-09-05
+
+### Bug Fixes
+
+- SSE onerror should not redirect on transient errors, only on session expiry
+- SSE onerror should not redirect on transient errors
 ## [0.21.9] - 2026-09-05
 
 ### Miscellaneous Tasks
 
 - Add logging to debug UpdateProgress delivery during check phase
 - Add logging to debug UpdateProgress delivery
+- Release v0.21.9
 ## [0.21.8] - 2026-09-05
 
 ### Bug Fixes
