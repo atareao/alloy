@@ -1,9 +1,19 @@
 # Changelog
+## [0.21.2] - 2026-09-05
+
+### Bug Fixes
+
+- Preserve host_config and networking_config on container recreate
+- Preserve host_config and networking_config on container recreate
 ## [0.21.1] - 2026-08-31
 
 ### Bug Fixes
 
 - *(update)* Progressive retries, docker-daemon-first auth, suppress duplicate notifications
+
+### Miscellaneous Tasks
+
+- Release v0.21.1
 ## [0.21.0] - 2026-08-30
 
 ### Bug Fixes
@@ -162,12 +172,19 @@
 - Sync Cargo.lock version to 0.17.4
 ## [0.17.4] - 2026-08-23
 
+### Bug Fixes
+
+- Redirect to OIDC login when session expires
+- Merge session-expiry-redirect into develop
+
 ### Features
 
 - Add tracing logs to image update checks + fix check_all redundant Docker calls (#38)
 
 ### Miscellaneous Tasks
 
+- Merge main into develop after v0.18.0 release and auto-logout (#37)
+- Merge main into develop after v0.17.2
 - Merge main into develop to align branches
 - Bump version to 0.17.4
 
@@ -178,7 +195,6 @@
 
 ### Miscellaneous Tasks
 
-- Merge main into develop after v0.17.2
 - Release v0.17.3
 ## [0.17.2] - 2026-08-19
 
@@ -190,17 +206,11 @@
 ### Bug Fixes
 
 - Redirect to OIDC login when session expires
-- Redirect to OIDC login when session expires
-- Merge session-expiry-redirect into develop
 - Session-expiry-redirect
 
 ### Features
 
 - Implement automatic session logout with idle timeout and sliding refresh (#37)
-
-### Miscellaneous Tasks
-
-- Merge main into develop after v0.18.0 release and auto-logout (#37)
 ## [0.17.1] - 2026-07-27
 
 ### Miscellaneous Tasks
@@ -323,6 +333,14 @@
 
 ### Bug Fixes
 
+- Merge frontend-build-fixes into develop
+- Permisos data/, persistencia settings, rutas config y eliminacion StacksPage
+- Merge matrix-settings-persistence into develop
+- Anadir tracing al flujo de alertas y notificaciones para diagnosticar fallos
+- Merge alerts-tracing into develop
+- Notify_* ignora respuestas HTTP 4xx/5xx (errores silenciosos)
+- Merge notify-http-status into develop
+- Persistencia de estado SSE del dashboard al cambiar de pestaña
 - Persistencia de estado SSE del dashboard al cambiar de pestaña
 - Merge sse-state-persistence into develop
 - Token visible, Matrix r0, dangling filter, cache en App
@@ -340,32 +358,24 @@
 ### Bug Fixes
 
 - Notify_* ignora respuestas HTTP 4xx/5xx (errores silenciosos)
-- Merge notify-http-status into develop
-- Persistencia de estado SSE del dashboard al cambiar de pestaña
 - Notify-http-status
 ## [0.10.3] - 2026-07-14
 
 ### Bug Fixes
 
 - Anadir tracing al flujo de alertas y notificaciones para diagnosticar fallos
-- Merge alerts-tracing into develop
-- Notify_* ignora respuestas HTTP 4xx/5xx (errores silenciosos)
 - Alerts-tracing
 ## [0.10.2] - 2026-07-14
 
 ### Bug Fixes
 
 - Permisos data/, persistencia settings, rutas config y eliminacion StacksPage
-- Merge matrix-settings-persistence into develop
-- Anadir tracing al flujo de alertas y notificaciones para diagnosticar fallos
 - Matrix-settings-persistence
 ## [0.10.1] - 2026-07-14
 
 ### Bug Fixes
 
 - Build frontend - searchQuery state faltante y scrollArea en Modal
-- Merge frontend-build-fixes into develop
-- Permisos data/, persistencia settings, rutas config y eliminacion StacksPage
 - Frontend-build-fixes
 ## [0.10.0] - 2026-07-14
 
@@ -454,24 +464,27 @@
 - Unificar autenticación frontend a cookies de sesión OIDC
 - Auto-update worker - check digest before pulling images
 - Auto-update worker - check digest before pulling images
-## [0.6.0] - 2026-07-12
-
-### Other
-
-- V0.6.0
-## [0.5.2] - 2026-07-12
-
-### Bug Fixes
-
-- Has_update nunca se limpia tras check/update
-- Merge fix-update-icon-persistence into develop
-- Mostrar siempre nombre de imagen en lugar de hash sha256
-- Recuperar nombre de imagen via inspect_container cuando Docker devuelve sha256
-- Fix-update-icon-persistence
 
 ### Documentation
 
 - Actualizar todo.md con el estado real del proyecto
+
+### Miscellaneous Tasks
+
+- Fase 1 limpieza - eliminar terminal.rs, mover health_h a main.rs
+- Fase 2 limpieza - mover config/history handlers a sus módulos
+- Fase 3 limpieza - extraer persistence.rs de workers.rs
+
+### Other
+
+- Merge v0.6.0 into develop
+## [0.6.0] - 2026-07-12
+
+### Bug Fixes
+
+- Merge fix-update-icon-persistence into develop
+- Mostrar siempre nombre de imagen en lugar de hash sha256
+- Recuperar nombre de imagen via inspect_container cuando Docker devuelve sha256
 
 ### Features
 
@@ -481,13 +494,17 @@
 ### Miscellaneous Tasks
 
 - Bump version to 0.6.0
-- Fase 1 limpieza - eliminar terminal.rs, mover health_h a main.rs
-- Fase 2 limpieza - mover config/history handlers a sus módulos
-- Fase 3 limpieza - extraer persistence.rs de workers.rs
 
 ### Other
 
-- Merge v0.6.0 into develop
+- Merge v0.5.1 into develop
+- V0.6.0
+## [0.5.2] - 2026-07-12
+
+### Bug Fixes
+
+- Has_update nunca se limpia tras check/update
+- Fix-update-icon-persistence
 ## [0.5.1] - 2026-07-12
 
 ### Bug Fixes
@@ -503,7 +520,6 @@
 
 - Merge v0.5.0 into develop
 - Merge develop into main
-- Merge v0.5.1 into develop
 - V0.5.1
 ## [0.5.0] - 2026-07-11
 
