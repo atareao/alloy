@@ -4,8 +4,8 @@ use axum::{
 };
 use bollard::{
     container::{
-        CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
-        RemoveContainerOptions, RenameContainerOptions, RestartContainerOptions,
+        Config, CreateContainerOptions, InspectContainerOptions, ListContainersOptions,
+        NetworkingConfig, RemoveContainerOptions, RenameContainerOptions, RestartContainerOptions,
         StartContainerOptions, StopContainerOptions,
     },
     image::{PruneImagesOptions, RemoveImageOptions, TagImageOptions},
@@ -61,8 +61,25 @@ pub(crate) async fn recreate_container(
         .map_err(|e| format!("inspect failed: {}", e))?;
 
     // 4. Build new config from old one, modifying the image reference
-    let mut config = inspect.config.unwrap_or_default();
-    config.image = Some(image_full.to_string());
+    let mut container_config = inspect.config.unwrap_or_default();
+    container_config.image = Some(image_full.to_string());
+
+    // Convert to bollard::container::Config and preserve host/networking config
+    let mut config: Config<String> = container_config.into();
+    config.host_config = inspect.host_config.clone();
+
+    // Preserve network connections (critical for compose stacks)
+    if let Some(networks) = inspect
+        .network_settings
+        .as_ref()
+        .and_then(|ns| ns.networks.clone())
+    {
+        if !networks.is_empty() {
+            config.networking_config = Some(NetworkingConfig {
+                endpoints_config: networks,
+            });
+        }
+    }
 
     // 5. Create new container with same name
     let create_opts = CreateContainerOptions {
@@ -70,7 +87,7 @@ pub(crate) async fn recreate_container(
         platform: None,
     };
     docker
-        .create_container(Some(create_opts), config.into())
+        .create_container(Some(create_opts), config)
         .await
         .map_err(|e| format!("create failed: {}", e))?;
 
