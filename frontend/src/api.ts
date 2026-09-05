@@ -8,18 +8,9 @@ export async function apiFetch(path: string, opts?: RequestInit) {
 
   // If the session expired, redirect to OIDC login
   if (res.status === 401) {
-    try {
-      const body = await res.json();
-      if (body.session_expired) {
-        window.location.href = "/api/auth/login";
-        // Throw to stop execution — never reached after redirect
-        throw new Error("Session expired");
-      }
-    } catch {
-      // Not JSON or unexpected body — still 401, redirect
-      window.location.href = "/api/auth/login";
-      throw new Error("Not authenticated");
-    }
+    window.location.href = "/api/auth/login";
+    // Throw to stop execution — never reached after redirect
+    throw new Error("Session expired");
   }
 
   return res;

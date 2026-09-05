@@ -11,7 +11,7 @@ check:
 user     := "atareao"
 name     := "alloy"
 version  := `vampus show`
-registry := "registry.territoriolinux.es"
+registry := "docker.io"
 
 
 list:
