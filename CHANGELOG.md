@@ -1,10 +1,20 @@
 # Changelog
+## [0.21.11] - 2026-09-05
+
+### Miscellaneous Tasks
+
+- Add debug counter to BatchProgress and error logging to SSE handler
+- Add debug counter and SSE error logging
 ## [0.21.10] - 2026-09-05
 
 ### Bug Fixes
 
 - SSE onerror should not redirect on transient errors, only on session expiry
 - SSE onerror should not redirect on transient errors
+
+### Miscellaneous Tasks
+
+- Release v0.21.10
 ## [0.21.9] - 2026-09-05
 
 ### Miscellaneous Tasks
