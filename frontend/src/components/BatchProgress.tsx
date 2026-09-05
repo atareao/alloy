@@ -117,6 +117,9 @@ export default function BatchProgress({
         </Group>
 
         {/* Live log of container statuses */}
+        <Text size="xs" c="dimmed">
+          📊 Progreso: {progress.size} entradas · {logEntries.length} visibles
+        </Text>
         {logEntries.length > 0 && (
           <ScrollArea h={180} type="always" offsetScrollbars>
             <Stack gap={2}>
