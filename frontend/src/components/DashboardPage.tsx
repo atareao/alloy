@@ -426,8 +426,7 @@ export default function DashboardPage({
       </SimpleGrid>
 
       {/* Container table (search + filters + groups) */}
-      {batchPhase === "idle" && (
-        <ContainerTable
+      <ContainerTable
           sortedGroups={sortedGroups}
           noStack={noStack}
           searchQuery={searchQuery}
@@ -445,7 +444,6 @@ export default function DashboardPage({
           renderGroup={renderGroup}
           renderRow={renderRow}
         />
-      )}
 
       {/* Inspect modal */}
       <InspectModal

@@ -9,6 +9,7 @@ import {
   Paper,
   Table,
   Text,
+  Tooltip,
 } from "@mantine/core";
 import { showNotification } from "@mantine/notifications";
 import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
@@ -60,6 +61,25 @@ export default function ContainerRow({
 }: ContainerRowProps) {
   const c = container;
   const hasUpdate = c.has_update;
+  const prog = progress.get(c.name);
+  const isUpdating = prog && !prog.done;
+  const isDone = prog && prog.done;
+
+  const progressColor = isUpdating
+    ? "yellow"
+    : isDone && prog?.error
+      ? "red"
+      : isDone
+        ? "green"
+        : undefined;
+
+  const progressLabel = prog
+    ? prog.done
+      ? prog.error
+        ? "❌"
+        : "✅"
+      : "🔄"
+    : undefined;
   const showToast = (message: string, color: string) => {
     showNotification({
       title: "Alloy",
@@ -97,7 +117,13 @@ export default function ContainerRow({
       <Table.Td
         style={{ padding: 0, border: "none" }}
       >
-        <Paper p="sm" style={{ background: "transparent" }}>
+        <Paper p="sm" style={{
+            background: isUpdating
+              ? "var(--mantine-color-yellow-0)"
+              : isDone && prog?.error
+                ? "var(--mantine-color-red-0)"
+                : "transparent",
+          }}>
           <Group
             justify="space-between"
             wrap="nowrap"
@@ -130,6 +156,25 @@ export default function ContainerRow({
                     : c.status
                   : c.status}
               </Text>
+              {prog && (
+                <Tooltip label={prog.status}>
+                  <Badge
+                    size="xs"
+                    variant="light"
+                    color={progressColor}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {isUpdating ? (
+                      <Group gap={4} wrap="nowrap">
+                        <Loader size="xs" />
+                        <Text size="xs">{prog.status.slice(0, 20)}</Text>
+                      </Group>
+                    ) : (
+                      progressLabel
+                    )}
+                  </Badge>
+                </Tooltip>
+              )}
               {c.traefik_url && isMobile ? (
                 <Button
                   component="a"
