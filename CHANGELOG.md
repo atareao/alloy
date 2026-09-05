@@ -1,9 +1,23 @@
 # Changelog
+## [0.21.6] - 2026-09-05
+
+### Bug Fixes
+
+- Replace corepack with npm install -g pnpm in Dockerfile
+
+### Features
+
+- Reorganize ConfigPage into tabs with info tab (version, build date, repo)
+- Reorganize ConfigPage into tabs with info tab
 ## [0.21.5] - 2026-09-05
 
 ### Bug Fixes
 
 - Replace corepack with npm install -g pnpm in Dockerfile
+
+### Miscellaneous Tasks
+
+- Release v0.21.5
 ## [0.21.4] - 2026-09-05
 
 ### Features
