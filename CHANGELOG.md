@@ -1,4 +1,9 @@
 # Changelog
+## [0.21.5] - 2026-09-05
+
+### Bug Fixes
+
+- Replace corepack with npm install -g pnpm in Dockerfile
 ## [0.21.4] - 2026-09-05
 
 ### Features
@@ -6,6 +11,10 @@
 - Keep container table visible during batch updates with per-row progress
 - Live progress log and real-time counters during batch updates
 - UX improvements for batch updates
+
+### Miscellaneous Tasks
+
+- Release v0.21.4
 ## [0.21.3] - 2026-09-05
 
 ### Bug Fixes
