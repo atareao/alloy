@@ -125,17 +125,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       setContainersLoaded(true);
     });
     evtSource.onerror = () => {
-      // Check if session expired — redirect to login
-      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        if (res.status === 401) {
-          res.json().then((body) => {
-            if (body.session_expired) {
-              window.location.href = "/api/auth/login";
-            }
-          });
-        }
-      });
-      setContainersLoaded(true);
+      window.location.href = "/api/auth/login";
     };
     return () => evtSource.close();
   }, [authenticated]);
@@ -160,16 +150,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     });
     notifSource.onerror = () => {
-      // Check if session expired — redirect to login
-      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        if (res.status === 401) {
-          res.json().then((body) => {
-            if (body.session_expired) {
-              window.location.href = "/api/auth/login";
-            }
-          });
-        }
-      });
+      window.location.href = "/api/auth/login";
     };
     return () => notifSource.close();
   }, [authenticated]);
@@ -206,16 +187,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     });
     evtSource.onerror = () => {
-      // Check if session expired — redirect to login
-      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        if (res.status === 401) {
-          res.json().then((body) => {
-            if (body.session_expired) {
-              window.location.href = "/api/auth/login";
-            }
-          });
-        }
-      });
+      window.location.href = "/api/auth/login";
     };
     return () => evtSource.close();
   }, [authenticated, api]);
