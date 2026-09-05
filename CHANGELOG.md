@@ -1,4 +1,9 @@
 # Changelog
+## [0.21.7] - 2026-09-05
+
+### Bug Fixes
+
+- Copy build.rs into Docker build container
 ## [0.21.6] - 2026-09-05
 
 ### Bug Fixes
@@ -9,6 +14,10 @@
 
 - Reorganize ConfigPage into tabs with info tab (version, build date, repo)
 - Reorganize ConfigPage into tabs with info tab
+
+### Miscellaneous Tasks
+
+- Release v0.21.6
 ## [0.21.5] - 2026-09-05
 
 ### Bug Fixes
