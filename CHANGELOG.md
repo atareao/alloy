@@ -1,10 +1,21 @@
 # Changelog
+## [0.21.4] - 2026-09-05
+
+### Features
+
+- Keep container table visible during batch updates with per-row progress
+- Live progress log and real-time counters during batch updates
+- UX improvements for batch updates
 ## [0.21.3] - 2026-09-05
 
 ### Bug Fixes
 
 - Redirect to login on any 401, not just session_expired
 - Redirect to login on any 401, not just session_expired
+
+### Miscellaneous Tasks
+
+- Release v0.21.3
 ## [0.21.2] - 2026-09-05
 
 ### Bug Fixes

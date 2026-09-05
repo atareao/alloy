@@ -1,6 +1,6 @@
 [package]
 name = "alloy"
-version = "0.21.3"
+version = "0.21.4"
 edition = "2021"
 
 [dependencies]
