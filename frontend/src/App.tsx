@@ -154,8 +154,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           color: "blue",
           autoClose: 5000,
         });
-      } catch {
-        /* ignore malformed */
+      } catch (err) {
+        console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
     notifSource.onerror = () => {
@@ -199,8 +199,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             if (d) setConfig(d);
           });
         }
-      } catch {
-        /* ignore malformed */
+      } catch (err) {
+        console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
     evtSource.onerror = () => {
