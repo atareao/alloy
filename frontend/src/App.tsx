@@ -282,11 +282,13 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     }
   }, [progress, batchPhase]);
 
-  // Monitor progress map to advance batch progress bar
+  // Monitor progress map to advance batch progress bar and update live counters
   useEffect(() => {
     if (batchPhase === "idle") return;
     let doneCount = 0;
     let currentItem = "";
+    let liveDone = 0;
+    let liveFailed = 0;
     progress.forEach((p) => {
       if (batchPhase === "updating") {
         const isUpdate =
@@ -300,12 +302,27 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           p.status.startsWith("✅ Updated");
         if (!isUpdate) return;
       }
-      if (p.done) doneCount++;
-      else if (currentItem === "") currentItem = p.container;
+      if (p.done) {
+        doneCount++;
+        if (p.error || p.status.startsWith("❌") || p.status.startsWith("⚠️")) {
+          liveFailed++;
+        } else {
+          liveDone++;
+        }
+      } else if (currentItem === "") currentItem = p.container;
     });
     setBatchProgress((prev) =>
       doneCount !== prev.current ? { ...prev, current: doneCount } : prev,
     );
+    // Update live counters for the updating phase
+    if (batchPhase === "updating") {
+      setUpdateResults((prev) => {
+        if (prev.done !== liveDone || prev.failed !== liveFailed) {
+          return { ...prev, done: liveDone, failed: liveFailed };
+        }
+        return prev;
+      });
+    }
     if (currentItem) setBatchCurrentItem(currentItem);
     if (
       batchPhase === "updating" &&
@@ -471,6 +488,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           batchCurrentItem={batchCurrentItem}
           checkResults={checkResults}
           updateResults={updateResults}
+          progress={progress}
           onCancel={() => { cancelBatchRef.current = true; }}
         />
 

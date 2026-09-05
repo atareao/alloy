@@ -1,4 +1,5 @@
-import { Button, Group, Paper, Progress, Stack, Text } from "@mantine/core";
+import { Button, Group, Paper, Progress, ScrollArea, Stack, Text } from "@mantine/core";
+import type { UpdateProgress } from "../types";
 
 export interface BatchResults {
   total: number;
@@ -15,6 +16,7 @@ export interface BatchProgressProps {
   batchCurrentItem: string;
   checkResults: BatchResults;
   updateResults: BatchResults;
+  progress: Map<string, UpdateProgress>;
   onCancel: () => void;
 }
 
@@ -24,6 +26,7 @@ export default function BatchProgress({
   batchCurrentItem,
   checkResults,
   updateResults,
+  progress,
   onCancel,
 }: BatchProgressProps) {
   if (phase === "idle") return null;
@@ -31,6 +34,37 @@ export default function BatchProgress({
   const isUpdatePhase = phase === "updating";
   const total = isUpdatePhase ? checkResults.updated : batchProgress.total;
   const pct = total > 0 ? (batchProgress.current / total) * 100 : 0;
+
+  // Build a sorted list of progress entries for the live log
+  const logEntries = Array.from(progress.entries())
+    .filter(([_, p]) => {
+      // In checking phase, show all; in updating phase, show only update-related
+      if (isUpdatePhase) {
+        return (
+          p.status.startsWith("🔄") ||
+          p.status.startsWith("✅") ||
+          p.status.startsWith("❌") ||
+          p.status.startsWith("⚠️") ||
+          p.status.startsWith("📥") ||
+          p.status.startsWith("⬇️") ||
+          p.status.startsWith("⏭️")
+        );
+      }
+      return true;
+    })
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  const logColor = (p: UpdateProgress) => {
+    if (!p.done) return "yellow";
+    if (p.error) return "red";
+    return "green";
+  };
+
+  const logEmoji = (p: UpdateProgress) => {
+    if (!p.done) return "🔄";
+    if (p.error) return "❌";
+    return "✅";
+  };
 
   return (
     <Paper shadow="sm" p="md" mb="md" withBorder>
@@ -60,11 +94,13 @@ export default function BatchProgress({
             </Button>
           </Group>
         </Group>
+
         <Progress
           value={pct}
           animated
           color={isUpdatePhase ? "yellow" : "cyan"}
         />
+
         <Group justify="space-between">
           <Text size="xs" c="dimmed">
             {batchProgress.current} / {total} —{" "}
@@ -79,6 +115,38 @@ export default function BatchProgress({
             </Text>
           )}
         </Group>
+
+        {/* Live log of container statuses */}
+        {logEntries.length > 0 && (
+          <ScrollArea h={180} type="always" offsetScrollbars>
+            <Stack gap={2}>
+              {logEntries.map(([name, p]) => (
+                <Paper
+                  key={name}
+                  p="xs"
+                  withBorder={false}
+                  style={{
+                    background: p.done
+                      ? p.error
+                        ? "var(--mantine-color-red-0)"
+                        : "var(--mantine-color-green-0)"
+                      : "var(--mantine-color-yellow-0)",
+                    borderLeft: `3px solid var(--mantine-color-${logColor(p)}-6)`,
+                  }}
+                >
+                  <Group gap="sm" wrap="nowrap">
+                    <Text size="xs" fw={500} style={{ minWidth: 120 }} truncate>
+                      {logEmoji(p)} {name}
+                    </Text>
+                    <Text size="xs" c="dimmed" truncate>
+                      {p.status}
+                    </Text>
+                  </Group>
+                </Paper>
+              ))}
+            </Stack>
+          </ScrollArea>
+        )}
       </Stack>
     </Paper>
   );
