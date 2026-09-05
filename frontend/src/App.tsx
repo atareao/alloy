@@ -125,7 +125,16 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       setContainersLoaded(true);
     });
     evtSource.onerror = () => {
-      window.location.href = "/api/auth/login";
+      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
+      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+      // Check by making a lightweight fetch to /api/auth/me
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          window.location.href = "/api/auth/login";
+        }
+      }).catch(() => {
+        // Network error — ignore, SSE will reconnect
+      });
     };
     return () => evtSource.close();
   }, [authenticated]);
@@ -150,7 +159,15 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     });
     notifSource.onerror = () => {
-      window.location.href = "/api/auth/login";
+      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
+      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          window.location.href = "/api/auth/login";
+        }
+      }).catch(() => {
+        // Network error — ignore, SSE will reconnect
+      });
     };
     return () => notifSource.close();
   }, [authenticated]);
@@ -187,7 +204,15 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     });
     evtSource.onerror = () => {
-      window.location.href = "/api/auth/login";
+      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
+      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          window.location.href = "/api/auth/login";
+        }
+      }).catch(() => {
+        // Network error — ignore, SSE will reconnect
+      });
     };
     return () => evtSource.close();
   }, [authenticated, api]);
