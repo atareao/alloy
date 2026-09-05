@@ -41,6 +41,9 @@ export interface AppConfig {
   matrix_homeserver: string | null;
   matrix_room: string | null;
   webhook_configured: boolean;
+  version: string;
+  build_date: string;
+  repo_url: string;
 }
 
 export interface StackService {
