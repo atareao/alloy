@@ -5,6 +5,10 @@
 
 - Add polling fallback for progress updates when SSE fails
 - Add polling fallback for progress updates when SSE fails
+
+### Miscellaneous Tasks
+
+- Release v0.21.14
 ## [0.21.13] - 2026-09-06
 
 ### Miscellaneous Tasks
