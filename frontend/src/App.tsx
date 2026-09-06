@@ -187,9 +187,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     const evtSource = new EventSource("/api/updates", {
       withCredentials: true,
     });
-    evtSource.onopen = () => {
+    evtSource.addEventListener("open", () => {
       addDebug("EventSource OPENED (connection established)");
-    };
+    });
     evtSource.addEventListener("update-progress", (e) => {
       addDebug(`Event received, data.length=${e.data?.length}`);
       try {
@@ -213,8 +213,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
-    evtSource.onerror = (_err) => {
-      addDebug(`EventSource onerror! readyState=${evtSource.readyState}`);
+    evtSource.addEventListener("error", (_err) => {
+      addDebug(`EventSource error! readyState=${evtSource.readyState}`);
       // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
       fetch("/api/auth/me", { credentials: "include" }).then((res) => {
         addDebug(`Auth check after error: status=${res.status}`);
@@ -224,7 +224,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }).catch(() => {
         addDebug("Auth check fetch failed (network error)");
       });
-    };
+    });
     return () => {
       addDebug("Cleanup: closing EventSource");
       evtSource.close();
@@ -248,6 +248,39 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   }
 
   const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
+
+  // ── Polling fallback for progress updates ──
+  // Used when SSE doesn't work (Brave shields, etc.)
+  useEffect(() => {
+    if (batchPhase === "idle") return;
+    addDebug(`Polling started (phase=${batchPhase})`);
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/check-progress", { credentials: "include" });
+        if (res.ok) {
+          const data: Record<string, UpdateProgress> = await res.json();
+          const entries = Object.entries(data);
+          if (entries.length > 0) {
+            addDebug(`Poll: ${entries.length} entries`);
+            setProgress((prev) => {
+              const next = new Map(prev);
+              for (const [key, val] of entries) {
+                next.set(key, val);
+              }
+              return next;
+            });
+          }
+        }
+      } catch {
+        // ignore network errors during polling
+      }
+    }, 500);
+    return () => {
+      addDebug("Polling stopped");
+      clearInterval(interval);
+    };
+  }, [batchPhase, addDebug]);
+
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchCurrentItem, setBatchCurrentItem] = useState("");
   const cancelBatchRef = useRef(false);
