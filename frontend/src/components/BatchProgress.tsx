@@ -15,7 +15,6 @@ export interface BatchProgressProps {
   batchProgress: { current: number; total: number };
   batchCurrentItem: string;
   checkResults: BatchResults;
-  updateResults: BatchResults;
   progress: Map<string, UpdateProgress>;
   onCancel: () => void;
 }
@@ -25,7 +24,6 @@ export default function BatchProgress({
   batchProgress,
   batchCurrentItem,
   checkResults,
-  updateResults,
   progress,
   onCancel,
 }: BatchProgressProps) {
@@ -66,6 +64,11 @@ export default function BatchProgress({
     return "✅";
   };
 
+  // Compute live counts from progress map
+  const liveDone = Array.from(progress.values()).filter(p => p.done && !p.error).length;
+  const liveFailed = Array.from(progress.values()).filter(p => p.done && p.error).length;
+  const livePending = Array.from(progress.values()).filter(p => !p.done).length;
+
   return (
     <Paper shadow="sm" p="md" mb="md" withBorder>
       <Stack gap="xs">
@@ -78,10 +81,7 @@ export default function BatchProgress({
           <Group gap="xs">
             {!isUpdatePhase && (
               <Text size="xs" c="dimmed" mr="sm">
-                ✅ {checkResults.updated} upd · ⏹️ {checkResults.uptodate} ok
-                {checkResults.failed > 0
-                  ? ` · ❌ ${checkResults.failed}`
-                  : ""}
+                ✅ {liveDone} ok{liveFailed > 0 ? ` · ❌ ${liveFailed}` : ""}{livePending > 0 ? ` · 🔄 ${livePending}` : ""}
               </Text>
             )}
             <Button
@@ -108,10 +108,7 @@ export default function BatchProgress({
           </Text>
           {isUpdatePhase && (
             <Text size="xs" c="dimmed">
-              ✅ {updateResults.done} hechos
-              {updateResults.failed > 0
-                ? ` · ❌ ${updateResults.failed} errores`
-                : ""}
+              ✅ {liveDone} hechos{liveFailed > 0 ? ` · ❌ ${liveFailed} errores` : ""}{livePending > 0 ? ` · 🔄 ${livePending}` : ""}
             </Text>
           )}
         </Group>

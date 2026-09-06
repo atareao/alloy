@@ -531,7 +531,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           batchProgress={batchProgress}
           batchCurrentItem={batchCurrentItem}
           checkResults={checkResults}
-          updateResults={updateResults}
           progress={progress}
           onCancel={() => { cancelBatchRef.current = true; }}
         />
