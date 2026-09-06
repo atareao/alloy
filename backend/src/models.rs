@@ -57,6 +57,9 @@ pub struct PublicConfig {
     pub matrix_homeserver: Option<String>,
     pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
+    pub version: String,
+    pub build_date: String,
+    pub repo_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -127,6 +127,9 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
         matrix_homeserver: s.matrix_homeserver.clone(),
         matrix_room: s.matrix_room.clone(),
         webhook_configured: s.webhook_url.is_some(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        build_date: env!("BUILD_DATE").to_string(),
+        repo_url: "https://github.com/atareao/alloy".to_string(),
     })
 }
 
