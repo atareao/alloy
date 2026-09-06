@@ -139,6 +139,9 @@ pub struct AppState {
     /// The state worker checks this set and skips notifications for these
     /// containers to avoid duplicate alerts during scheduled updates.
     pub update_in_progress: Arc<Mutex<HashSet<String>>>,
+    /// Progress cache for poll-based progress checking (SSE fallback).
+    /// Maps container names to their latest UpdateProgress.
+    pub progress_cache: Arc<Mutex<HashMap<String, UpdateProgress>>>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -217,6 +220,14 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<Settings>> {
 impl axum::extract::FromRef<AppState> for DbPool {
     fn from_ref(state: &AppState) -> Self {
         state.db.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState>
+    for Arc<Mutex<HashMap<String, UpdateProgress>>>
+{
+    fn from_ref(state: &AppState) -> Self {
+        state.progress_cache.clone()
     }
 }
 

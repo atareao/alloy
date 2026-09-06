@@ -125,7 +125,16 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       setContainersLoaded(true);
     });
     evtSource.onerror = () => {
-      window.location.href = "/api/auth/login";
+      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
+      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+      // Check by making a lightweight fetch to /api/auth/me
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          window.location.href = "/api/auth/login";
+        }
+      }).catch(() => {
+        // Network error — ignore, SSE will reconnect
+      });
     };
     return () => evtSource.close();
   }, [authenticated]);
@@ -145,12 +154,20 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           color: "blue",
           autoClose: 5000,
         });
-      } catch {
-        /* ignore malformed */
+      } catch (err) {
+        console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
     notifSource.onerror = () => {
-      window.location.href = "/api/auth/login";
+      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
+      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          window.location.href = "/api/auth/login";
+        }
+      }).catch(() => {
+        // Network error — ignore, SSE will reconnect
+      });
     };
     return () => notifSource.close();
   }, [authenticated]);
@@ -164,31 +181,32 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     evtSource.addEventListener("update-progress", (e) => {
       try {
         const data: UpdateProgress = JSON.parse(e.data);
-        if (typeof console !== "undefined") {
-          console.log("SSE update-progress:", data);
-        }
         setProgress((prev) => {
           const next = new Map(prev);
           next.set(data.container, data);
           return next;
         });
         if (data.done) {
-          // Re-fetch history so the new entry appears immediately
           api("/api/history").then((d) => {
             if (d) setHistory(d);
           });
-          // Also re-fetch config to pick up any changes
           api("/api/config").then((d) => {
             if (d) setConfig(d);
           });
         }
-      } catch {
-        /* ignore malformed */
+      } catch (err) {
+        console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
-    evtSource.onerror = () => {
-      window.location.href = "/api/auth/login";
-    };
+    evtSource.addEventListener("error", () => {
+      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        if (res.status === 401) {
+          window.location.href = "/api/auth/login";
+        }
+      }).catch(() => {
+        // Network error — ignore, SSE will reconnect
+      });
+    });
     return () => evtSource.close();
   }, [authenticated, api]);
 
@@ -209,6 +227,33 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   }
 
   const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
+
+  // ── Polling fallback for progress updates ──
+  useEffect(() => {
+    if (batchPhase === "idle") return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch("/api/check-progress", { credentials: "include" });
+        if (res.ok) {
+          const data: Record<string, UpdateProgress> = await res.json();
+          const entries = Object.entries(data);
+          if (entries.length > 0) {
+            setProgress((prev) => {
+              const next = new Map(prev);
+              for (const [key, val] of entries) {
+                next.set(key, val);
+              }
+              return next;
+            });
+          }
+        }
+      } catch {
+        // ignore network errors during polling
+      }
+    }, 500);
+    return () => clearInterval(interval);
+  }, [batchPhase]);
+
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchCurrentItem, setBatchCurrentItem] = useState("");
   const cancelBatchRef = useRef(false);
@@ -459,7 +504,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           batchProgress={batchProgress}
           batchCurrentItem={batchCurrentItem}
           checkResults={checkResults}
-          updateResults={updateResults}
           progress={progress}
           onCancel={() => { cancelBatchRef.current = true; }}
         />
