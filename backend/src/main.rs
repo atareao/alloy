@@ -6,6 +6,7 @@ mod db;
 mod events;
 mod models;
 mod notifications;
+mod progress;
 mod stacks;
 mod state;
 mod timezone;
@@ -159,6 +160,9 @@ async fn main() {
 
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
+    let progress_cache: Arc<Mutex<HashMap<String, UpdateProgress>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
     let state = AppState {
         docker: docker.clone(),
         config: config.clone(),
@@ -174,6 +178,7 @@ async fn main() {
         settings: settings.clone(),
         db: db_pool.clone(),
         update_in_progress: Arc::new(Mutex::new(HashSet::new())),
+        progress_cache: progress_cache.clone(),
     };
 
     // Spawn workers
@@ -214,6 +219,7 @@ async fn main() {
         .merge(stacks::routes())
         .merge(updates::routes())
         .merge(notifications::routes())
+        .merge(progress::routes())
         .layer(CorsLayer::permissive())
         .layer(axum::middleware::from_fn(
             move |headers: axum::http::HeaderMap,

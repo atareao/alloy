@@ -24,6 +24,28 @@ use crate::updates::digest::check_remote_digest_with_docker;
 use crate::workers::resolve_compose_file;
 use bollard::models::ImagePruneResponse;
 
+/// Send an UpdateProgress via SSE broadcast AND cache it for the polling fallback
+/// endpoint (`GET /api/check-progress`). This ensures the frontend can retrieve
+/// progress even when EventSource / SSE is not working in the browser.
+async fn update_progress(
+    update_tx: &broadcast::Sender<UpdateProgress>,
+    progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
+    container: String,
+    status: String,
+    done: bool,
+    error: Option<String>,
+) {
+    let progress = UpdateProgress {
+        container: container.clone(),
+        status,
+        done,
+        error,
+    };
+    let _ = update_tx.send(progress.clone());
+    let mut cache = progress_cache.lock().await;
+    cache.insert(container, progress);
+}
+
 /// Recreate a container by stopping, backing up, inspecting, creating with new image,
 /// starting, and cleaning up the backup. On failure, attempts rollback.
 pub(crate) async fn recreate_container(
@@ -240,7 +262,7 @@ pub async fn update_container_h(
     match recreate_container(&docker, &name, cid, image).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
-            let _ = update_tx.send(UpdateProgress {
+let _ = update_tx.send(UpdateProgress {
                 container: name.clone(),
                 status: "✅ Restarted".into(),
                 done: true,
@@ -520,6 +542,7 @@ async fn check_and_apply_all(
     db_pool: &DbPool,
     tx: &broadcast::Sender<StateEvent>,
     update_tx: &broadcast::Sender<UpdateProgress>,
+    progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
     settings: &Arc<Mutex<Settings>>,
     notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
@@ -592,17 +615,15 @@ async fn check_and_apply_all(
         );
 
         // Send progress event so frontend shows live feedback
-        let send_result = update_tx.send(UpdateProgress {
-            container: name.clone(),
-            status: format!("🔍 Verificando {}...", image_full),
-            done: false,
-            error: None,
-        });
-        tracing::info!(
-            "check_and_apply_all [{}]: enviado UpdateProgress (checking) receivers={}",
-            name,
-            send_result.map_or(0, |n| n)
-        );
+        update_progress(
+            update_tx,
+            progress_cache,
+            name.clone(),
+            format!("🔍 Verificando {}...", image_full),
+            false,
+            None,
+        )
+        .await;
 
         match check_remote_digest_with_docker(&image_full, docker).await {
             Ok((remote_digest, _)) => {
@@ -699,6 +720,7 @@ async fn check_and_apply_all(
                         docker,
                         settings,
                         update_tx,
+                        progress_cache,
                         notif_tx,
                         update_history,
                         db_pool,
@@ -715,17 +737,15 @@ async fn check_and_apply_all(
                     } else {
                         "⏹️ No aplicable (no running)"
                     };
-                    let send_result = update_tx.send(UpdateProgress {
-                        container: name.clone(),
-                        status: status.into(),
-                        done: true,
-                        error: None,
-                    });
-                    tracing::info!(
-                        "check_and_apply_all [{}]: enviado UpdateProgress (done) receivers={}",
-                        name,
-                        send_result.map_or(0, |n| n)
-                    );
+                    update_progress(
+                        update_tx,
+                        progress_cache,
+                        name.clone(),
+                        status.into(),
+                        true,
+                        None,
+                    )
+                    .await;
                 }
             }
             Err(e) => {
@@ -753,17 +773,15 @@ async fn check_and_apply_all(
                         e
                     );
                 }
-                let send_result = update_tx.send(UpdateProgress {
-                    container: name.clone(),
-                    status: format!("❌ Error: {}", e),
-                    done: true,
-                    error: Some(e.clone()),
-                });
-                tracing::info!(
-                    "check_and_apply_all [{}]: enviado UpdateProgress (error) receivers={}",
-                    name,
-                    send_result.map_or(0, |n| n)
-                );
+                update_progress(
+                    update_tx,
+                    progress_cache,
+                    name.clone(),
+                    format!("❌ Error: {}", e),
+                    true,
+                    Some(e.clone()),
+                )
+                .await;
             }
         }
 
@@ -811,6 +829,7 @@ pub async fn check_all_h(
     State(db_pool): State<DbPool>,
     State(tx): State<broadcast::Sender<StateEvent>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
+    State(progress_cache): State<Arc<Mutex<HashMap<String, UpdateProgress>>>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
@@ -821,6 +840,7 @@ pub async fn check_all_h(
         &db_pool,
         &tx,
         &update_tx,
+        &progress_cache,
         &settings,
         &notif_tx,
         &update_history,
@@ -837,6 +857,7 @@ async fn apply_single_policy(
     docker: &Docker,
     settings: &Arc<Mutex<Settings>>,
     update_tx: &broadcast::Sender<UpdateProgress>,
+    progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
     notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: &DbPool,
@@ -850,12 +871,15 @@ async fn apply_single_policy(
             "apply_single_policy: política None para '{}', saltando",
             p.name
         );
-        let _ = update_tx.send(UpdateProgress {
-            container: p.name.clone(),
-            status: "⏭️ política: no hacer nada".into(),
-            done: true,
-            error: None,
-        });
+        let _ = update_progress(
+            update_tx,
+            progress_cache,
+            p.name.clone(),
+            "⏭️ política: no hacer nada".into(),
+            true,
+            None,
+        )
+        .await;
         return;
     }
 
@@ -867,12 +891,15 @@ async fn apply_single_policy(
         policy.cleanup_old_image
     );
 
-    let _ = update_tx.send(UpdateProgress {
-        container: p.name.clone(),
-        status: format!("🔄 actualizando {}...", p.name),
-        done: false,
-        error: None,
-    });
+    let _ = update_progress(
+        update_tx,
+        progress_cache,
+        p.name.clone(),
+        format!("🔄 actualizando {}...", p.name),
+        false,
+        None,
+    )
+    .await;
 
     let start_time = std::time::Instant::now();
     let mut success = false;
@@ -890,12 +917,15 @@ async fn apply_single_policy(
             );
             if pull_image(docker, &p.image_full, pull_timeout).await {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
-                let _ = update_tx.send(UpdateProgress {
-                    container: p.name.clone(),
-                    status: "✅ pulled".into(),
-                    done: true,
-                    error: None,
-                });
+                update_progress(
+                    update_tx,
+                    progress_cache,
+                    p.name.clone(),
+                    "✅ pulled".into(),
+                    true,
+                    None,
+                )
+                .await;
                 success = true;
             } else {
                 tracing::error!("apply_single_policy: Pull FALLÓ '{}'", p.name);
@@ -937,12 +967,15 @@ async fn apply_single_policy(
                     p.name,
                     p.cid
                 );
-                let _ = update_tx.send(UpdateProgress {
-                    container: p.name.clone(),
-                    status: "🔄 reiniciando contenedor...".into(),
-                    done: false,
-                    error: None,
-                });
+                let _ = update_progress(
+                    update_tx,
+                    progress_cache,
+                    p.name.clone(),
+                    "🔄 reiniciando contenedor...".into(),
+                    false,
+                    None,
+                )
+                .await;
                 match recreate_container(docker, &p.name, &p.cid, &p.image_full).await {
                     Ok(_) => {
                         tracing::info!(
@@ -964,19 +997,25 @@ async fn apply_single_policy(
                                 )
                                 .await;
                             }
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "⚠️ rollback aplicado".into(),
-                                done: true,
-                                error: Some("container no healthy".into()),
-                            });
+let _ = update_progress(
+                    update_tx,
+                    progress_cache,
+                    p.name.clone(),
+                    "❌ pull falló".into(),
+                    true,
+                    Some("pull_image returned false".into()),
+                )
+                .await;
                         } else {
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "✅ actualizado + reiniciado".into(),
-                                done: true,
-                                error: None,
-                            });
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "✅ actualizado + reiniciado".into(),
+                                true,
+                                None,
+                            )
+                            .await;
                             success = true;
                         }
                     }
@@ -986,12 +1025,15 @@ async fn apply_single_policy(
                             p.name,
                             e
                         );
-                        let _ = update_tx.send(UpdateProgress {
-                            container: p.name.clone(),
-                            status: "❌ error al reiniciar".into(),
-                            done: true,
-                            error: Some(e.to_string()),
-                        });
+                        let _ = update_progress(
+                            update_tx,
+                            progress_cache,
+                            p.name.clone(),
+                            "❌ error al reiniciar".into(),
+                            true,
+                            Some(e.to_string()),
+                        )
+                        .await;
                         let entry = UpdateHistoryEntry {
                             container: p.name.clone(),
                             image: p.image_full.clone(),
@@ -1040,12 +1082,15 @@ async fn apply_single_policy(
                         p.name,
                         project
                     );
-                    let _ = update_tx.send(UpdateProgress {
-                        container: p.name.clone(),
-                        status: format!("📥 Pulling stack '{}'...", project),
-                        done: false,
-                        error: None,
-                    });
+let _ = update_progress(
+                            update_tx,
+                            progress_cache,
+                            p.name.clone(),
+                            format!("📥 Pulling stack '{}'...", project),
+                            false,
+                            None,
+                        )
+                        .await;
                     let pull = tokio::process::Command::new("docker")
                         .args(["compose", "-f", file, "pull"])
                         .output()
@@ -1060,12 +1105,15 @@ async fn apply_single_policy(
                                 .args(["compose", "-f", file, "up", "-d"])
                                 .output()
                                 .await;
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "✅ stack updated".into(),
-                                done: true,
-                                error: None,
-                            });
+let _ = update_progress(
+                    update_tx,
+                    progress_cache,
+                    p.name.clone(),
+                    "❌ pull falló".into(),
+                    true,
+                    Some("pull_image returned false".into()),
+                )
+                .await;
                             success = true;
                         }
                         Ok(output) => {
@@ -1075,24 +1123,30 @@ async fn apply_single_policy(
                                 project,
                                 stderr
                             );
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "❌ pull falló".into(),
-                                done: true,
-                                error: Some(stderr),
-                            });
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some(stderr),
+                            )
+                            .await;
                         }
                         Err(e) => {
                             tracing::error!(
                                 "apply_single_policy: error al ejecutar docker compose: {}",
                                 e
                             );
-                            let _ = update_tx.send(UpdateProgress {
-                                container: p.name.clone(),
-                                status: "❌ error".into(),
-                                done: true,
-                                error: Some(e.to_string()),
-                            });
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ error".into(),
+                                true,
+                                Some(e.to_string()),
+                            )
+                            .await;
                         }
                     }
                 } else {
@@ -1100,29 +1154,38 @@ async fn apply_single_policy(
                         "apply_single_policy: compose file no encontrado para '{}'",
                         project
                     );
-                    let _ = update_tx.send(UpdateProgress {
-                        container: p.name.clone(),
-                        status: "❌ compose file no encontrado".into(),
-                        done: true,
-                        error: Some("cannot resolve compose file".into()),
-                    });
+let _ = update_progress(
+                            update_tx,
+                            progress_cache,
+                            p.name.clone(),
+                            "❌ compose file no encontrado".into(),
+                            true,
+                            Some("cannot resolve compose file".into()),
+                        )
+                        .await;
                 }
             } else {
-                let _ = update_tx.send(UpdateProgress {
-                    container: p.name.clone(),
-                    status: "❌ no es stack".into(),
-                    done: true,
-                    error: Some("container has no compose project label".into()),
-                });
+let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "⚠️ rollback aplicado".into(),
+                                true,
+                                Some("container no healthy".into()),
+                            )
+                            .await;
             }
         }
         _ => {
-            let _ = update_tx.send(UpdateProgress {
-                container: p.name.clone(),
-                status: "⏭️ acción desconocida".into(),
-                done: true,
-                error: None,
-            });
+let _ = update_progress(
+                    update_tx,
+                    progress_cache,
+                    p.name.clone(),
+                    "❌ no es stack".into(),
+                    true,
+                    Some("container has no compose project label".into()),
+                )
+                .await;
         }
     }
 
@@ -1204,6 +1267,7 @@ async fn apply_policies_background(
     settings: &Arc<Mutex<Settings>>,
     tx: &broadcast::Sender<StateEvent>,
     update_tx: &broadcast::Sender<UpdateProgress>,
+    progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
     notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
@@ -1248,6 +1312,7 @@ async fn apply_policies_background(
             docker,
             settings,
             update_tx,
+            progress_cache,
             notif_tx,
             update_history,
             db_pool,
