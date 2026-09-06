@@ -1,5 +1,15 @@
 # Changelog
+## [0.21.14] - 2026-09-06
+
+### Bug Fixes
+
+- Add polling fallback for progress updates when SSE fails
+- Add polling fallback for progress updates when SSE fails
 ## [0.21.13] - 2026-09-06
+
+### Miscellaneous Tasks
+
+- Release v0.21.13
 
 ### Other
 
