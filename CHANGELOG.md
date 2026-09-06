@@ -1,4 +1,21 @@
 # Changelog
+## [0.21.17] - 2026-09-06
+
+### Features
+
+- Reorganize ConfigPage into tabs with info tab
+- Live progress feedback with polling fallback
+- Live progress feedback, ConfigPage tabs, build fixes
+
+### Miscellaneous Tasks
+
+- Fix Docker build (build.rs, pnpm)
+- Bump version to 0.21.15
+## [0.21.16] - 2026-09-06
+
+### Miscellaneous Tasks
+
+- Release v0.21.16
 ## [0.21.15] - 2026-09-06
 
 ### Miscellaneous Tasks
