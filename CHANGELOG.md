@@ -1,10 +1,17 @@
 # Changelog
+## [0.21.12] - 2026-09-06
+
+### Other
+
+- Add visible SSE debug panel and aggressive logging
+- Add visible SSE debug panel and aggressive logging
 ## [0.21.11] - 2026-09-05
 
 ### Miscellaneous Tasks
 
 - Add debug counter to BatchProgress and error logging to SSE handler
 - Add debug counter and SSE error logging
+- Release v0.21.11
 ## [0.21.10] - 2026-09-05
 
 ### Bug Fixes
