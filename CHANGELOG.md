@@ -1,4 +1,9 @@
 # Changelog
+## [0.21.15] - 2026-09-06
+
+### Miscellaneous Tasks
+
+- Release v0.21.15
 ## [0.21.14] - 2026-09-06
 
 ### Bug Fixes
