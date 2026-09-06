@@ -172,29 +172,15 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     return () => notifSource.close();
   }, [authenticated]);
 
-  // ── Debug state for SSE connection ──
-  const [sseDebug, setSseDebug] = useState<string[]>([]);
-  const addDebug = useCallback((msg: string) => {
-    setSseDebug(prev => [...prev.slice(-20), `[${new Date().toLocaleTimeString()}] ${msg}`]);
-    console.log("SSE-DEBUG:", msg);
-  }, []);
-
   // Connect to update progress SSE — lives in App so state persists across tab switches
   useEffect(() => {
-    addDebug(`useEffect fired, authenticated=${authenticated}`);
     if (!authenticated) return;
-    addDebug("Creating EventSource to /api/updates");
     const evtSource = new EventSource("/api/updates", {
       withCredentials: true,
     });
-    evtSource.addEventListener("open", () => {
-      addDebug("EventSource OPENED (connection established)");
-    });
     evtSource.addEventListener("update-progress", (e) => {
-      addDebug(`Event received, data.length=${e.data?.length}`);
       try {
         const data: UpdateProgress = JSON.parse(e.data);
-        addDebug(`Parsed OK: container=${data.container} status=${data.status} done=${data.done}`);
         setProgress((prev) => {
           const next = new Map(prev);
           next.set(data.container, data);
@@ -209,27 +195,20 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           });
         }
       } catch (err) {
-        addDebug(`PARSE ERROR: ${err} raw: ${e.data}`);
         console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
-    evtSource.addEventListener("error", (_err) => {
-      addDebug(`EventSource error! readyState=${evtSource.readyState}`);
-      // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
+    evtSource.addEventListener("error", () => {
       fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        addDebug(`Auth check after error: status=${res.status}`);
         if (res.status === 401) {
           window.location.href = "/api/auth/login";
         }
       }).catch(() => {
-        addDebug("Auth check fetch failed (network error)");
+        // Network error — ignore, SSE will reconnect
       });
     });
-    return () => {
-      addDebug("Cleanup: closing EventSource");
-      evtSource.close();
-    };
-  }, [authenticated, api, addDebug]);
+    return () => evtSource.close();
+  }, [authenticated, api]);
 
   const clearProgress = useCallback(() => {
     setProgress(new Map());
@@ -250,10 +229,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
 
   // ── Polling fallback for progress updates ──
-  // Used when SSE doesn't work (Brave shields, etc.)
   useEffect(() => {
     if (batchPhase === "idle") return;
-    addDebug(`Polling started (phase=${batchPhase})`);
     const interval = setInterval(async () => {
       try {
         const res = await fetch("/api/check-progress", { credentials: "include" });
@@ -261,7 +238,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           const data: Record<string, UpdateProgress> = await res.json();
           const entries = Object.entries(data);
           if (entries.length > 0) {
-            addDebug(`Poll: ${entries.length} entries`);
             setProgress((prev) => {
               const next = new Map(prev);
               for (const [key, val] of entries) {
@@ -275,11 +251,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         // ignore network errors during polling
       }
     }, 500);
-    return () => {
-      addDebug("Polling stopped");
-      clearInterval(interval);
-    };
-  }, [batchPhase, addDebug]);
+    return () => clearInterval(interval);
+  }, [batchPhase]);
 
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
   const [batchCurrentItem, setBatchCurrentItem] = useState("");
@@ -569,28 +542,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           updateResults={updateResults}
           phase={batchPhase}
         />
-
-        {/* ── Debug panel ── */}
-        {sseDebug.length > 0 && (
-          <div style={{
-            marginTop: 24,
-            padding: 12,
-            background: colorScheme === "dark" ? "#1a1a2e" : "#f0f0ff",
-            border: "1px solid " + (colorScheme === "dark" ? "#4a4a6e" : "#c0c0ff"),
-            borderRadius: 8,
-            fontSize: 11,
-            fontFamily: "monospace",
-            maxHeight: 200,
-            overflow: "auto",
-          }}>
-            <Text size="xs" fw={700} mb={4}>🔍 SSE Debug ({sseDebug.length} entradas)</Text>
-            {sseDebug.map((msg, i) => (
-              <div key={i} style={{ color: colorScheme === "dark" ? "#aaa" : "#555", lineHeight: 1.6 }}>
-                {msg}
-              </div>
-            ))}
-          </div>
-        )}
       </Container>
     </AppShell>
   );
