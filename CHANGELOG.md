@@ -1,5 +1,15 @@
 # Changelog
+## [0.21.13] - 2026-09-06
+
+### Other
+
+- Add backend tracing log to SSE updates handler
+- Add backend tracing log to SSE updates handler
 ## [0.21.12] - 2026-09-06
+
+### Miscellaneous Tasks
+
+- Release v0.21.12
 
 ### Other
 
