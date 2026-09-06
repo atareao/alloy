@@ -172,50 +172,64 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     return () => notifSource.close();
   }, [authenticated]);
 
+  // ── Debug state for SSE connection ──
+  const [sseDebug, setSseDebug] = useState<string[]>([]);
+  const addDebug = useCallback((msg: string) => {
+    setSseDebug(prev => [...prev.slice(-20), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    console.log("SSE-DEBUG:", msg);
+  }, []);
+
   // Connect to update progress SSE — lives in App so state persists across tab switches
   useEffect(() => {
+    addDebug(`useEffect fired, authenticated=${authenticated}`);
     if (!authenticated) return;
+    addDebug("Creating EventSource to /api/updates");
     const evtSource = new EventSource("/api/updates", {
       withCredentials: true,
     });
+    evtSource.onopen = () => {
+      addDebug("EventSource OPENED (connection established)");
+    };
     evtSource.addEventListener("update-progress", (e) => {
+      addDebug(`Event received, data.length=${e.data?.length}`);
       try {
         const data: UpdateProgress = JSON.parse(e.data);
-        if (typeof console !== "undefined") {
-          console.log("SSE update-progress:", data);
-        }
+        addDebug(`Parsed OK: container=${data.container} status=${data.status} done=${data.done}`);
         setProgress((prev) => {
           const next = new Map(prev);
           next.set(data.container, data);
           return next;
         });
         if (data.done) {
-          // Re-fetch history so the new entry appears immediately
           api("/api/history").then((d) => {
             if (d) setHistory(d);
           });
-          // Also re-fetch config to pick up any changes
           api("/api/config").then((d) => {
             if (d) setConfig(d);
           });
         }
       } catch (err) {
+        addDebug(`PARSE ERROR: ${err} raw: ${e.data}`);
         console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
-    evtSource.onerror = () => {
-      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
-      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+    evtSource.onerror = (_err) => {
+      addDebug(`EventSource onerror! readyState=${evtSource.readyState}`);
+      // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSED
       fetch("/api/auth/me", { credentials: "include" }).then((res) => {
+        addDebug(`Auth check after error: status=${res.status}`);
         if (res.status === 401) {
           window.location.href = "/api/auth/login";
         }
       }).catch(() => {
-        // Network error — ignore, SSE will reconnect
+        addDebug("Auth check fetch failed (network error)");
       });
     };
-    return () => evtSource.close();
-  }, [authenticated, api]);
+    return () => {
+      addDebug("Cleanup: closing EventSource");
+      evtSource.close();
+    };
+  }, [authenticated, api, addDebug]);
 
   const clearProgress = useCallback(() => {
     setProgress(new Map());
@@ -523,6 +537,28 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           updateResults={updateResults}
           phase={batchPhase}
         />
+
+        {/* ── Debug panel ── */}
+        {sseDebug.length > 0 && (
+          <div style={{
+            marginTop: 24,
+            padding: 12,
+            background: colorScheme === "dark" ? "#1a1a2e" : "#f0f0ff",
+            border: "1px solid " + (colorScheme === "dark" ? "#4a4a6e" : "#c0c0ff"),
+            borderRadius: 8,
+            fontSize: 11,
+            fontFamily: "monospace",
+            maxHeight: 200,
+            overflow: "auto",
+          }}>
+            <Text size="xs" fw={700} mb={4}>🔍 SSE Debug ({sseDebug.length} entradas)</Text>
+            {sseDebug.map((msg, i) => (
+              <div key={i} style={{ color: colorScheme === "dark" ? "#aaa" : "#555", lineHeight: 1.6 }}>
+                {msg}
+              </div>
+            ))}
+          </div>
+        )}
       </Container>
     </AppShell>
   );
