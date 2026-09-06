@@ -1,9 +1,100 @@
 # Changelog
+## [0.21.14] - 2026-09-06
+
+### Bug Fixes
+
+- Add polling fallback for progress updates when SSE fails
+- Add polling fallback for progress updates when SSE fails
+
+### Miscellaneous Tasks
+
+- Release v0.21.14
+## [0.21.13] - 2026-09-06
+
+### Miscellaneous Tasks
+
+- Release v0.21.13
+
+### Other
+
+- Add backend tracing log to SSE updates handler
+- Add backend tracing log to SSE updates handler
+## [0.21.12] - 2026-09-06
+
+### Miscellaneous Tasks
+
+- Release v0.21.12
+
+### Other
+
+- Add visible SSE debug panel and aggressive logging
+- Add visible SSE debug panel and aggressive logging
+## [0.21.11] - 2026-09-05
+
+### Miscellaneous Tasks
+
+- Add debug counter to BatchProgress and error logging to SSE handler
+- Add debug counter and SSE error logging
+- Release v0.21.11
+## [0.21.10] - 2026-09-05
+
+### Bug Fixes
+
+- SSE onerror should not redirect on transient errors, only on session expiry
+- SSE onerror should not redirect on transient errors
+
+### Miscellaneous Tasks
+
+- Release v0.21.10
+## [0.21.9] - 2026-09-05
+
+### Miscellaneous Tasks
+
+- Add logging to debug UpdateProgress delivery during check phase
+- Add logging to debug UpdateProgress delivery
+- Release v0.21.9
+## [0.21.8] - 2026-09-05
+
+### Bug Fixes
+
+- Send UpdateProgress events during check phase for live UX feedback
+- Send UpdateProgress events during check phase for live UX feedback
+
+### Miscellaneous Tasks
+
+- Release v0.21.8
+## [0.21.7] - 2026-09-05
+
+### Bug Fixes
+
+- Copy build.rs into Docker build container
+
+### Miscellaneous Tasks
+
+- Release v0.21.7
+## [0.21.6] - 2026-09-05
+
+### Bug Fixes
+
+- Replace corepack with npm install -g pnpm in Dockerfile
+
+### Features
+
+- Reorganize ConfigPage into tabs with info tab (version, build date, repo)
+- Reorganize ConfigPage into tabs with info tab
+
+### Miscellaneous Tasks
+
+- Release v0.21.6
 ## [0.21.5] - 2026-09-05
 
 ### Bug Fixes
 
 - Replace corepack with npm install -g pnpm in Dockerfile
+
+### Miscellaneous Tasks
+
+- Release v0.21.5
 ## [0.21.4] - 2026-09-05
 
 ### Features
