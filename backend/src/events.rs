@@ -31,11 +31,15 @@ async fn sse_events_h(
 async fn sse_updates_h(
     State(tx): State<broadcast::Sender<UpdateProgress>>,
 ) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    tracing::info!("📡 SSE /api/updates: cliente conectado");
     let stream = BroadcastStream::new(tx.subscribe()).filter_map(|r| match r {
-        Ok(evt) => future::ready(Some(Ok(Event::default()
-            .event("update-progress")
-            .json_data(evt)
-            .unwrap()))),
+        Ok(evt) => {
+            tracing::info!("📡 SSE /api/updates: enviando evento container={}", evt.container);
+            future::ready(Some(Ok(Event::default()
+                .event("update-progress")
+                .json_data(evt)
+                .unwrap())))
+        }
         Err(_) => future::ready(None),
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
