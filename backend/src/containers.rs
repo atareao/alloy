@@ -337,21 +337,25 @@ pub async fn remove_old_image(docker: &Docker, old_image_id: &str) {
     }
 }
 
-pub async fn pull_image(docker: &Docker, image: &str, timeout_secs: u64) -> bool {
-    // Extract tag explicitly to prevent pulling ALL tags when tag is empty.
-    // Bollard docs: "If empty when pulling an image, this causes all tags
-    // for the given image to be pulled."
-    let (_, tag) = crate::models::parse_image_tag(image);
+pub async fn pull_image(docker: &Docker, image: &str, digest: Option<&str>, timeout_secs: u64) -> bool {
+    // When digest is provided, pull using `image@digest` to bypass Docker tag caching.
+    // When digest is None, fall back to tag-based pull.
+    let (from_image, tag) = if let Some(d) = digest {
+        (format!("{}@{}", image, d), String::new())
+    } else {
+        let (_, tag) = crate::models::parse_image_tag(image);
+        (image.to_string(), tag)
+    };
     let platform = crate::models::current_platform();
     tracing::info!(
-        "pull_image: descargando imagen '{}' (tag: {:?}, timeout: {}s)",
-        image,
-        tag,
+        "pull_image: descargando '{}' (modo: {}, timeout: {}s)",
+        from_image,
+        if digest.is_some() { "por-digest" } else { "por-tag" },
         timeout_secs
     );
     let stream = docker.create_image(
         Some(CreateImageOptions {
-            from_image: image.to_string(),
+            from_image,
             tag,
             platform,
             ..Default::default()
