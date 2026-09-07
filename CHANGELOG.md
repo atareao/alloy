@@ -1,4 +1,10 @@
 # Changelog
+## [0.21.18] - 2026-09-07
+
+### Bug Fixes
+
+- Container update reliability - digest comparison, pull by digest, pass digest to recreate
+- Container update reliability - digest comparison, pull by digest, pass digest to recreate
 ## [0.21.17] - 2026-09-06
 
 ### Features
@@ -11,6 +17,7 @@
 
 - Fix Docker build (build.rs, pnpm)
 - Bump version to 0.21.15
+- Release v0.21.17
 ## [0.21.16] - 2026-09-06
 
 ### Miscellaneous Tasks
