@@ -53,6 +53,7 @@ pub(crate) async fn recreate_container(
     name: &str,
     cid: &str,
     image_full: &str,
+    digest: Option<&str>,
 ) -> Result<(), String> {
     // 1. Stop the old container
     docker
@@ -84,7 +85,11 @@ pub(crate) async fn recreate_container(
 
     // 4. Build new config from old one, modifying the image reference
     let mut container_config = inspect.config.unwrap_or_default();
-    container_config.image = Some(image_full.to_string());
+    container_config.image = Some(if let Some(d) = digest {
+        format!("{}@{}", image_full, d)
+    } else {
+        image_full.to_string()
+    });
 
     // Convert to bollard::container::Config and preserve host/networking config
     let mut config: Config<String> = container_config.into();
@@ -230,7 +235,7 @@ pub async fn update_container_h(
         image,
         pull_timeout
     );
-    if !pull_image(&docker, image, pull_timeout).await {
+    if !pull_image(&docker, image, Some(&remote_digest), pull_timeout).await {
         let _ = update_tx.send(UpdateProgress {
             container: name.clone(),
             status: "Error".into(),
@@ -259,7 +264,7 @@ pub async fn update_container_h(
         done: false,
         error: None,
     });
-    match recreate_container(&docker, &name, cid, image).await {
+    match recreate_container(&docker, &name, cid, image, Some(&remote_digest)).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
 let _ = update_tx.send(UpdateProgress {
@@ -381,7 +386,7 @@ pub async fn update_all_h(
             image,
             pull_timeout
         );
-        if !pull_image(&docker, &image, pull_timeout).await {
+        if !pull_image(&docker, &image, Some(&remote_digest), pull_timeout).await {
             tracing::error!("update_all_h: pull FALLÓ para '{}'", name);
             results.push(UpdateProgress {
                 container: name.clone(),
@@ -405,7 +410,7 @@ pub async fn update_all_h(
             continue;
         }
         tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
-        match recreate_container(&docker, &name, &cid, &image).await {
+        match recreate_container(&docker, &name, &cid, &image, Some(&remote_digest)).await {
             Ok(_) => {
                 tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
                 let ts = crate::timezone::now_time_formatted();
@@ -589,7 +594,6 @@ async fn check_and_apply_all(
         } else {
             format!("{}:{}", c.image, c.image_tag)
         };
-        let last_remote_digest = c.last_remote_digest.clone();
 
         if image_full.is_empty() {
             tracing::warn!("check_and_apply_all [{}]: sin imagen, omitiendo", name);
@@ -627,30 +631,18 @@ async fn check_and_apply_all(
 
         match check_remote_digest_with_docker(&image_full, docker).await {
             Ok((remote_digest, _)) => {
-                let local_ref = if !last_remote_digest.is_empty() {
-                    &last_remote_digest
-                } else {
-                    &image_id
-                };
-                let local_short = if local_ref.is_empty() {
-                    String::new()
-                } else {
-                    crate::updates::digest::short_digest(local_ref)
-                };
-                let remote_short = crate::updates::digest::short_digest(&remote_digest);
-                let has_update = !local_ref.is_empty() && local_short != remote_short;
+                // Compare full digests (image_id is the local config digest,
+                // remote_digest is the registry config digest).
+                // No longer use `last_remote_digest` to avoid false negatives
+                // after a successful update.
+                let has_update = !image_id.is_empty() && image_id != remote_digest;
 
                 tracing::info!(
-                    "check_and_apply_all [{}]: local={} remote={} has_update={} (using={})",
+                    "check_and_apply_all [{}]: local={} remote={} has_update={}",
                     name,
-                    local_short,
-                    remote_short,
+                    crate::updates::digest::short_digest(&image_id),
+                    crate::updates::digest::short_digest(&remote_digest),
                     has_update,
-                    if !last_remote_digest.is_empty() {
-                        "last_remote_digest"
-                    } else {
-                        "image_id"
-                    }
                 );
 
                 // Update has_update in container and DB
@@ -915,7 +907,7 @@ async fn apply_single_policy(
                 p.name,
                 p.image_full
             );
-            if pull_image(docker, &p.image_full, pull_timeout).await {
+            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
                 update_progress(
                     update_tx,
@@ -961,7 +953,7 @@ async fn apply_single_policy(
             } else {
                 None
             };
-            if pull_image(docker, &p.image_full, pull_timeout).await {
+            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
                 tracing::info!(
                     "apply_single_policy: Pull OK, reiniciando contenedor '{}' (cid: {})",
                     p.name,
@@ -976,7 +968,7 @@ async fn apply_single_policy(
                     None,
                 )
                 .await;
-                match recreate_container(docker, &p.name, &p.cid, &p.image_full).await {
+                match recreate_container(docker, &p.name, &p.cid, &p.image_full, p.remote_digest.as_deref()).await {
                     Ok(_) => {
                         tracing::info!(
                             "apply_single_policy: contenedor '{}' recreado correctamente",

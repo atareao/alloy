@@ -238,7 +238,7 @@ pub async fn update_check_worker(
             match policy.action {
                 UpdateAction::Pull => {
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
-                    if pull_image(&docker, &image_full, pull_timeout).await {
+                    if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
                         let _ = update_tx.send(UpdateProgress {
                             container: name.clone(),
                             status: "✅ descargado (update-check)".into(),
@@ -277,8 +277,8 @@ pub async fn update_check_worker(
                     } else {
                         None
                     };
-                    if pull_image(&docker, &image_full, pull_timeout).await {
-                        match recreate_container(&docker, &name, &cid, &image_full).await {
+                    if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
+                        match recreate_container(&docker, &name, &cid, &image_full, Some(&new_digest)).await {
                             Ok(_) => {
                                 if policy.rollback_on_failure
                                     && !verify_container_healthy(&docker, &name).await
