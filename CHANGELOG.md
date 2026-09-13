@@ -10,6 +10,10 @@
 
 - Reuse stored remote digest for update checks
 
+### Miscellaneous Tasks
+
+- Release v0.22.0
+
 ### Other
 
 - Avoid redundant image pulls
