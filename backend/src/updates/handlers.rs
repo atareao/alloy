@@ -703,7 +703,7 @@ async fn check_and_apply_all(
             Ok((remote_digest, _)) => {
                 let local_ref =
                     preferred_local_digest(Some(&image_id), Some(c.last_remote_digest.as_str()));
-                let has_update = local_ref.is_some_and(|digest| digest != remote_digest);
+                let has_update = local_ref.is_none_or(|digest| digest != remote_digest);
 
                 tracing::info!(
                     "check_and_apply_all [{}]: local={} remote={} has_update={}",
