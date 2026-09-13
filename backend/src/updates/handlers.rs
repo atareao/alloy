@@ -11,10 +11,10 @@ use bollard::{
     image::{PruneImagesOptions, RemoveImageOptions, TagImageOptions},
     Docker,
 };
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
-use rusqlite::OptionalExtension;
 
 use crate::containers::{fetch_containers, find_container_by_name, pull_image};
 use crate::db;
@@ -34,10 +34,7 @@ fn preferred_local_digest<'a>(
         .or_else(|| image_id.filter(|digest| !digest.is_empty()))
 }
 
-async fn load_last_remote_digest(
-    db_pool: &DbPool,
-    name: &str,
-) -> Result<Option<String>, AppError> {
+async fn load_last_remote_digest(db_pool: &DbPool, name: &str) -> Result<Option<String>, AppError> {
     let conn = db_pool
         .get()
         .await
@@ -321,7 +318,7 @@ pub async fn update_container_h(
     match recreate_container(&docker, &name, cid, image, Some(&remote_digest)).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
-let _ = update_tx.send(UpdateProgress {
+            let _ = update_tx.send(UpdateProgress {
                 container: name.clone(),
                 status: "✅ Restarted".into(),
                 done: true,
@@ -978,7 +975,14 @@ async fn apply_single_policy(
                 p.name,
                 p.image_full
             );
-            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
+            if pull_image(
+                docker,
+                &p.image_full,
+                p.remote_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
                 update_progress(
                     update_tx,
@@ -1024,7 +1028,14 @@ async fn apply_single_policy(
             } else {
                 None
             };
-            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
+            if pull_image(
+                docker,
+                &p.image_full,
+                p.remote_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
                 tracing::info!(
                     "apply_single_policy: Pull OK, reiniciando contenedor '{}' (cid: {})",
                     p.name,
@@ -1039,7 +1050,15 @@ async fn apply_single_policy(
                     None,
                 )
                 .await;
-                match recreate_container(docker, &p.name, &p.cid, &p.image_full, p.remote_digest.as_deref()).await {
+                match recreate_container(
+                    docker,
+                    &p.name,
+                    &p.cid,
+                    &p.image_full,
+                    p.remote_digest.as_deref(),
+                )
+                .await
+                {
                     Ok(_) => {
                         tracing::info!(
                             "apply_single_policy: contenedor '{}' recreado correctamente",
@@ -1060,15 +1079,15 @@ async fn apply_single_policy(
                                 )
                                 .await;
                             }
-let _ = update_progress(
-                    update_tx,
-                    progress_cache,
-                    p.name.clone(),
-                    "❌ pull falló".into(),
-                    true,
-                    Some("pull_image returned false".into()),
-                )
-                .await;
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some("pull_image returned false".into()),
+                            )
+                            .await;
                         } else {
                             let _ = update_progress(
                                 update_tx,
@@ -1145,15 +1164,15 @@ let _ = update_progress(
                         p.name,
                         project
                     );
-let _ = update_progress(
-                            update_tx,
-                            progress_cache,
-                            p.name.clone(),
-                            format!("📥 Pulling stack '{}'...", project),
-                            false,
-                            None,
-                        )
-                        .await;
+                    let _ = update_progress(
+                        update_tx,
+                        progress_cache,
+                        p.name.clone(),
+                        format!("📥 Pulling stack '{}'...", project),
+                        false,
+                        None,
+                    )
+                    .await;
                     let pull = tokio::process::Command::new("docker")
                         .args(["compose", "-f", file, "pull"])
                         .output()
@@ -1168,15 +1187,15 @@ let _ = update_progress(
                                 .args(["compose", "-f", file, "up", "-d"])
                                 .output()
                                 .await;
-let _ = update_progress(
-                    update_tx,
-                    progress_cache,
-                    p.name.clone(),
-                    "❌ pull falló".into(),
-                    true,
-                    Some("pull_image returned false".into()),
-                )
-                .await;
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some("pull_image returned false".into()),
+                            )
+                            .await;
                             success = true;
                         }
                         Ok(output) => {
@@ -1217,38 +1236,38 @@ let _ = update_progress(
                         "apply_single_policy: compose file no encontrado para '{}'",
                         project
                     );
-let _ = update_progress(
-                            update_tx,
-                            progress_cache,
-                            p.name.clone(),
-                            "❌ compose file no encontrado".into(),
-                            true,
-                            Some("cannot resolve compose file".into()),
-                        )
-                        .await;
+                    let _ = update_progress(
+                        update_tx,
+                        progress_cache,
+                        p.name.clone(),
+                        "❌ compose file no encontrado".into(),
+                        true,
+                        Some("cannot resolve compose file".into()),
+                    )
+                    .await;
                 }
             } else {
-let _ = update_progress(
-                                update_tx,
-                                progress_cache,
-                                p.name.clone(),
-                                "⚠️ rollback aplicado".into(),
-                                true,
-                                Some("container no healthy".into()),
-                            )
-                            .await;
-            }
-        }
-        _ => {
-let _ = update_progress(
+                let _ = update_progress(
                     update_tx,
                     progress_cache,
                     p.name.clone(),
-                    "❌ no es stack".into(),
+                    "⚠️ rollback aplicado".into(),
                     true,
-                    Some("container has no compose project label".into()),
+                    Some("container no healthy".into()),
                 )
                 .await;
+            }
+        }
+        _ => {
+            let _ = update_progress(
+                update_tx,
+                progress_cache,
+                p.name.clone(),
+                "❌ no es stack".into(),
+                true,
+                Some("container has no compose project label".into()),
+            )
+            .await;
         }
     }
 
