@@ -278,7 +278,15 @@ pub async fn update_check_worker(
                         None
                     };
                     if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
-                        match recreate_container(&docker, &name, &cid, &image_full, Some(&new_digest)).await {
+                        match recreate_container(
+                            &docker,
+                            &name,
+                            &cid,
+                            &image_full,
+                            Some(&new_digest),
+                        )
+                        .await
+                        {
                             Ok(_) => {
                                 if policy.rollback_on_failure
                                     && !verify_container_healthy(&docker, &name).await
