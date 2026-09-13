@@ -1,6 +1,7 @@
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
+use crate::updates::digest::short_digest;
 use chrono::Local;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -68,5 +69,66 @@ pub async fn mark_update_done(db_pool: &DbPool, name: &str) {
 pub async fn clear_updating(db_pool: &DbPool, name: &str) {
     if let Ok(conn) = db_pool.get().await {
         let _ = crate::db::clear_updating(&conn.lock().unwrap(), name);
+    }
+}
+
+/// Select the local digest reference used to compare against the current
+/// remote digest: prefer persisted last_remote_digest and fallback to image_id.
+pub fn select_local_digest_reference(
+    last_remote_digest: Option<&str>,
+    image_id: Option<&str>,
+) -> String {
+    let persisted = last_remote_digest.unwrap_or("").trim();
+    if !persisted.is_empty() {
+        return persisted.to_string();
+    }
+    image_id.unwrap_or("").trim().to_string()
+}
+
+/// Returns true when remote digest differs from the selected local reference.
+pub fn digest_changed(remote_digest: &str, local_reference: &str) -> bool {
+    let remote = remote_digest.trim();
+    let local = local_reference.trim();
+    if remote.is_empty() {
+        return false;
+    }
+    if local.is_empty() {
+        return true;
+    }
+    short_digest(remote) != short_digest(local)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{digest_changed, select_local_digest_reference};
+
+    #[test]
+    fn test_select_local_digest_prefers_persisted() {
+        let selected = select_local_digest_reference(Some("sha256:remote"), Some("sha256:local"));
+        assert_eq!(selected, "sha256:remote");
+    }
+
+    #[test]
+    fn test_select_local_digest_fallback_to_image_id() {
+        let selected = select_local_digest_reference(None, Some("sha256:local"));
+        assert_eq!(selected, "sha256:local");
+    }
+
+    #[test]
+    fn test_digest_changed_true_when_different() {
+        let changed = digest_changed("sha256:bbbbbbbbbbbb", "sha256:aaaaaaaaaaaa");
+        assert!(changed);
+    }
+
+    #[test]
+    fn test_digest_changed_false_when_same() {
+        let changed = digest_changed("sha256:aaaaaaaaaaaa", "sha256:aaaaaaaaaaaa");
+        assert!(!changed);
+    }
+
+    #[test]
+    fn test_digest_changed_true_when_local_empty_and_remote_present() {
+        let changed = digest_changed("sha256:aaaaaaaaaaaa", "");
+        assert!(changed);
     }
 }
