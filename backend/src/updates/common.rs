@@ -87,10 +87,15 @@ pub fn select_local_digest_reference(
 
 /// Returns true when remote digest differs from the selected local reference.
 pub fn digest_changed(remote_digest: &str, local_reference: &str) -> bool {
-    if remote_digest.trim().is_empty() || local_reference.trim().is_empty() {
+    let remote = remote_digest.trim();
+    let local = local_reference.trim();
+    if remote.is_empty() {
         return false;
     }
-    short_digest(remote_digest) != short_digest(local_reference)
+    if local.is_empty() {
+        return true;
+    }
+    short_digest(remote) != short_digest(local)
 }
 
 #[cfg(test)]
@@ -119,5 +124,11 @@ mod tests {
     fn test_digest_changed_false_when_same() {
         let changed = digest_changed("sha256:aaaaaaaaaaaa", "sha256:aaaaaaaaaaaa");
         assert!(!changed);
+    }
+
+    #[test]
+    fn test_digest_changed_true_when_local_empty_and_remote_present() {
+        let changed = digest_changed("sha256:aaaaaaaaaaaa", "");
+        assert!(changed);
     }
 }
