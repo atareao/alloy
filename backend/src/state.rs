@@ -223,9 +223,7 @@ impl axum::extract::FromRef<AppState> for DbPool {
     }
 }
 
-impl axum::extract::FromRef<AppState>
-    for Arc<Mutex<HashMap<String, UpdateProgress>>>
-{
+impl axum::extract::FromRef<AppState> for Arc<Mutex<HashMap<String, UpdateProgress>>> {
     fn from_ref(state: &AppState) -> Self {
         state.progress_cache.clone()
     }

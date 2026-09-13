@@ -337,7 +337,12 @@ pub async fn remove_old_image(docker: &Docker, old_image_id: &str) {
     }
 }
 
-pub async fn pull_image(docker: &Docker, image: &str, digest: Option<&str>, timeout_secs: u64) -> bool {
+pub async fn pull_image(
+    docker: &Docker,
+    image: &str,
+    digest: Option<&str>,
+    timeout_secs: u64,
+) -> bool {
     // When digest is provided, pull using `image@digest` to bypass Docker tag caching.
     // When digest is None, fall back to tag-based pull.
     let (from_image, tag) = if let Some(d) = digest {
@@ -350,7 +355,11 @@ pub async fn pull_image(docker: &Docker, image: &str, digest: Option<&str>, time
     tracing::info!(
         "pull_image: descargando '{}' (modo: {}, timeout: {}s)",
         from_image,
-        if digest.is_some() { "por-digest" } else { "por-tag" },
+        if digest.is_some() {
+            "por-digest"
+        } else {
+            "por-tag"
+        },
         timeout_secs
     );
     let stream = docker.create_image(

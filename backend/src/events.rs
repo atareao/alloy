@@ -34,7 +34,10 @@ async fn sse_updates_h(
     tracing::info!("📡 SSE /api/updates: cliente conectado");
     let stream = BroadcastStream::new(tx.subscribe()).filter_map(|r| match r {
         Ok(evt) => {
-            tracing::info!("📡 SSE /api/updates: enviando evento container={}", evt.container);
+            tracing::info!(
+                "📡 SSE /api/updates: enviando evento container={}",
+                evt.container
+            );
             future::ready(Some(Ok(Event::default()
                 .event("update-progress")
                 .json_data(evt)

@@ -11,6 +11,7 @@ use bollard::{
     image::{PruneImagesOptions, RemoveImageOptions, TagImageOptions},
     Docker,
 };
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
@@ -23,6 +24,49 @@ use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest_with_docker;
 use crate::workers::resolve_compose_file;
 use bollard::models::ImagePruneResponse;
+
+fn preferred_local_digest<'a>(
+    image_id: Option<&'a str>,
+    last_remote_digest: Option<&'a str>,
+) -> Option<&'a str> {
+    last_remote_digest
+        .filter(|digest| !digest.is_empty())
+        .or_else(|| image_id.filter(|digest| !digest.is_empty()))
+}
+
+async fn load_last_remote_digest(db_pool: &DbPool, name: &str) -> Result<Option<String>, AppError> {
+    let conn = db_pool
+        .get()
+        .await
+        .map_err(|e| AppError::Internal(format!("db pool error: {}", e)))?;
+    let guard = conn.lock().unwrap();
+    let mut stmt = guard
+        .prepare("SELECT last_remote_digest FROM containers WHERE name = ?1")
+        .map_err(|e| AppError::Internal(format!("db prepare error: {}", e)))?;
+    stmt.query_row([name], |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(|e| AppError::Internal(format!("db query error: {}", e)))
+}
+
+async fn load_last_remote_digest_map(db_pool: &DbPool) -> HashMap<String, String> {
+    let Ok(conn) = db_pool.get().await else {
+        return HashMap::new();
+    };
+    let guard = conn.lock().unwrap();
+    let Ok(mut stmt) = guard
+        .prepare("SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''")
+    else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        let name: String = row.get(0)?;
+        let digest: String = row.get(1)?;
+        Ok((name, digest))
+    }) else {
+        return HashMap::new();
+    };
+    rows.filter_map(|row| row.ok()).collect()
+}
 
 /// Send an UpdateProgress via SSE broadcast AND cache it for the polling fallback
 /// endpoint (`GET /api/check-progress`). This ensures the frontend can retrieve
@@ -176,6 +220,7 @@ pub async fn update_container_h(
     let container = find_container_by_name(&docker, &name).await?;
     let image = container.image.as_deref().unwrap_or("");
     let cid = container.id.as_deref().unwrap_or("");
+    let last_remote_digest = load_last_remote_digest(&db_pool, &name).await?;
 
     if image.is_empty() {
         return Err(AppError::BadRequest("container has no image".into()));
@@ -186,12 +231,18 @@ pub async fn update_container_h(
     let (needs_pull, remote_digest) =
         match crate::updates::digest::check_remote_digest_with_docker(image, &docker).await {
             Ok((digest, _)) => {
-                if !image_id.is_empty() {
-                    let local_short = crate::updates::digest::short_digest(&image_id);
-                    let remote_short = crate::updates::digest::short_digest(&digest);
-                    (local_short != remote_short, digest)
+                if let Some(local_ref) =
+                    preferred_local_digest(Some(&image_id), last_remote_digest.as_deref())
+                {
+                    tracing::info!(
+                        "update_container [{}]: local={} remote={}",
+                        name,
+                        crate::updates::digest::short_digest(local_ref),
+                        crate::updates::digest::short_digest(&digest),
+                    );
+                    (local_ref != digest, digest)
                 } else {
-                    (true, digest) // sin image_id local, asumimos que necesita pull
+                    (true, digest) // sin referencia local conocida, asumimos que necesita pull
                 }
             }
             Err(e) => {
@@ -267,7 +318,7 @@ pub async fn update_container_h(
     match recreate_container(&docker, &name, cid, image, Some(&remote_digest)).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
-let _ = update_tx.send(UpdateProgress {
+            let _ = update_tx.send(UpdateProgress {
                 container: name.clone(),
                 status: "✅ Restarted".into(),
                 done: true,
@@ -339,16 +390,17 @@ pub async fn update_all_h(
     State(db_pool): State<DbPool>,
 ) -> Json<Vec<UpdateProgress>> {
     let mut results = vec![];
+    let last_remote_digest_map = load_last_remote_digest_map(&db_pool).await;
     for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
         // Verificar digest remoto antes de hacer pull
         let (needs_pull, remote_digest) =
             match crate::updates::digest::check_remote_digest_with_docker(&image, &docker).await {
                 Ok((digest, _)) => {
-                    let has_update = image_id.as_ref().is_none_or(|local_digest| {
-                        let local_short = crate::updates::digest::short_digest(local_digest);
-                        let remote_short = crate::updates::digest::short_digest(&digest);
-                        local_short != remote_short
-                    });
+                    let has_update = preferred_local_digest(
+                        image_id.as_deref(),
+                        last_remote_digest_map.get(&name).map(String::as_str),
+                    )
+                    .is_none_or(|local_digest| local_digest != digest);
                     (has_update, digest)
                 }
                 Err(e) => {
@@ -480,6 +532,7 @@ pub async fn check_update_h(
 ) -> Result<Json<VersionCompare>, AppError> {
     let container = find_container_by_name(&docker, &name).await?;
     let image_full = container.image.as_deref().unwrap_or("");
+    let last_remote_digest = load_last_remote_digest(&db_pool, &name).await?;
     tracing::info!("check_update [{}]: imagen={}", name, image_full);
     let (has_update, local_tag, remote_digest, remote_tag, error) = if image_full.is_empty() {
         tracing::warn!("check_update [{}]: contenedor sin imagen", name);
@@ -498,11 +551,28 @@ pub async fn check_update_h(
                     (None, None, Some(e))
                 }
             };
-        let has_update = match (&container.image_id, &remote_digest) {
-            (Some(local_digest), Some(remote_digest)) => {
-                let local_short = crate::updates::digest::short_digest(local_digest);
+        let has_update = match &remote_digest {
+            Some(remote_digest) => {
+                let Some(local_ref) = preferred_local_digest(
+                    container.image_id.as_deref(),
+                    last_remote_digest.as_deref(),
+                ) else {
+                    return Ok(Json(VersionCompare {
+                        local_tag,
+                        remote_tag,
+                        has_update: None,
+                        local_digest: container
+                            .image_id
+                            .as_ref()
+                            .map(|d| crate::updates::digest::short_digest(d)),
+                        remote_digest: Some(crate::updates::digest::short_digest(remote_digest)),
+                        changelog_url: None,
+                        error,
+                    }));
+                };
+                let local_short = crate::updates::digest::short_digest(local_ref);
                 let remote_short = crate::updates::digest::short_digest(remote_digest);
-                let result = local_short != remote_short;
+                let result = local_ref != remote_digest;
                 tracing::info!(
                     "check_update [{}]: local={} remote={} has_update={}",
                     name,
@@ -631,16 +701,14 @@ async fn check_and_apply_all(
 
         match check_remote_digest_with_docker(&image_full, docker).await {
             Ok((remote_digest, _)) => {
-                // Compare full digests (image_id is the local config digest,
-                // remote_digest is the registry config digest).
-                // No longer use `last_remote_digest` to avoid false negatives
-                // after a successful update.
-                let has_update = !image_id.is_empty() && image_id != remote_digest;
+                let local_ref =
+                    preferred_local_digest(Some(&image_id), Some(c.last_remote_digest.as_str()));
+                let has_update = local_ref.is_none_or(|digest| digest != remote_digest);
 
                 tracing::info!(
                     "check_and_apply_all [{}]: local={} remote={} has_update={}",
                     name,
-                    crate::updates::digest::short_digest(&image_id),
+                    crate::updates::digest::short_digest(local_ref.unwrap_or("")),
                     crate::updates::digest::short_digest(&remote_digest),
                     has_update,
                 );
@@ -907,7 +975,14 @@ async fn apply_single_policy(
                 p.name,
                 p.image_full
             );
-            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
+            if pull_image(
+                docker,
+                &p.image_full,
+                p.remote_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
                 update_progress(
                     update_tx,
@@ -953,7 +1028,14 @@ async fn apply_single_policy(
             } else {
                 None
             };
-            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
+            if pull_image(
+                docker,
+                &p.image_full,
+                p.remote_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
                 tracing::info!(
                     "apply_single_policy: Pull OK, reiniciando contenedor '{}' (cid: {})",
                     p.name,
@@ -968,7 +1050,15 @@ async fn apply_single_policy(
                     None,
                 )
                 .await;
-                match recreate_container(docker, &p.name, &p.cid, &p.image_full, p.remote_digest.as_deref()).await {
+                match recreate_container(
+                    docker,
+                    &p.name,
+                    &p.cid,
+                    &p.image_full,
+                    p.remote_digest.as_deref(),
+                )
+                .await
+                {
                     Ok(_) => {
                         tracing::info!(
                             "apply_single_policy: contenedor '{}' recreado correctamente",
@@ -989,15 +1079,15 @@ async fn apply_single_policy(
                                 )
                                 .await;
                             }
-let _ = update_progress(
-                    update_tx,
-                    progress_cache,
-                    p.name.clone(),
-                    "❌ pull falló".into(),
-                    true,
-                    Some("pull_image returned false".into()),
-                )
-                .await;
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some("pull_image returned false".into()),
+                            )
+                            .await;
                         } else {
                             let _ = update_progress(
                                 update_tx,
@@ -1074,15 +1164,15 @@ let _ = update_progress(
                         p.name,
                         project
                     );
-let _ = update_progress(
-                            update_tx,
-                            progress_cache,
-                            p.name.clone(),
-                            format!("📥 Pulling stack '{}'...", project),
-                            false,
-                            None,
-                        )
-                        .await;
+                    let _ = update_progress(
+                        update_tx,
+                        progress_cache,
+                        p.name.clone(),
+                        format!("📥 Pulling stack '{}'...", project),
+                        false,
+                        None,
+                    )
+                    .await;
                     let pull = tokio::process::Command::new("docker")
                         .args(["compose", "-f", file, "pull"])
                         .output()
@@ -1097,15 +1187,15 @@ let _ = update_progress(
                                 .args(["compose", "-f", file, "up", "-d"])
                                 .output()
                                 .await;
-let _ = update_progress(
-                    update_tx,
-                    progress_cache,
-                    p.name.clone(),
-                    "❌ pull falló".into(),
-                    true,
-                    Some("pull_image returned false".into()),
-                )
-                .await;
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some("pull_image returned false".into()),
+                            )
+                            .await;
                             success = true;
                         }
                         Ok(output) => {
@@ -1146,38 +1236,38 @@ let _ = update_progress(
                         "apply_single_policy: compose file no encontrado para '{}'",
                         project
                     );
-let _ = update_progress(
-                            update_tx,
-                            progress_cache,
-                            p.name.clone(),
-                            "❌ compose file no encontrado".into(),
-                            true,
-                            Some("cannot resolve compose file".into()),
-                        )
-                        .await;
+                    let _ = update_progress(
+                        update_tx,
+                        progress_cache,
+                        p.name.clone(),
+                        "❌ compose file no encontrado".into(),
+                        true,
+                        Some("cannot resolve compose file".into()),
+                    )
+                    .await;
                 }
             } else {
-let _ = update_progress(
-                                update_tx,
-                                progress_cache,
-                                p.name.clone(),
-                                "⚠️ rollback aplicado".into(),
-                                true,
-                                Some("container no healthy".into()),
-                            )
-                            .await;
-            }
-        }
-        _ => {
-let _ = update_progress(
+                let _ = update_progress(
                     update_tx,
                     progress_cache,
                     p.name.clone(),
-                    "❌ no es stack".into(),
+                    "⚠️ rollback aplicado".into(),
                     true,
-                    Some("container has no compose project label".into()),
+                    Some("container no healthy".into()),
                 )
                 .await;
+            }
+        }
+        _ => {
+            let _ = update_progress(
+                update_tx,
+                progress_cache,
+                p.name.clone(),
+                "❌ no es stack".into(),
+                true,
+                Some("container has no compose project label".into()),
+            )
+            .await;
         }
     }
 
@@ -1450,5 +1540,32 @@ async fn check_remote_digest_on_image(image_full: &str, docker: &Docker) -> Stri
     match crate::updates::digest::check_remote_digest_with_docker(image_full, docker).await {
         Ok((digest, _)) => digest,
         Err(_) => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preferred_local_digest;
+
+    #[test]
+    fn preferred_local_digest_prefers_persisted_remote_digest() {
+        assert_eq!(
+            preferred_local_digest(Some("sha256:local"), Some("sha256:remote")),
+            Some("sha256:remote")
+        );
+    }
+
+    #[test]
+    fn preferred_local_digest_falls_back_to_image_id() {
+        assert_eq!(
+            preferred_local_digest(Some("sha256:local"), Some("")),
+            Some("sha256:local")
+        );
+    }
+
+    #[test]
+    fn preferred_local_digest_returns_none_when_no_reference_exists() {
+        assert_eq!(preferred_local_digest(Some(""), None), None);
+        assert_eq!(preferred_local_digest(None, Some("")), None);
     }
 }
