@@ -12,10 +12,20 @@ use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
+use crate::updates::common::{digest_changed, select_local_digest_reference};
 use crate::updates::handlers::{
     log_prune_result, prune_dangling_images, recreate_container, rollback_container,
     tag_backup_image, verify_container_healthy,
 };
+
+struct PendingPolicyUpdate {
+    name: String,
+    image_full: String,
+    cid: String,
+    old_digest: String,
+    new_digest: String,
+    policy: UpdatePolicy,
+}
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
 /// Revisa todas las imágenes, marca las que tienen actualización pendiente en DB,
@@ -124,12 +134,13 @@ pub async fn update_check_worker(
             s.update_check_notify.unwrap_or(false)
         };
 
-        // 3. Revisar cada contenedor secuencialmente y aplicar políticas
+        // 3. Fase de verificación y marcado
         let check_interval_ms = {
             let s = settings.lock().await;
             s.check_interval_ms.unwrap_or(2000)
         };
         let mut updated_count = 0u32;
+        let mut pending_updates: Vec<PendingPolicyUpdate> = Vec::new();
 
         for c in &containers {
             let name = c
@@ -156,33 +167,18 @@ pub async fn update_check_worker(
                 continue;
             }
 
-            // Check remote digest for this container
+            // Fase 1: verificar digest remoto
             let (has_update, old_digest, new_digest) =
                 match crate::updates::digest::check_remote_digest_with_docker(&image_full, &docker)
                     .await
                 {
                     Ok((remote_digest, _)) => {
-                        // Usar last_remote_digest de DB si existe (comparación correcta),
-                        // fallback a image_id (Docker content hash) solo si es primera vez
-                        let local_ref = last_remote_digest_map
-                            .get(&name)
-                            .map(|s| s.as_str())
-                            .unwrap_or(&image_id);
-                        let has_update = if !local_ref.is_empty() {
-                            let local_short = crate::updates::digest::short_digest(local_ref);
-                            let remote_short = crate::updates::digest::short_digest(&remote_digest);
-                            local_short != remote_short
-                        } else {
-                            false
-                        };
-                        let old_digest = if last_remote_digest_map.contains_key(&name) {
-                            last_remote_digest_map
-                                .get(&name)
-                                .cloned()
-                                .unwrap_or_default()
-                        } else {
-                            image_id.clone()
-                        };
+                        let local_ref = select_local_digest_reference(
+                            last_remote_digest_map.get(&name).map(String::as_str),
+                            Some(image_id.as_str()),
+                        );
+                        let has_update = digest_changed(&remote_digest, &local_ref);
+                        let old_digest = local_ref;
                         (has_update, old_digest, remote_digest)
                     }
                     Err(_) => {
@@ -193,13 +189,14 @@ pub async fn update_check_worker(
                     }
                 };
 
+            // Fase 2: marcar has_update
             let _ = sqlite_update_has_update(&db_pool, &name, has_update).await;
             if !has_update || name.is_empty() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
                 continue;
             }
 
-            // Leer política para este contenedor
+            // Fase 3: preparar aplicación de política solo para marcados
             let policy = match policies.0.get(&name) {
                 Some(p) => p.clone(),
                 None => UpdatePolicy {
@@ -221,49 +218,74 @@ pub async fn update_check_worker(
                 continue;
             }
 
+            pending_updates.push(PendingPolicyUpdate {
+                name,
+                image_full,
+                cid,
+                old_digest,
+                new_digest,
+                policy,
+            });
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+        }
+
+        for pending in pending_updates {
             tracing::info!(
                 "update_check: aplicando política {:?} a '{}'",
-                policy.action,
-                name
+                pending.policy.action,
+                pending.name
             );
-
             let _ = update_tx.send(UpdateProgress {
-                container: name.clone(),
-                status: format!("[update-check] 🔍 {}", policy.action),
+                container: pending.name.clone(),
+                status: format!("[update-check] 🔍 {}", pending.policy.action),
                 done: false,
                 error: None,
             });
-
             let start = std::time::Instant::now();
-            match policy.action {
+            match pending.policy.action {
                 UpdateAction::Pull => {
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
-                    if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
+                    if pull_image(
+                        &docker,
+                        &pending.image_full,
+                        Some(&pending.new_digest),
+                        pull_timeout,
+                    )
+                    .await
+                    {
                         let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
+                            container: pending.name.clone(),
                             status: "✅ descargado (update-check)".into(),
                             done: true,
                             error: None,
                         });
+                        let _ = sqlite_update_has_update(&db_pool, &pending.name, false).await;
+                        let conn = db_pool.get().await.unwrap();
+                        let _ = db::update_container_last_remote_digest(
+                            &conn.lock().unwrap(),
+                            &pending.name,
+                            &pending.new_digest,
+                        );
                         _ = sqlite_append_update(
                             &db_pool,
                             &update_history,
-                            &name,
-                            &image_full,
-                            &old_digest,
-                            &new_digest,
+                            &pending.name,
+                            &pending.image_full,
+                            &pending.old_digest,
+                            &pending.new_digest,
                             "update-check-pull",
                             start.elapsed().as_millis() as u64,
                         )
                         .await;
-                        if policy.cleanup_old_image {
+                        if pending.policy.cleanup_old_image {
                             let result = prune_dangling_images(&docker).await;
                             log_prune_result("scheduler-pull", &result);
                         }
                         updated_count += 1;
                     } else {
                         let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
+                            container: pending.name.clone(),
                             status: "❌ error al descargar (se reintentará)".into(),
                             done: true,
                             error: Some("pull failed, will retry".into()),
@@ -272,77 +294,94 @@ pub async fn update_check_worker(
                 }
                 UpdateAction::PullRestart => {
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
-                    let backup = if policy.rollback_on_failure {
-                        tag_backup_image(&docker, &image_full).await
+                    let backup = if pending.policy.rollback_on_failure {
+                        tag_backup_image(&docker, &pending.image_full).await
                     } else {
                         None
                     };
-                    if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
-                        match recreate_container(&docker, &name, &cid, &image_full, Some(&new_digest)).await {
+                    if pull_image(
+                        &docker,
+                        &pending.image_full,
+                        Some(&pending.new_digest),
+                        pull_timeout,
+                    )
+                    .await
+                    {
+                        match recreate_container(
+                            &docker,
+                            &pending.name,
+                            &pending.cid,
+                            &pending.image_full,
+                            Some(&pending.new_digest),
+                        )
+                        .await
+                        {
                             Ok(_) => {
-                                if policy.rollback_on_failure
-                                    && !verify_container_healthy(&docker, &name).await
+                                if pending.policy.rollback_on_failure
+                                    && !verify_container_healthy(&docker, &pending.name).await
                                 {
-                                    tracing::warn!("update_check: rollback '{}'", name);
+                                    tracing::warn!("update_check: rollback '{}'", pending.name);
                                     if let Some((backup_full, base, orig_tag)) = backup {
                                         rollback_container(
                                             &docker,
-                                            &cid,
+                                            &pending.cid,
                                             &base,
                                             &orig_tag,
                                             &backup_full,
-                                            &image_full,
+                                            &pending.image_full,
                                         )
                                         .await;
                                     }
                                     let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
+                                        container: pending.name.clone(),
                                         status: "⚠️ rollback aplicado (update-check)".into(),
                                         done: true,
                                         error: Some("container no healthy".into()),
                                     });
                                 } else {
                                     let _ = notif_tx.send(NotifEvent {
-                                        container: name.clone(),
+                                        container: pending.name.clone(),
                                         status: "🔄 actualizado (update-check)".into(),
                                         timestamp: crate::timezone::now_time_formatted(),
                                     });
                                     if notify {
                                         notify_all(
                                             &settings,
-                                            &name,
+                                            &pending.name,
                                             "🔄 actualizado vía update-check",
                                         )
                                         .await;
                                     }
-                                    let _ = sqlite_update_has_update(&db_pool, &name, false).await;
+                                    let _ =
+                                        sqlite_update_has_update(&db_pool, &pending.name, false)
+                                            .await;
                                     // Guardar remote digest para evitar re-detección en el siguiente ciclo
                                     {
                                         let conn = db_pool.get().await.unwrap();
                                         let _ = db::update_container_last_remote_digest(
                                             &conn.lock().unwrap(),
-                                            &name,
-                                            &new_digest,
+                                            &pending.name,
+                                            &pending.new_digest,
                                         );
                                     }
                                     _ = sqlite_append_update(
                                         &db_pool,
                                         &update_history,
-                                        &name,
-                                        &image_full,
-                                        &old_digest,
-                                        &new_digest,
+                                        &pending.name,
+                                        &pending.image_full,
+                                        &pending.old_digest,
+                                        &pending.new_digest,
                                         "update-check-restart",
                                         start.elapsed().as_millis() as u64,
                                     )
                                     .await;
                                     let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
+                                        container: pending.name.clone(),
                                         status: "✅ actualizado + reiniciado (update-check)".into(),
                                         done: true,
                                         error: None,
                                     });
-                                    if policy.cleanup_old_image {
+                                    if pending.policy.cleanup_old_image {
                                         let result = prune_dangling_images(&docker).await;
                                         log_prune_result("scheduler-restart", &result);
                                     }
@@ -352,11 +391,11 @@ pub async fn update_check_worker(
                             Err(e) => {
                                 tracing::error!(
                                     "update_check: recreate_container failed for '{}': {}",
-                                    name,
+                                    pending.name,
                                     e
                                 );
                                 let _ = update_tx.send(UpdateProgress {
-                                    container: name.clone(),
+                                    container: pending.name.clone(),
                                     status: "❌ error al recrear contenedor".into(),
                                     done: true,
                                     error: Some(e.to_string()),
@@ -365,7 +404,7 @@ pub async fn update_check_worker(
                         }
                     } else {
                         let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
+                            container: pending.name.clone(),
                             status: "❌ error al descargar (se reintentará)".into(),
                             done: true,
                             error: Some("pull failed, will retry".into()),
@@ -379,7 +418,7 @@ pub async fn update_check_worker(
                             c.names
                                 .as_ref()
                                 .and_then(|n| n.first())
-                                .map(|n| crate::models::strip_name(n) == name)
+                                .map(|n| crate::models::strip_name(n) == pending.name.as_str())
                                 .unwrap_or(false)
                         })
                         .and_then(|c| c.labels.as_ref())
@@ -389,7 +428,7 @@ pub async fn update_check_worker(
                         let compose_file = resolve_compose_file(&docker, project).await;
                         if let Some(ref file) = compose_file {
                             let _ = update_tx.send(UpdateProgress {
-                                container: name.clone(),
+                                container: pending.name.clone(),
                                 status: format!("📥 Pulling stack '{}'...", project),
                                 done: false,
                                 error: None,
@@ -405,12 +444,21 @@ pub async fn update_check_worker(
                                         .output()
                                         .await;
                                     let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
+                                        container: pending.name.clone(),
                                         status: "✅ stack actualizado (update-check)".into(),
                                         done: true,
                                         error: None,
                                     });
-                                    if policy.cleanup_old_image {
+                                    let _ =
+                                        sqlite_update_has_update(&db_pool, &pending.name, false)
+                                            .await;
+                                    let conn = db_pool.get().await.unwrap();
+                                    let _ = db::update_container_last_remote_digest(
+                                        &conn.lock().unwrap(),
+                                        &pending.name,
+                                        &pending.new_digest,
+                                    );
+                                    if pending.policy.cleanup_old_image {
                                         let result = prune_dangling_images(&docker).await;
                                         log_prune_result("scheduler-safety", &result);
                                     }
@@ -418,12 +466,12 @@ pub async fn update_check_worker(
                                     // Remove from suppression set
                                     {
                                         let mut in_progress = update_in_progress.lock().await;
-                                        in_progress.remove(&name);
+                                        in_progress.remove(&pending.name);
                                     }
                                 }
                                 _ => {
                                     let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
+                                        container: pending.name.clone(),
                                         status: "❌ error stack pull".into(),
                                         done: true,
                                         error: Some("docker compose pull failed".into()),
@@ -431,7 +479,7 @@ pub async fn update_check_worker(
                                     // Remove from suppression set on error too
                                     {
                                         let mut in_progress = update_in_progress.lock().await;
-                                        in_progress.remove(&name);
+                                        in_progress.remove(&pending.name);
                                     }
                                 }
                             }
@@ -440,16 +488,13 @@ pub async fn update_check_worker(
                 }
                 _ => {
                     let _ = update_tx.send(UpdateProgress {
-                        container: name.clone(),
+                        container: pending.name.clone(),
                         status: "⏭️ acción desconocida".into(),
                         done: true,
                         error: None,
                     });
                 }
             }
-
-            // Sleep between containers
-            tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
         }
 
         // Safety-net prune at end
