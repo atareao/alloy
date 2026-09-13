@@ -1,10 +1,32 @@
 # Changelog
+## [0.22.0] - 2026-09-13
+
+### Bug Fixes
+
+- Avoid redundant pulls when digest is unchanged
+- Preserve fallback for missing local digest
+
+### Features
+
+- Reuse stored remote digest for update checks
+
+### Other
+
+- Avoid redundant image pulls
+
+### Styling
+
+- Apply rustfmt to preexisting backend diffs
 ## [0.21.18] - 2026-09-07
 
 ### Bug Fixes
 
 - Container update reliability - digest comparison, pull by digest, pass digest to recreate
 - Container update reliability - digest comparison, pull by digest, pass digest to recreate
+
+### Miscellaneous Tasks
+
+- Release v0.21.18
 ## [0.21.17] - 2026-09-06
 
 ### Features
