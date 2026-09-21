@@ -164,6 +164,10 @@ async fn update_stack_h(
         ),
         done: false,
         error: None,
+        total: 0,
+        checked: 0,
+        updated: 0,
+        errors: 0,
     });
     let mut results = Vec::new();
     for service in &services {
@@ -173,6 +177,10 @@ async fn update_stack_h(
             status: format!("📥 Pulling {}...", service),
             done: false,
             error: None,
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         });
         let pull_result = tokio::process::Command::new("docker")
             .args(["compose", "-f", &compose_file, "pull", service])
@@ -185,6 +193,10 @@ async fn update_stack_h(
                     status: format!("🔄 Recreating {}...", service),
                     done: false,
                     error: None,
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
                 });
                 let up_result = tokio::process::Command::new("docker")
                     .args([
@@ -212,6 +224,10 @@ async fn update_stack_h(
                             status: format!("✅ {} updated", service),
                             done: true,
                             error: None,
+                            total: 0,
+                            checked: 0,
+                            updated: 0,
+                            errors: 0,
                         });
                         let ts = Local::now().format("%H:%M:%S").to_string();
                         let _ = notif_tx.send(NotifEvent {
@@ -239,6 +255,10 @@ async fn update_stack_h(
                             status: format!("❌ {} error: {}", service, stderr),
                             done: true,
                             error: Some(stderr),
+                            total: 0,
+                            checked: 0,
+                            updated: 0,
+                            errors: 0,
                         });
                     }
                     Err(e) => {
@@ -253,6 +273,10 @@ async fn update_stack_h(
                             status: format!("❌ {} error: {}", service, e),
                             done: true,
                             error: Some(e.to_string()),
+                            total: 0,
+                            checked: 0,
+                            updated: 0,
+                            errors: 0,
                         });
                     }
                 }
@@ -270,6 +294,10 @@ async fn update_stack_h(
                     status: format!("❌ {} pull error: {}", service, stderr),
                     done: true,
                     error: Some(stderr),
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
                 });
             }
             Err(e) => {
@@ -284,6 +312,10 @@ async fn update_stack_h(
                     status: format!("❌ {} error: {}", service, e),
                     done: true,
                     error: Some(e.to_string()),
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
                 });
             }
         }
@@ -293,6 +325,10 @@ async fn update_stack_h(
         status: format!("🏁 Stack '{}' update complete", project),
         done: true,
         error: None,
+        total: 0,
+        checked: 0,
+        updated: 0,
+        errors: 0,
     });
     Ok(Json(StackUpdateResponse {
         project: project.to_string(),

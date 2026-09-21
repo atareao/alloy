@@ -1,5 +1,6 @@
 use bollard::Docker;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
@@ -142,6 +143,9 @@ pub struct AppState {
     /// Progress cache for poll-based progress checking (SSE fallback).
     /// Maps container names to their latest UpdateProgress.
     pub progress_cache: Arc<Mutex<HashMap<String, UpdateProgress>>>,
+    /// Cancellation flag for batch check/update operations.
+    /// Set to true when the user clicks Cancel; checked between iterations.
+    pub cancel_check: Arc<AtomicBool>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -223,11 +227,15 @@ impl axum::extract::FromRef<AppState> for DbPool {
     }
 }
 
-impl axum::extract::FromRef<AppState>
-    for Arc<Mutex<HashMap<String, UpdateProgress>>>
-{
+impl axum::extract::FromRef<AppState> for Arc<Mutex<HashMap<String, UpdateProgress>>> {
     fn from_ref(state: &AppState) -> Self {
         state.progress_cache.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for Arc<AtomicBool> {
+    fn from_ref(state: &AppState) -> Self {
+        state.cancel_check.clone()
     }
 }
 

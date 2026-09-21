@@ -14,6 +14,7 @@ mod updates;
 mod workers;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tower_http::cors::CorsLayer;
@@ -179,6 +180,7 @@ async fn main() {
         db: db_pool.clone(),
         update_in_progress: Arc::new(Mutex::new(HashSet::new())),
         progress_cache: progress_cache.clone(),
+        cancel_check: Arc::new(AtomicBool::new(false)),
     };
 
     // Spawn workers

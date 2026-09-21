@@ -34,7 +34,16 @@ async fn sse_updates_h(
     tracing::info!("📡 SSE /api/updates: cliente conectado");
     let stream = BroadcastStream::new(tx.subscribe()).filter_map(|r| match r {
         Ok(evt) => {
-            tracing::info!("📡 SSE /api/updates: enviando evento container={}", evt.container);
+            tracing::info!(
+                "📡 SSE /api/updates: enviando evento container={} done={} checked={} total={} updated={} errors={} status={}",
+                evt.container,
+                evt.done,
+                evt.checked,
+                evt.total,
+                evt.updated,
+                evt.errors,
+                evt.status
+            );
             future::ready(Some(Ok(Event::default()
                 .event("update-progress")
                 .json_data(evt)
@@ -250,6 +259,10 @@ mod tests {
             status: "Pulling".into(),
             done: false,
             error: None,
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         })
         .unwrap();
 
@@ -270,6 +283,10 @@ mod tests {
             status: "Done".into(),
             done: true,
             error: None,
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         })
         .unwrap();
 
@@ -287,6 +304,10 @@ mod tests {
             status: "Failed".into(),
             done: true,
             error: Some("connection timeout".into()),
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         })
         .unwrap();
 

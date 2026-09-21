@@ -13,6 +13,5 @@ pub async fn check_progress_h(
 }
 
 pub fn routes() -> axum::Router<crate::state::AppState> {
-    axum::Router::new()
-        .route("/api/check-progress", axum::routing::get(check_progress_h))
+    axum::Router::new().route("/api/check-progress", axum::routing::get(check_progress_h))
 }

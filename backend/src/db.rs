@@ -1,5 +1,6 @@
 use deadpool_sqlite::{Config as PoolConfig, Runtime};
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::collections::HashMap;
 
 use crate::models::*;
 
@@ -223,6 +224,34 @@ pub fn update_container_last_remote_digest(
         params![digest, name],
     )?;
     Ok(())
+}
+
+pub fn get_container_last_remote_digest(conn: &Connection, name: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT last_remote_digest FROM containers WHERE name = ?1",
+        params![name],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|d| !d.is_empty())
+}
+
+pub fn load_last_remote_digest_map(conn: &Connection) -> HashMap<String, String> {
+    let mut stmt = match conn
+        .prepare("SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''")
+    {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = match stmt.query_map([], |row| {
+        let name: String = row.get(0)?;
+        let digest: String = row.get(1)?;
+        Ok((name, digest))
+    }) {
+        Ok(r) => r,
+        Err(_) => return HashMap::new(),
+    };
+    rows.filter_map(|r| r.ok()).collect()
 }
 
 pub fn update_container_check_times(
@@ -765,5 +794,50 @@ mod tests {
         let conn = test_conn();
         let settings = load_settings(&conn).unwrap();
         assert_eq!(settings.telegram_token, None);
+    }
+
+    #[test]
+    fn test_get_container_last_remote_digest_nonexistent() {
+        let conn = test_conn();
+        let result = get_container_last_remote_digest(&conn, "nonexistent");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_get_container_last_remote_digest_exists() {
+        let conn = test_conn();
+        // Insert a container first
+        let containers = vec![ContainerInfo {
+            id: "test123".into(),
+            name: "test-container".into(),
+            image: "test:latest".into(),
+            image_tag: "latest".into(),
+            size_mb: 0.0,
+            state: "running".into(),
+            status: "Up".into(),
+            ports: vec![],
+            traefik_url: None,
+            compose_project: None,
+            has_update: false,
+            registry_url: String::new(),
+            updating: false,
+            last_check: None,
+            next_check: None,
+            last_remote_digest: String::new(),
+        }];
+        save_containers(&conn, &containers).unwrap();
+
+        // Initially empty digest → None
+        assert_eq!(
+            get_container_last_remote_digest(&conn, "test-container"),
+            None,
+        );
+
+        // Set a digest → Some
+        update_container_last_remote_digest(&conn, "test-container", "sha256:abc123").unwrap();
+        assert_eq!(
+            get_container_last_remote_digest(&conn, "test-container"),
+            Some("sha256:abc123".into()),
+        );
     }
 }

@@ -12,6 +12,7 @@ use bollard::{
     Docker,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
@@ -27,6 +28,7 @@ use bollard::models::ImagePruneResponse;
 /// Send an UpdateProgress via SSE broadcast AND cache it for the polling fallback
 /// endpoint (`GET /api/check-progress`). This ensures the frontend can retrieve
 /// progress even when EventSource / SSE is not working in the browser.
+#[allow(clippy::too_many_arguments)]
 async fn update_progress(
     update_tx: &broadcast::Sender<UpdateProgress>,
     progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
@@ -34,13 +36,31 @@ async fn update_progress(
     status: String,
     done: bool,
     error: Option<String>,
+    total: u32,
+    checked: u32,
+    updated: u32,
+    errors: u32,
 ) {
     let progress = UpdateProgress {
         container: container.clone(),
         status,
         done,
         error,
+        total,
+        checked,
+        updated,
+        errors,
     };
+    tracing::info!(
+        "[update_progress] enviando: container={} done={} checked={} total={} updated={} errors={} status={}",
+        progress.container,
+        progress.done,
+        progress.checked,
+        progress.total,
+        progress.updated,
+        progress.errors,
+        progress.status
+    );
     let _ = update_tx.send(progress.clone());
     let mut cache = progress_cache.lock().await;
     cache.insert(container, progress);
@@ -160,7 +180,8 @@ struct PendingUpdate {
     image_full: String,
     cid: String,
     image_id: String,
-    remote_digest: Option<String>,
+    remote_digest: Option<String>, // config digest (for comparison + DB storage)
+    manifest_digest: Option<String>, // manifest digest (for pull + recreate)
     compose_project: Option<String>,
 }
 
@@ -183,16 +204,18 @@ pub async fn update_container_h(
 
     // Verificar digest remoto antes de hacer pull
     let image_id = container.image_id.as_deref().unwrap_or("").to_string();
-    let (needs_pull, remote_digest) =
+    let (needs_pull, remote_digest, manifest_digest) =
         match crate::updates::digest::check_remote_digest_with_docker(image, &docker).await {
-            Ok((digest, _)) => {
-                if !image_id.is_empty() {
-                    let local_short = crate::updates::digest::short_digest(&image_id);
-                    let remote_short = crate::updates::digest::short_digest(&digest);
-                    (local_short != remote_short, digest)
-                } else {
-                    (true, digest) // sin image_id local, asumimos que necesita pull
-                }
+            Ok((manifest, config, _)) => {
+                // Use last_remote_digest from DB if available, fallback to image_id
+                let last_remote = {
+                    let conn = db_pool.get().await.unwrap();
+                    let guard = conn.lock().unwrap();
+                    crate::db::get_container_last_remote_digest(&guard, &name)
+                        .unwrap_or_else(|| image_id.clone())
+                };
+                let needs = crate::updates::common::needs_update(&last_remote, &config);
+                (needs, config, manifest)
             }
             Err(e) => {
                 tracing::warn!(
@@ -213,12 +236,20 @@ pub async fn update_container_h(
             status: "✅ ya actualizado".into(),
             done: true,
             error: None,
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         });
         return Ok(Json(UpdateProgress {
             container: name,
             status: "already-up-to-date".into(),
             done: true,
             error: None,
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         }));
     }
 
@@ -227,6 +258,10 @@ pub async fn update_container_h(
         status: format!("Pulling {}...", image),
         done: false,
         error: None,
+        total: 0,
+        checked: 0,
+        updated: 0,
+        errors: 0,
     });
     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
     let start_time = std::time::Instant::now();
@@ -235,12 +270,16 @@ pub async fn update_container_h(
         image,
         pull_timeout
     );
-    if !pull_image(&docker, image, Some(&remote_digest), pull_timeout).await {
+    if !pull_image(&docker, image, Some(&manifest_digest), pull_timeout).await {
         let _ = update_tx.send(UpdateProgress {
             container: name.clone(),
             status: "Error".into(),
             done: true,
             error: Some("pull failed".into()),
+            total: 0,
+            checked: 0,
+            updated: 0,
+            errors: 0,
         });
         let entry = UpdateHistoryEntry {
             container: name.clone(),
@@ -253,9 +292,12 @@ pub async fn update_container_h(
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
-        let conn = db_pool.get().await.unwrap();
-        let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
-        drop(conn);
+        {
+            let conn = db_pool.get().await.unwrap();
+            let conn_lock = conn.lock().unwrap();
+            let _ = db::append_update_history(&conn_lock, hist.last().unwrap());
+            let _ = db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest);
+        }
         return Err(AppError::Internal("pull failed".into()));
     }
     let _ = update_tx.send(UpdateProgress {
@@ -263,15 +305,23 @@ pub async fn update_container_h(
         status: "Restarting...".into(),
         done: false,
         error: None,
+        total: 0,
+        checked: 0,
+        updated: 0,
+        errors: 0,
     });
-    match recreate_container(&docker, &name, cid, image, Some(&remote_digest)).await {
+    match recreate_container(&docker, &name, cid, image, Some(&manifest_digest)).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
-let _ = update_tx.send(UpdateProgress {
+            let _ = update_tx.send(UpdateProgress {
                 container: name.clone(),
                 status: "✅ Restarted".into(),
                 done: true,
                 error: None,
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
             });
             let ts = crate::timezone::now_time_formatted();
             let _ = notif_tx.send(NotifEvent {
@@ -283,7 +333,9 @@ let _ = update_tx.send(UpdateProgress {
             crate::containers::remove_old_image(&docker, &image_id).await;
             {
                 let conn = db_pool.get().await.unwrap();
-                let _ = db::update_container_has_update(&conn.lock().unwrap(), &name, false);
+                let conn_lock = conn.lock().unwrap();
+                let _ = db::update_container_has_update(&conn_lock, &name, false);
+                let _ = db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest);
             }
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
@@ -303,6 +355,10 @@ let _ = update_tx.send(UpdateProgress {
                 status: "ok".into(),
                 done: true,
                 error: None,
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
             }))
         }
         Err(e) => {
@@ -312,6 +368,10 @@ let _ = update_tx.send(UpdateProgress {
                 status: "Error".into(),
                 done: true,
                 error: Some(e.to_string()),
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
             });
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
@@ -341,15 +401,15 @@ pub async fn update_all_h(
     let mut results = vec![];
     for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
         // Verificar digest remoto antes de hacer pull
-        let (needs_pull, remote_digest) =
+        let (needs_pull, remote_digest, manifest_digest) =
             match crate::updates::digest::check_remote_digest_with_docker(&image, &docker).await {
-                Ok((digest, _)) => {
+                Ok((manifest, config, _)) => {
                     let has_update = image_id.as_ref().is_none_or(|local_digest| {
                         let local_short = crate::updates::digest::short_digest(local_digest);
-                        let remote_short = crate::updates::digest::short_digest(&digest);
+                        let remote_short = crate::updates::digest::short_digest(&config);
                         local_short != remote_short
                     });
-                    (has_update, digest)
+                    (has_update, config, manifest)
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -362,6 +422,10 @@ pub async fn update_all_h(
                         status: "error".into(),
                         done: true,
                         error: Some(format!("digest check failed: {}", e)),
+                        total: 0,
+                        checked: 0,
+                        updated: 0,
+                        errors: 0,
                     });
                     continue;
                 }
@@ -373,6 +437,10 @@ pub async fn update_all_h(
                 status: "✅ ya actualizado".into(),
                 done: true,
                 error: None,
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
             });
             continue;
         }
@@ -386,13 +454,17 @@ pub async fn update_all_h(
             image,
             pull_timeout
         );
-        if !pull_image(&docker, &image, Some(&remote_digest), pull_timeout).await {
+        if !pull_image(&docker, &image, Some(&manifest_digest), pull_timeout).await {
             tracing::error!("update_all_h: pull FALLÓ para '{}'", name);
             results.push(UpdateProgress {
                 container: name.clone(),
                 status: "error".into(),
                 done: true,
                 error: Some("pull failed".into()),
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
             });
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
@@ -410,7 +482,7 @@ pub async fn update_all_h(
             continue;
         }
         tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
-        match recreate_container(&docker, &name, &cid, &image, Some(&remote_digest)).await {
+        match recreate_container(&docker, &name, &cid, &image, Some(&manifest_digest)).await {
             Ok(_) => {
                 tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
                 let ts = crate::timezone::now_time_formatted();
@@ -430,6 +502,10 @@ pub async fn update_all_h(
                     status: "ok".into(),
                     done: true,
                     error: None,
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
                 });
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
@@ -466,6 +542,10 @@ pub async fn update_all_h(
                     status: "error".into(),
                     done: true,
                     error: Some(e.to_string()),
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
                 });
             }
         }
@@ -488,7 +568,7 @@ pub async fn check_update_h(
         let local_tag = crate::updates::digest::parse_image_ref(image_full).tag;
         let (remote_digest, remote_tag, error) =
             match check_remote_digest_with_docker(image_full, &docker).await {
-                Ok((digest, tag)) => (Some(digest), Some(tag), None),
+                Ok((_manifest, config, tag)) => (Some(config), Some(tag), None),
                 Err(e) => {
                     tracing::warn!(
                         "check_update [{}]: error obteniendo digest remoto: {}",
@@ -548,6 +628,7 @@ async fn check_and_apply_all(
     tx: &broadcast::Sender<StateEvent>,
     update_tx: &broadcast::Sender<UpdateProgress>,
     progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
+    cancel_check: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Settings>>,
     notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
@@ -585,7 +666,18 @@ async fn check_and_apply_all(
         })
         .collect();
 
+    // Load last_remote_digest from DB for accurate comparison
+    let last_remote_digest_map: HashMap<String, String> = {
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        crate::db::load_last_remote_digest_map(&guard)
+    };
+
     let mut any_success = false;
+    let total = containers.len() as u32;
+    let mut checked = 0u32;
+    let mut updated = 0u32;
+    let mut num_errors = 0u32;
 
     for c in &mut containers {
         let name = c.name.clone();
@@ -618,6 +710,8 @@ async fn check_and_apply_all(
             image_full
         );
 
+        checked += 1;
+
         // Send progress event so frontend shows live feedback
         update_progress(
             update_tx,
@@ -626,22 +720,29 @@ async fn check_and_apply_all(
             format!("🔍 Verificando {}...", image_full),
             false,
             None,
+            total,
+            checked,
+            updated,
+            num_errors,
         )
         .await;
 
         match check_remote_digest_with_docker(&image_full, docker).await {
-            Ok((remote_digest, _)) => {
-                // Compare full digests (image_id is the local config digest,
-                // remote_digest is the registry config digest).
-                // No longer use `last_remote_digest` to avoid false negatives
-                // after a successful update.
-                let has_update = !image_id.is_empty() && image_id != remote_digest;
+            Ok((manifest_digest, config_digest, _)) => {
+                // Use last_remote_digest from DB if available, fallback to image_id.
+                // This correctly handles non-DockerHub registries where image_id
+                // becomes a manifest digest after recreate with image@manifest_digest.
+                let local_ref = last_remote_digest_map
+                    .get(&name)
+                    .map(|s| s.as_str())
+                    .unwrap_or(&image_id);
+                let has_update = crate::updates::common::needs_update(local_ref, &config_digest);
 
                 tracing::info!(
                     "check_and_apply_all [{}]: local={} remote={} has_update={}",
                     name,
                     crate::updates::digest::short_digest(&image_id),
-                    crate::updates::digest::short_digest(&remote_digest),
+                    crate::updates::digest::short_digest(&config_digest),
                     has_update,
                 );
 
@@ -658,7 +759,7 @@ async fn check_and_apply_all(
                         );
                     }
                     if let Err(e) =
-                        db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest)
+                        db::update_container_last_remote_digest(&conn_lock, &name, &config_digest)
                     {
                         tracing::error!(
                             "check_and_apply_all: error storing last_remote_digest for '{}': {}",
@@ -682,7 +783,8 @@ async fn check_and_apply_all(
                         image_full: image_full.clone(),
                         cid,
                         image_id,
-                        remote_digest: Some(remote_digest),
+                        remote_digest: Some(config_digest),
+                        manifest_digest: Some(manifest_digest),
                         compose_project,
                     };
                     // Resolve policy for this single container
@@ -708,6 +810,7 @@ async fn check_and_apply_all(
                         rollback_on_failure: default_rollback,
                         notify_events: false,
                     });
+                    let prev_any_success = any_success;
                     apply_single_policy(
                         docker,
                         settings,
@@ -720,8 +823,15 @@ async fn check_and_apply_all(
                         &pending,
                         &policy,
                         &mut any_success,
+                        total,
+                        checked,
+                        updated,
+                        num_errors,
                     )
                     .await;
+                    if any_success && !prev_any_success {
+                        updated += 1;
+                    }
                 } else {
                     // No update needed — mark check as done
                     let status = if !has_update {
@@ -736,11 +846,16 @@ async fn check_and_apply_all(
                         status.into(),
                         true,
                         None,
+                        total,
+                        checked,
+                        updated,
+                        num_errors,
                     )
                     .await;
                 }
             }
             Err(e) => {
+                num_errors += 1;
                 if e.contains("429") {
                     tracing::warn!(
                         "check_and_apply_all [{}]: rate limit (429) fetching digest, saltando",
@@ -772,6 +887,10 @@ async fn check_and_apply_all(
                     format!("❌ Error: {}", e),
                     true,
                     Some(e.clone()),
+                    total,
+                    checked,
+                    updated,
+                    num_errors,
                 )
                 .await;
             }
@@ -780,6 +899,29 @@ async fn check_and_apply_all(
         // Sleep between checks to avoid hammering registries
         if check_interval > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(check_interval)).await;
+        }
+
+        // Check if user cancelled
+        if cancel_check.load(Ordering::SeqCst) {
+            tracing::info!(
+                "check_and_apply_all: cancelado por el usuario tras procesar {} contenedores",
+                checked
+            );
+            // Send cancellation progress event
+            update_progress(
+                update_tx,
+                progress_cache,
+                "__batch__".into(),
+                "⏹️ Cancelado por el usuario".into(),
+                true,
+                None,
+                total,
+                checked,
+                updated,
+                num_errors,
+            )
+            .await;
+            break;
         }
     }
 
@@ -812,6 +954,30 @@ async fn check_and_apply_all(
         let _ = tx.send(StateEvent { containers });
     }
 
+    tracing::info!(
+        "[check_and_apply_all] FINAL: checked={} total={} updated={} errors={} any_success={}",
+        checked,
+        total,
+        updated,
+        num_errors,
+        any_success
+    );
+
+    // Send final batch-complete progress event
+    update_progress(
+        update_tx,
+        progress_cache,
+        "__batch__".into(),
+        "✅ Batch completado".into(),
+        true,
+        None,
+        total,
+        total,
+        updated,
+        num_errors,
+    )
+    .await;
+
     containers
 }
 
@@ -822,17 +988,21 @@ pub async fn check_all_h(
     State(tx): State<broadcast::Sender<StateEvent>>,
     State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(progress_cache): State<Arc<Mutex<HashMap<String, UpdateProgress>>>>,
+    State(cancel_check): State<Arc<AtomicBool>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(update_policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
 ) -> Json<Vec<ContainerInfo>> {
+    // Reset cancel flag at start
+    cancel_check.store(false, Ordering::SeqCst);
     let containers = check_and_apply_all(
         &docker,
         &db_pool,
         &tx,
         &update_tx,
         &progress_cache,
+        &cancel_check,
         &settings,
         &notif_tx,
         &update_history,
@@ -840,6 +1010,13 @@ pub async fn check_all_h(
     )
     .await;
     Json(containers)
+}
+
+/// Cancel a running batch check/update operation.
+pub async fn cancel_check_all_h(State(cancel_check): State<Arc<AtomicBool>>) -> Json<&'static str> {
+    cancel_check.store(true, Ordering::SeqCst);
+    tracing::info!("cancel_check_all_h: batch cancelado por el usuario");
+    Json("cancelled")
 }
 
 /// Apply a single container's update policy inline.
@@ -857,6 +1034,10 @@ async fn apply_single_policy(
     p: &PendingUpdate,
     policy: &UpdatePolicy,
     any_success: &mut bool,
+    total: u32,
+    checked: u32,
+    updated: u32,
+    errors: u32,
 ) {
     if policy.action == UpdateAction::None {
         tracing::warn!(
@@ -870,6 +1051,10 @@ async fn apply_single_policy(
             "⏭️ política: no hacer nada".into(),
             true,
             None,
+            total,
+            checked,
+            updated,
+            errors,
         )
         .await;
         return;
@@ -890,6 +1075,10 @@ async fn apply_single_policy(
         format!("🔄 actualizando {}...", p.name),
         false,
         None,
+        total,
+        checked,
+        updated,
+        errors,
     )
     .await;
 
@@ -907,7 +1096,14 @@ async fn apply_single_policy(
                 p.name,
                 p.image_full
             );
-            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
+            if pull_image(
+                docker,
+                &p.image_full,
+                p.manifest_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
                 update_progress(
                     update_tx,
@@ -916,6 +1112,10 @@ async fn apply_single_policy(
                     "✅ pulled".into(),
                     true,
                     None,
+                    total,
+                    checked,
+                    updated,
+                    errors,
                 )
                 .await;
                 success = true;
@@ -926,6 +1126,10 @@ async fn apply_single_policy(
                     status: "❌ pull falló".into(),
                     done: true,
                     error: Some("pull_image returned false".into()),
+                    total,
+                    checked,
+                    updated,
+                    errors,
                 });
                 let entry = UpdateHistoryEntry {
                     container: p.name.clone(),
@@ -953,7 +1157,14 @@ async fn apply_single_policy(
             } else {
                 None
             };
-            if pull_image(docker, &p.image_full, p.remote_digest.as_deref(), pull_timeout).await {
+            if pull_image(
+                docker,
+                &p.image_full,
+                p.manifest_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
                 tracing::info!(
                     "apply_single_policy: Pull OK, reiniciando contenedor '{}' (cid: {})",
                     p.name,
@@ -966,9 +1177,21 @@ async fn apply_single_policy(
                     "🔄 reiniciando contenedor...".into(),
                     false,
                     None,
+                    total,
+                    checked,
+                    updated,
+                    errors,
                 )
                 .await;
-                match recreate_container(docker, &p.name, &p.cid, &p.image_full, p.remote_digest.as_deref()).await {
+                match recreate_container(
+                    docker,
+                    &p.name,
+                    &p.cid,
+                    &p.image_full,
+                    p.manifest_digest.as_deref(),
+                )
+                .await
+                {
                     Ok(_) => {
                         tracing::info!(
                             "apply_single_policy: contenedor '{}' recreado correctamente",
@@ -989,15 +1212,19 @@ async fn apply_single_policy(
                                 )
                                 .await;
                             }
-let _ = update_progress(
-                    update_tx,
-                    progress_cache,
-                    p.name.clone(),
-                    "❌ pull falló".into(),
-                    true,
-                    Some("pull_image returned false".into()),
-                )
-                .await;
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some("pull_image returned false".into()),
+                                total,
+                                checked,
+                                updated,
+                                errors,
+                            )
+                            .await;
                         } else {
                             let _ = update_progress(
                                 update_tx,
@@ -1006,6 +1233,10 @@ let _ = update_progress(
                                 "✅ actualizado + reiniciado".into(),
                                 true,
                                 None,
+                                total,
+                                checked,
+                                updated,
+                                errors,
                             )
                             .await;
                             success = true;
@@ -1024,6 +1255,10 @@ let _ = update_progress(
                             "❌ error al reiniciar".into(),
                             true,
                             Some(e.to_string()),
+                            total,
+                            checked,
+                            updated,
+                            errors,
                         )
                         .await;
                         let entry = UpdateHistoryEntry {
@@ -1049,6 +1284,10 @@ let _ = update_progress(
                     status: "❌ pull falló".into(),
                     done: true,
                     error: Some("pull_image returned false".into()),
+                    total,
+                    checked,
+                    updated,
+                    errors,
                 });
                 let entry = UpdateHistoryEntry {
                     container: p.name.clone(),
@@ -1074,15 +1313,19 @@ let _ = update_progress(
                         p.name,
                         project
                     );
-let _ = update_progress(
-                            update_tx,
-                            progress_cache,
-                            p.name.clone(),
-                            format!("📥 Pulling stack '{}'...", project),
-                            false,
-                            None,
-                        )
-                        .await;
+                    let _ = update_progress(
+                        update_tx,
+                        progress_cache,
+                        p.name.clone(),
+                        format!("📥 Pulling stack '{}'...", project),
+                        false,
+                        None,
+                        total,
+                        checked,
+                        updated,
+                        errors,
+                    )
+                    .await;
                     let pull = tokio::process::Command::new("docker")
                         .args(["compose", "-f", file, "pull"])
                         .output()
@@ -1097,15 +1340,19 @@ let _ = update_progress(
                                 .args(["compose", "-f", file, "up", "-d"])
                                 .output()
                                 .await;
-let _ = update_progress(
-                    update_tx,
-                    progress_cache,
-                    p.name.clone(),
-                    "❌ pull falló".into(),
-                    true,
-                    Some("pull_image returned false".into()),
-                )
-                .await;
+                            let _ = update_progress(
+                                update_tx,
+                                progress_cache,
+                                p.name.clone(),
+                                "❌ pull falló".into(),
+                                true,
+                                Some("pull_image returned false".into()),
+                                total,
+                                checked,
+                                updated,
+                                errors,
+                            )
+                            .await;
                             success = true;
                         }
                         Ok(output) => {
@@ -1122,6 +1369,10 @@ let _ = update_progress(
                                 "❌ pull falló".into(),
                                 true,
                                 Some(stderr),
+                                total,
+                                checked,
+                                updated,
+                                errors,
                             )
                             .await;
                         }
@@ -1137,6 +1388,10 @@ let _ = update_progress(
                                 "❌ error".into(),
                                 true,
                                 Some(e.to_string()),
+                                total,
+                                checked,
+                                updated,
+                                errors,
                             )
                             .await;
                         }
@@ -1146,38 +1401,50 @@ let _ = update_progress(
                         "apply_single_policy: compose file no encontrado para '{}'",
                         project
                     );
-let _ = update_progress(
-                            update_tx,
-                            progress_cache,
-                            p.name.clone(),
-                            "❌ compose file no encontrado".into(),
-                            true,
-                            Some("cannot resolve compose file".into()),
-                        )
-                        .await;
+                    let _ = update_progress(
+                        update_tx,
+                        progress_cache,
+                        p.name.clone(),
+                        "❌ compose file no encontrado".into(),
+                        true,
+                        Some("cannot resolve compose file".into()),
+                        total,
+                        checked,
+                        updated,
+                        errors,
+                    )
+                    .await;
                 }
             } else {
-let _ = update_progress(
-                                update_tx,
-                                progress_cache,
-                                p.name.clone(),
-                                "⚠️ rollback aplicado".into(),
-                                true,
-                                Some("container no healthy".into()),
-                            )
-                            .await;
-            }
-        }
-        _ => {
-let _ = update_progress(
+                let _ = update_progress(
                     update_tx,
                     progress_cache,
                     p.name.clone(),
-                    "❌ no es stack".into(),
+                    "⚠️ rollback aplicado".into(),
                     true,
-                    Some("container has no compose project label".into()),
+                    Some("container no healthy".into()),
+                    total,
+                    checked,
+                    updated,
+                    errors,
                 )
                 .await;
+            }
+        }
+        _ => {
+            let _ = update_progress(
+                update_tx,
+                progress_cache,
+                p.name.clone(),
+                "❌ no es stack".into(),
+                true,
+                Some("container has no compose project label".into()),
+                total,
+                checked,
+                updated,
+                errors,
+            )
+            .await;
         }
     }
 
@@ -1312,6 +1579,10 @@ async fn apply_policies_background(
             p,
             &policy,
             &mut any_success,
+            0, // total
+            0, // checked
+            0, // updated
+            0, // errors
         )
         .await;
     }
@@ -1448,7 +1719,7 @@ pub(crate) async fn rollback_container(
 /// Retorna el digest remoto o cadena vacía si falla la consulta.
 async fn check_remote_digest_on_image(image_full: &str, docker: &Docker) -> String {
     match crate::updates::digest::check_remote_digest_with_docker(image_full, docker).await {
-        Ok((digest, _)) => digest,
+        Ok((_manifest, config, _)) => config,
         Err(_) => String::new(),
     }
 }
