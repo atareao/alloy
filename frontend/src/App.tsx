@@ -118,39 +118,16 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     });
   }, [authenticated, api]);
 
-  // Connect to container events SSE — lives in App so state persists across tab switches
+  // Single SSE connection to /api/stream — merges containers, notifications, and update-progress
   useEffect(() => {
     if (!authenticated) return;
-    const evtSource = new EventSource("/api/events", { withCredentials: true });
+    const evtSource = new EventSource("/api/stream");
     evtSource.addEventListener("containers", (e) => {
       const incoming: ContainerInfo[] = JSON.parse(e.data).containers;
       setContainers(incoming);
       setContainersLoaded(true);
     });
-    evtSource.onerror = () => {
-      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
-      // The browser will auto-reconnect. Only redirect if we detect session expiry.
-      // Check by making a lightweight fetch to /api/auth/me
-      fetch("/api/auth/me", { credentials: "include" })
-        .then((res) => {
-          if (res.status === 401) {
-            window.location.href = "/api/auth/login";
-          }
-        })
-        .catch(() => {
-          // Network error — ignore, SSE will reconnect
-        });
-    };
-    return () => evtSource.close();
-  }, [authenticated]);
-
-  // Connect to notifications SSE — lives in App so state persists across tab switches
-  useEffect(() => {
-    if (!authenticated) return;
-    const notifSource = new EventSource("/api/notifications", {
-      withCredentials: true,
-    });
-    notifSource.addEventListener("notification", (e) => {
+    evtSource.addEventListener("notification", (e) => {
       try {
         const notif: NotifEvent = JSON.parse(e.data);
         notification.info({
@@ -159,30 +136,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           duration: 5,
         });
       } catch (err) {
-        console.error("SSE update-progress parse error:", err, "raw:", e.data);
+        console.error("SSE notification parse error:", err, "raw:", e.data);
       }
-    });
-    notifSource.onerror = () => {
-      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
-      // The browser will auto-reconnect. Only redirect if we detect session expiry.
-      fetch("/api/auth/me", { credentials: "include" })
-        .then((res) => {
-          if (res.status === 401) {
-            window.location.href = "/api/auth/login";
-          }
-        })
-        .catch(() => {
-          // Network error — ignore, SSE will reconnect
-        });
-    };
-    return () => notifSource.close();
-  }, [authenticated]);
-
-  // Connect to update progress SSE — lives in App so state persists across tab switches
-  useEffect(() => {
-    if (!authenticated) return;
-    const evtSource = new EventSource("/api/updates", {
-      withCredentials: true,
     });
     evtSource.addEventListener("update-progress", (e) => {
       try {
@@ -223,7 +178,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         console.error("SSE update-progress parse error:", err, "raw:", e.data);
       }
     });
-    evtSource.addEventListener("error", () => {
+    evtSource.onerror = () => {
+      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
+      // The browser will auto-reconnect. Only redirect if we detect session expiry.
+      // Check by making a lightweight fetch to /api/auth/me
       fetch("/api/auth/me", { credentials: "include" })
         .then((res) => {
           if (res.status === 401) {
@@ -233,7 +191,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         .catch(() => {
           // Network error — ignore, SSE will reconnect
         });
-    });
+    };
     return () => evtSource.close();
   }, [authenticated, api]);
 
