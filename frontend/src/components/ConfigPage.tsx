@@ -1,21 +1,18 @@
 import { useEffect, useState } from "react";
 import {
   Alert,
-  Anchor,
   Button,
-  Group,
-  Paper,
-  PasswordInput,
-  Stack,
-  Tabs,
-  Text,
-  Title,
-  TextInput,
-  Switch,
+  Card,
+  Flex,
+  Input,
+  InputNumber,
   Select,
-  NumberInput,
-  Badge,
-} from "@mantine/core";
+  Space,
+  Switch,
+  Tabs,
+  Tag,
+  Typography,
+} from "antd";
 import type {
   AppConfig,
   DefaultUpdatePolicy,
@@ -52,7 +49,7 @@ export default function ConfigPage({
   const [testing, setTesting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<string | null>("notifications");
+  const [activeTab, setActiveTab] = useState<string>("notifications");
 
   // Telegram
   const [tgToken, setTgToken] = useState("");
@@ -85,7 +82,8 @@ export default function ConfigPage({
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
-        if (data.pull_timeout_secs != null) setPullTimeout(data.pull_timeout_secs);
+        if (data.pull_timeout_secs != null)
+          setPullTimeout(data.pull_timeout_secs);
       })
       .catch(() => {});
   }, []);
@@ -213,7 +211,8 @@ export default function ConfigPage({
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
-        if (data.pull_timeout_secs != null) setPullTimeout(data.pull_timeout_secs);
+        if (data.pull_timeout_secs != null)
+          setPullTimeout(data.pull_timeout_secs);
         showSuccess(
           ucEnabled
             ? "✅ Revisión programada activada"
@@ -253,487 +252,757 @@ export default function ConfigPage({
   };
 
   return (
-    <Stack>
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {error && (
-        <Alert color="red" onClose={() => setError(null)} withCloseButton>
-          {error}
-        </Alert>
+        <Alert
+          type="error"
+          closable
+          onClose={() => setError(null)}
+          showIcon
+          message={error}
+        />
       )}
       {success && (
-        <Alert color="green" onClose={() => setSuccess(null)} withCloseButton>
-          {success}
-        </Alert>
+        <Alert
+          type="success"
+          closable
+          onClose={() => setSuccess(null)}
+          showIcon
+          message={success}
+        />
       )}
 
-      <Tabs value={activeTab} onChange={setActiveTab}>
-        <Tabs.List grow>
-          <Tabs.Tab value="notifications">🔔 Notificaciones</Tabs.Tab>
-          <Tabs.Tab value="updates">⬆️ Actualizaciones</Tabs.Tab>
-          <Tabs.Tab value="info">ℹ️ Información</Tabs.Tab>
-        </Tabs.List>
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: "notifications",
+            label: "🔔 Notificaciones",
+            children: (
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%", paddingTop: 16 }}
+              >
+                {/* ═══ Telegram ═══ */}
+                <Card bordered size="small">
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      📱 Telegram
+                    </Typography.Title>
+                    <Flex align="center" gap={8}>
+                      <Switch
+                        checked={tgEnabled}
+                        onChange={(checked) => setTgEnabled(checked)}
+                      />
+                      <Typography.Text>
+                        {tgEnabled ? "Activado" : "Desactivado"}
+                      </Typography.Text>
+                    </Flex>
+                  </Flex>
+                  {tgEnabled && (
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Token del Bot</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Token que te proporciona @BotFather
+                        </Typography.Text>
+                        <Input.Password
+                          placeholder="123456:ABC-DEF..."
+                          value={tgToken}
+                          onChange={(e) => setTgToken(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Chat ID</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          ID del chat o grupo donde recibir notificaciones
+                        </Typography.Text>
+                        <Input
+                          placeholder="-1001234567890"
+                          value={tgChatId}
+                          onChange={(e) => setTgChatId(e.target.value)}
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                  <Flex
+                    justify="flex-end"
+                    gap="middle"
+                    style={{ marginTop: 16 }}
+                  >
+                    {tgEnabled && (
+                      <Button
+                        onClick={async () => {
+                          setTesting("telegram");
+                          setError(null);
+                          try {
+                            const res = await apiFetch(
+                              "/api/notifications/test",
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: "telegram" }),
+                              },
+                            );
+                            setTesting(null);
+                            if (res.ok) {
+                              showSuccess(
+                                "📤 Mensaje de prueba enviado a Telegram",
+                              );
+                            } else {
+                              const data = await res
+                                .json()
+                                .catch(() => ({ error: "Error desconocido" }));
+                              setError(
+                                data.error || `Error HTTP ${res.status}`,
+                              );
+                            }
+                          } catch {
+                            setTesting(null);
+                            setError("Error de conexión al enviar test");
+                          }
+                        }}
+                        loading={testing === "telegram"}
+                        style={{
+                          borderColor: "var(--ant-color-success)",
+                          color: "var(--ant-color-success)",
+                        }}
+                      >
+                        📤 Test
+                      </Button>
+                    )}
+                    {tgEnabled && (
+                      <Button
+                        onClick={saveTelegram}
+                        loading={saving === "telegram"}
+                        type="primary"
+                      >
+                        Guardar Telegram
+                      </Button>
+                    )}
+                  </Flex>
+                </Card>
 
-        {/* ═══════════════════════════════════════════════════════
-            TAB: NOTIFICACIONES
-           ═══════════════════════════════════════════════════════ */}
-        <Tabs.Panel value="notifications" pt="md">
-          <Stack gap="md">
-            {/* ═══ Telegram ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Group justify="space-between" mb="md">
-                <Title order={4}>📱 Telegram</Title>
-                <Switch
-                  label={tgEnabled ? "Activado" : "Desactivado"}
-                  checked={tgEnabled}
-                  onChange={(e) => setTgEnabled(e.currentTarget.checked)}
-                  color={tgEnabled ? "green" : "gray"}
-                />
-              </Group>
-              {tgEnabled && (
-                <Stack>
-                  <PasswordInput
-                    label="Token del Bot"
-                    description="Token que te proporciona @BotFather"
-                    placeholder="123456:ABC-DEF..."
-                    value={tgToken}
-                    onChange={(e) => setTgToken(e.currentTarget.value)}
-                  />
-                  <TextInput
-                    label="Chat ID"
-                    description="ID del chat o grupo donde recibir notificaciones"
-                    placeholder="-1001234567890"
-                    value={tgChatId}
-                    onChange={(e) => setTgChatId(e.currentTarget.value)}
-                  />
-                </Stack>
-              )}
-              <Group justify="flex-end" mt="md">
-                {tgEnabled && (
-                  <Button
-                    onClick={async () => {
-                      setTesting("telegram");
-                      setError(null);
-                      try {
-                        const res = await apiFetch("/api/notifications/test", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ channel: "telegram" }),
-                        });
-                        setTesting(null);
-                        if (res.ok) {
-                          showSuccess("📤 Mensaje de prueba enviado a Telegram");
-                        } else {
-                          const data = await res
-                            .json()
-                            .catch(() => ({ error: "Error desconocido" }));
-                          setError(data.error || `Error HTTP ${res.status}`);
-                        }
-                      } catch {
-                        setTesting(null);
-                        setError("Error de conexión al enviar test");
-                      }
+                {/* ═══ Matrix ═══ */}
+                <Card bordered size="small">
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      💬 Matrix
+                    </Typography.Title>
+                    <Flex align="center" gap={8}>
+                      <Switch
+                        checked={mxEnabled}
+                        onChange={(checked) => setMxEnabled(checked)}
+                      />
+                      <Typography.Text>
+                        {mxEnabled ? "Activado" : "Desactivado"}
+                      </Typography.Text>
+                    </Flex>
+                  </Flex>
+                  {mxEnabled && (
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Homeserver</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          URL del servidor Matrix (ej: https://matrix.org)
+                        </Typography.Text>
+                        <Input
+                          placeholder="https://matrix.example.com"
+                          value={mxHomeserver}
+                          onChange={(e) => setMxHomeserver(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Access Token</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Token de acceso de la cuenta de bot
+                        </Typography.Text>
+                        <Input.Password
+                          placeholder="syt_..."
+                          value={mxToken}
+                          onChange={(e) => setMxToken(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Room ID</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          ID de la sala donde enviar notificaciones
+                        </Typography.Text>
+                        <Input
+                          placeholder="!roomid:matrix.org"
+                          value={mxRoom}
+                          onChange={(e) => setMxRoom(e.target.value)}
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                  <Flex
+                    justify="flex-end"
+                    gap="middle"
+                    style={{ marginTop: 16 }}
+                  >
+                    {mxEnabled && (
+                      <Button
+                        onClick={async () => {
+                          setTesting("matrix");
+                          setError(null);
+                          try {
+                            const res = await apiFetch(
+                              "/api/notifications/test",
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: "matrix" }),
+                              },
+                            );
+                            setTesting(null);
+                            if (res.ok) {
+                              showSuccess(
+                                "📤 Mensaje de prueba enviado a Matrix",
+                              );
+                            } else {
+                              const data = await res
+                                .json()
+                                .catch(() => ({ error: "Error desconocido" }));
+                              setError(
+                                data.error || `Error HTTP ${res.status}`,
+                              );
+                            }
+                          } catch {
+                            setTesting(null);
+                            setError("Error de conexión al enviar test");
+                          }
+                        }}
+                        loading={testing === "matrix"}
+                        style={{
+                          borderColor: "var(--ant-color-success)",
+                          color: "var(--ant-color-success)",
+                        }}
+                      >
+                        📤 Test
+                      </Button>
+                    )}
+                    {mxEnabled && (
+                      <Button
+                        onClick={saveMatrix}
+                        loading={saving === "matrix"}
+                        type="primary"
+                      >
+                        Guardar Matrix
+                      </Button>
+                    )}
+                  </Flex>
+                </Card>
+              </Space>
+            ),
+          },
+          {
+            key: "updates",
+            label: "⬆️ Actualizaciones",
+            children: (
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%", paddingTop: 16 }}
+              >
+                {/* ═══ Revisión de actualizaciones ═══ */}
+                <Card bordered size="small">
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      ⏰ Revisión de actualizaciones
+                    </Typography.Title>
+                    <Flex align="center" gap={8}>
+                      <Switch
+                        checked={ucEnabled}
+                        onChange={(checked) => setUcEnabled(checked)}
+                      />
+                      <Typography.Text>
+                        {ucEnabled ? "Activada" : "Desactivada"}
+                      </Typography.Text>
+                    </Flex>
+                  </Flex>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    Programa revisiones periódicas de imágenes. Cuando se
+                    detecte una actualización pendiente, se marcará el
+                    contenedor y se podrá actuar desde el Dashboard.
+                  </Typography.Text>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                      marginBottom: 16,
                     }}
-                    loading={testing === "telegram"}
-                    variant="outline"
-                    color="green"
                   >
-                    📤 Test
-                  </Button>
-                )}
-                {tgEnabled && (
-                  <Button
-                    onClick={saveTelegram}
-                    loading={saving === "telegram"}
-                    color="blue"
+                    <Typography.Text type="secondary">
+                      Zona horaria: {configProp?.timezone || "UTC"}
+                    </Typography.Text>
+                    {checkConfig?.last_run_at && (
+                      <Typography.Text type="secondary">
+                        Última revisión:{" "}
+                        {new Date(checkConfig.last_run_at).toLocaleString([], {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                          hour12: false,
+                        })}
+                      </Typography.Text>
+                    )}
+                    {checkConfig?.next_run_at && (
+                      <Typography.Text type="secondary">
+                        Próxima revisión:{" "}
+                        {new Date(checkConfig.next_run_at).toLocaleString([], {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                          hour12: false,
+                        })}
+                      </Typography.Text>
+                    )}
+                  </div>
+                  {ucEnabled && (
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Frecuencia</Typography.Text>
+                        <Select
+                          options={CRON_PRESETS}
+                          value={ucCron}
+                          onChange={(v) => v && setUcCron(v)}
+                          showSearch
+                          style={{ width: "100%" }}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          Expresión Cron (personalizada)
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Edita directamente si los presets no se ajustan
+                        </Typography.Text>
+                        <Input
+                          placeholder="0 */6 * * *"
+                          value={ucCron}
+                          onChange={(e) => setUcCron(e.target.value)}
+                        />
+                      </Space>
+                      <Flex align="center" gap={8}>
+                        <Switch
+                          checked={ucNotify}
+                          onChange={(checked) => setUcNotify(checked)}
+                        />
+                        <Typography.Text>
+                          🔔 Notificar vía Telegram/Matrix
+                        </Typography.Text>
+                      </Flex>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          ⏱️ Timeout pull (segundos)
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Aumentar para imágenes grandes (&gt;500MB) o
+                          conexiones lentas. Default: 1800 (30 min)
+                        </Typography.Text>
+                        <InputNumber
+                          value={pullTimeout}
+                          onChange={(v) => setPullTimeout(Number(v) || 1800)}
+                          min={60}
+                          max={7200}
+                          step={60}
+                          style={{ width: "100%" }}
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                  <Flex justify="flex-end" style={{ marginTop: 16 }}>
+                    <Button
+                      onClick={saveUpdateCheck}
+                      loading={saving === "update-check"}
+                      type={ucEnabled ? "primary" : "default"}
+                    >
+                      {ucEnabled ? "Guardar revisión" : "Desactivar revisión"}
+                    </Button>
+                  </Flex>
+                </Card>
+
+                {/* ═══ Política de actualización por defecto ═══ */}
+                <Card bordered size="small">
+                  <Typography.Title
+                    level={4}
+                    style={{ marginTop: 0, marginBottom: 16 }}
                   >
-                    Guardar Telegram
-                  </Button>
-                )}
-              </Group>
-            </Paper>
-
-            {/* ═══ Matrix ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Group justify="space-between" mb="md">
-                <Title order={4}>💬 Matrix</Title>
-                <Switch
-                  label={mxEnabled ? "Activado" : "Desactivado"}
-                  checked={mxEnabled}
-                  onChange={(e) => setMxEnabled(e.currentTarget.checked)}
-                  color={mxEnabled ? "green" : "gray"}
-                />
-              </Group>
-              {mxEnabled && (
-                <Stack>
-                  <TextInput
-                    label="Homeserver"
-                    description="URL del servidor Matrix (ej: https://matrix.org)"
-                    placeholder="https://matrix.example.com"
-                    value={mxHomeserver}
-                    onChange={(e) => setMxHomeserver(e.currentTarget.value)}
-                  />
-                  <PasswordInput
-                    label="Access Token"
-                    description="Token de acceso de la cuenta de bot"
-                    placeholder="syt_..."
-                    value={mxToken}
-                    onChange={(e) => setMxToken(e.currentTarget.value)}
-                  />
-                  <TextInput
-                    label="Room ID"
-                    description="ID de la sala donde enviar notificaciones"
-                    placeholder="!roomid:matrix.org"
-                    value={mxRoom}
-                    onChange={(e) => setMxRoom(e.currentTarget.value)}
-                  />
-                </Stack>
-              )}
-              <Group justify="flex-end" mt="md">
-                {mxEnabled && (
-                  <Button
-                    onClick={async () => {
-                      setTesting("matrix");
-                      setError(null);
-                      try {
-                        const res = await apiFetch("/api/notifications/test", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ channel: "matrix" }),
-                        });
-                        setTesting(null);
-                        if (res.ok) {
-                          showSuccess("📤 Mensaje de prueba enviado a Matrix");
-                        } else {
-                          const data = await res
-                            .json()
-                            .catch(() => ({ error: "Error desconocido" }));
-                          setError(data.error || `Error HTTP ${res.status}`);
-                        }
-                      } catch {
-                        setTesting(null);
-                        setError("Error de conexión al enviar test");
-                      }
-                    }}
-                    loading={testing === "matrix"}
-                    variant="outline"
-                    color="green"
+                    📋 Política de actualización por defecto
+                  </Typography.Title>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 16 }}
                   >
-                    📤 Test
-                  </Button>
-                )}
-                {mxEnabled && (
-                  <Button
-                    onClick={saveMatrix}
-                    loading={saving === "matrix"}
-                    color="blue"
+                    Esta política se aplica a los contenedores que no tengan una
+                    política individual configurada. Puedes sobrescribirla para
+                    cada contenedor desde el Dashboard con el botón ⚙️.
+                  </Typography.Text>
+                  <Space
+                    direction="vertical"
+                    size="middle"
+                    style={{ width: "100%" }}
                   >
-                    Guardar Matrix
-                  </Button>
-                )}
-              </Group>
-            </Paper>
-          </Stack>
-        </Tabs.Panel>
-
-        {/* ═══════════════════════════════════════════════════════
-            TAB: ACTUALIZACIONES
-           ═══════════════════════════════════════════════════════ */}
-        <Tabs.Panel value="updates" pt="md">
-          <Stack gap="md">
-            {/* ═══ Revisión de actualizaciones ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Group justify="space-between" mb="md">
-                <Title order={4}>⏰ Revisión de actualizaciones</Title>
-                <Switch
-                  label={ucEnabled ? "Activada" : "Desactivada"}
-                  checked={ucEnabled}
-                  onChange={(e) => setUcEnabled(e.currentTarget.checked)}
-                  color={ucEnabled ? "green" : "gray"}
-                />
-              </Group>
-              <Text size="sm" c="dimmed" mb="md">
-                Programa revisiones periódicas de imágenes. Cuando se detecte una
-                actualización pendiente, se marcará el contenedor y se podrá actuar
-                desde el Dashboard.
-              </Text>
-              <Stack gap="4" mb="md">
-                <Text size="sm" c="dimmed">
-                  Zona horaria: {configProp?.timezone || "UTC"}
-                </Text>
-                {checkConfig?.last_run_at && (
-                  <Text size="sm" c="dimmed">
-                    Última revisión: {new Date(checkConfig.last_run_at).toLocaleString([], {
-                      year: 'numeric', month: '2-digit', day: '2-digit',
-                      hour: '2-digit', minute: '2-digit', second: '2-digit',
-                      hour12: false
-                    })}
-                  </Text>
-                )}
-                {checkConfig?.next_run_at && (
-                  <Text size="sm" c="dimmed">
-                    Próxima revisión: {new Date(checkConfig.next_run_at).toLocaleString([], {
-                      year: 'numeric', month: '2-digit', day: '2-digit',
-                      hour: '2-digit', minute: '2-digit', second: '2-digit',
-                      hour12: false
-                    })}
-                  </Text>
-                )}
-              </Stack>
-              {ucEnabled && (
-                <Stack>
-                  <Select
-                    label="Frecuencia"
-                    data={CRON_PRESETS}
-                    value={ucCron}
-                    onChange={(v) => v && setUcCron(v)}
-                    searchable
-                  />
-                  <TextInput
-                    label="Expresión Cron (personalizada)"
-                    description="Edita directamente si los presets no se ajustan"
-                    placeholder="0 */6 * * *"
-                    value={ucCron}
-                    onChange={(e) => setUcCron(e.currentTarget.value)}
-                  />
-                  <Switch
-                    label="🔔 Notificar vía Telegram/Matrix"
-                    checked={ucNotify}
-                    onChange={(e) => setUcNotify(e.currentTarget.checked)}
-                  />
-                  <NumberInput
-                    label="⏱️ Timeout pull (segundos)"
-                    description="Aumentar para imágenes grandes (>500MB) o conexiones lentas. Default: 1800 (30 min)"
-                    value={pullTimeout}
-                    onChange={(v) => setPullTimeout(Number(v) || 1800)}
-                    min={60}
-                    max={7200}
-                    step={60}
-                  />
-                </Stack>
-              )}
-              <Group justify="flex-end" mt="md">
-                <Button
-                  onClick={saveUpdateCheck}
-                  loading={saving === "update-check"}
-                  color={ucEnabled ? "blue" : "gray"}
-                >
-                  {ucEnabled ? "Guardar revisión" : "Desactivar revisión"}
-                </Button>
-              </Group>
-            </Paper>
-
-            {/* ═══ Política de actualización por defecto ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Title order={4} mb="md">
-                📋 Política de actualización por defecto
-              </Title>
-              <Text size="sm" c="dimmed" mb="md">
-                Esta política se aplica a los contenedores que no tengan una política
-                individual configurada. Puedes sobrescribirla para cada contenedor
-                desde el Dashboard con el botón ⚙️.
-              </Text>
-              <Stack>
-                <Select
-                  label="Acción por defecto"
-                  data={[
-                    { value: "none", label: "❌ No hacer nada" },
-                    { value: "pull", label: "⬇️ Pull imagen" },
-                    {
-                      value: "pull-restart",
-                      label: "🔄 Pull + reiniciar contenedor",
-                    },
-                    {
-                      value: "pull-restart-stack",
-                      label: "📦 Pull + reiniciar stack",
-                    },
-                  ]}
-                  value={defAction}
-                  onChange={(v) => v && setDefAction(v)}
-                />
-                <Switch
-                  label="🧹 Borrar imagen anterior"
-                  description="Elimina la imagen anterior después de actualizar"
-                  checked={defCleanup}
-                  onChange={(e) => setDefCleanup(e.currentTarget.checked)}
-                />
-                <Switch
-                  label="↩️ Rollback si falla"
-                  description="Si el contenedor no arranca, restaura la imagen anterior"
-                  checked={defRollback}
-                  onChange={(e) => setDefRollback(e.currentTarget.checked)}
-                />
-              </Stack>
-              <Group justify="flex-end" mt="md">
-                <Button
-                  onClick={saveDefaultPolicy}
-                  loading={saving === "default-policy"}
-                  color="blue"
-                >
-                  Guardar política por defecto
-                </Button>
-              </Group>
-            </Paper>
-          </Stack>
-        </Tabs.Panel>
-
-        {/* ═══════════════════════════════════════════════════════
-            TAB: INFORMACIÓN
-           ═══════════════════════════════════════════════════════ */}
-        <Tabs.Panel value="info" pt="md">
-          <Stack gap="md">
-            {/* ═══ Versión e información ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Title order={4} mb="md">ℹ️ Información de la aplicación</Title>
-              <Stack gap="sm">
-                <Group gap="md">
-                  <Text size="sm" fw={500} style={{ minWidth: 100 }}>Versión</Text>
-                  <Badge size="lg" variant="filled" color="blue">
-                    v{configProp?.version || "—"}
-                  </Badge>
-                </Group>
-                <Group gap="md">
-                  <Text size="sm" fw={500} style={{ minWidth: 100 }}>Compilado</Text>
-                  <Text size="sm" c="dimmed">
-                    {configProp?.build_date
-                      ? new Date(configProp.build_date).toLocaleString([], {
-                          year: 'numeric', month: 'long', day: 'numeric',
-                          hour: '2-digit', minute: '2-digit',
-                          hour12: false
-                        })
-                      : "—"}
-                  </Text>
-                </Group>
-                <Group gap="md">
-                  <Text size="sm" fw={500} style={{ minWidth: 100 }}>Repositorio</Text>
-                  <Anchor
-                    href={configProp?.repo_url || "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    size="sm"
+                    <Space
+                      direction="vertical"
+                      size={4}
+                      style={{ width: "100%" }}
+                    >
+                      <Typography.Text strong>
+                        Acción por defecto
+                      </Typography.Text>
+                      <Select
+                        options={[
+                          { value: "none", label: "❌ No hacer nada" },
+                          { value: "pull", label: "⬇️ Pull imagen" },
+                          {
+                            value: "pull-restart",
+                            label: "🔄 Pull + reiniciar contenedor",
+                          },
+                          {
+                            value: "pull-restart-stack",
+                            label: "📦 Pull + reiniciar stack",
+                          },
+                        ]}
+                        value={defAction}
+                        onChange={(v) => v && setDefAction(v)}
+                        style={{ width: "100%" }}
+                      />
+                    </Space>
+                    <Space direction="vertical" size={2}>
+                      <Flex align="center" gap={8}>
+                        <Switch
+                          checked={defCleanup}
+                          onChange={(checked) => setDefCleanup(checked)}
+                        />
+                        <Typography.Text>
+                          🧹 Borrar imagen anterior
+                        </Typography.Text>
+                      </Flex>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12, paddingLeft: 36 }}
+                      >
+                        Elimina la imagen anterior después de actualizar
+                      </Typography.Text>
+                    </Space>
+                    <Space direction="vertical" size={2}>
+                      <Flex align="center" gap={8}>
+                        <Switch
+                          checked={defRollback}
+                          onChange={(checked) => setDefRollback(checked)}
+                        />
+                        <Typography.Text>↩️ Rollback si falla</Typography.Text>
+                      </Flex>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12, paddingLeft: 36 }}
+                      >
+                        Si el contenedor no arranca, restaura la imagen anterior
+                      </Typography.Text>
+                    </Space>
+                  </Space>
+                  <Flex justify="flex-end" style={{ marginTop: 16 }}>
+                    <Button
+                      onClick={saveDefaultPolicy}
+                      loading={saving === "default-policy"}
+                      type="primary"
+                    >
+                      Guardar política por defecto
+                    </Button>
+                  </Flex>
+                </Card>
+              </Space>
+            ),
+          },
+          {
+            key: "info",
+            label: "ℹ️ Información",
+            children: (
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%", paddingTop: 16 }}
+              >
+                {/* ═══ Versión e información ═══ */}
+                <Card bordered size="small">
+                  <Typography.Title
+                    level={4}
+                    style={{ marginTop: 0, marginBottom: 16 }}
                   >
-                    {configProp?.repo_url || "—"}
-                  </Anchor>
-                </Group>
-                <Group gap="md">
-                  <Text size="sm" fw={500} style={{ minWidth: 100 }}>Zona horaria</Text>
-                  <Text size="sm" c="dimmed">{configProp?.timezone || "UTC"}</Text>
-                </Group>
-                <Group gap="md">
-                  <Text size="sm" fw={500} style={{ minWidth: 100 }}>Puerto</Text>
-                  <Text size="sm" c="dimmed">{configProp?.port || 3066}</Text>
-                </Group>
-                <Group gap="md">
-                  <Text size="sm" fw={500} style={{ minWidth: 100 }}>Auth</Text>
-                  <Badge size="sm" variant="light" color="green">OIDC</Badge>
-                </Group>
-              </Stack>
-            </Paper>
+                    ℹ️ Información de la aplicación
+                  </Typography.Title>
+                  <Space
+                    direction="vertical"
+                    size="small"
+                    style={{ width: "100%" }}
+                  >
+                    <Flex gap="middle" align="center">
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Versión
+                      </Typography.Text>
+                      <Tag color="blue">v{configProp?.version || "—"}</Tag>
+                    </Flex>
+                    <Flex gap="middle" align="center">
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Compilado
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {configProp?.build_date
+                          ? new Date(configProp.build_date).toLocaleString([], {
+                              year: "numeric",
+                              month: "long",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              hour12: false,
+                            })
+                          : "—"}
+                      </Typography.Text>
+                    </Flex>
+                    <Flex gap="middle" align="center">
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Repositorio
+                      </Typography.Text>
+                      <Typography.Link
+                        href={configProp?.repo_url || "#"}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {configProp?.repo_url || "—"}
+                      </Typography.Link>
+                    </Flex>
+                    <Flex gap="middle" align="center">
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Zona horaria
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {configProp?.timezone || "UTC"}
+                      </Typography.Text>
+                    </Flex>
+                    <Flex gap="middle" align="center">
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Puerto
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {configProp?.port || 3066}
+                      </Typography.Text>
+                    </Flex>
+                    <Flex gap="middle" align="center">
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Auth
+                      </Typography.Text>
+                      <Tag color="green">OIDC</Tag>
+                    </Flex>
+                  </Space>
+                </Card>
 
-            {/* ═══ Tema ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Group justify="space-between">
-                <div>
-                  <Title order={4}>
-                    {colorScheme === "dark" ? "🌙" : "☀️"} Tema
-                  </Title>
-                  <Text size="sm" c="dimmed">
-                    {colorScheme === "dark"
-                      ? "Modo oscuro"
-                      : "Modo claro"}
-                  </Text>
-                </div>
-                <Switch
-                  checked={colorScheme === "dark"}
-                  onChange={(e) => {
-                    const next = e.currentTarget.checked ? "dark" : "light";
-                    localStorage.setItem("color-scheme", next);
-                    setColorScheme(next);
-                  }}
-                  onLabel="🌙"
-                  offLabel="☀️"
-                  size="lg"
-                />
-              </Group>
-            </Paper>
+                {/* ═══ Tema ═══ */}
+                <Card bordered size="small">
+                  <Flex justify="space-between" align="center">
+                    <div>
+                      <Typography.Title level={4} style={{ margin: 0 }}>
+                        {colorScheme === "dark" ? "🌙" : "☀️"} Tema
+                      </Typography.Title>
+                      <Typography.Text type="secondary">
+                        {colorScheme === "dark" ? "Modo oscuro" : "Modo claro"}
+                      </Typography.Text>
+                    </div>
+                    <Switch
+                      checked={colorScheme === "dark"}
+                      onChange={(checked) => {
+                        const next = checked ? "dark" : "light";
+                        localStorage.setItem("color-scheme", next);
+                        setColorScheme(next);
+                      }}
+                      checkedChildren="🌙"
+                      unCheckedChildren="☀️"
+                    />
+                  </Flex>
+                </Card>
 
-            {/* ═══ Export / Import ═══ */}
-            <Paper shadow="sm" p="md" withBorder>
-              <Title order={4} mb="md">
-                📦 Exportar / Importar configuración
-              </Title>
-              <Text size="sm" c="dimmed" mb="md">
-                Exporta alertas, programaciones y ajustes a un archivo JSON. Puedes
-                importarlo después para restaurar la configuración.
-              </Text>
-              <Group>
-                <Button
-                  variant="filled"
-                  color="blue"
-                  onClick={async () => {
-                    try {
-                      const res = await apiFetch("/api/admin/export");
-                      const data = await res.json();
-                      const blob = new Blob([JSON.stringify(data, null, 2)], {
-                        type: "application/json",
-                      });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `alloy-config-${new Date().toISOString().slice(0, 10)}.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                      showSuccess("✅ Configuración exportada");
-                    } catch {
-                      setError("Error al exportar configuración");
-                    }
-                  }}
-                >
-                  📤 Exportar
-                </Button>
-                <Button
-                  variant="outline"
-                  color="yellow"
-                  onClick={() => {
-                    const input = document.createElement("input");
-                    input.type = "file";
-                    input.accept = ".json";
-                    input.onchange = async (e) => {
-                      const file = (e.target as HTMLInputElement).files?.[0];
-                      if (!file) return;
-                      try {
-                        const text = await file.text();
-                        const data = JSON.parse(text);
-                        const res = await apiFetch("/api/admin/import", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            alerts: data.alerts || [],
-                            schedules: data.schedules || [],
-                            settings: data.settings || {},
-                          }),
-                        });
-                        if (res.ok) {
-                          showSuccess(
-                            "✅ Configuración importada. Recarga la página.",
+                {/* ═══ Export / Import ═══ */}
+                <Card bordered size="small">
+                  <Typography.Title
+                    level={4}
+                    style={{ marginTop: 0, marginBottom: 16 }}
+                  >
+                    📦 Exportar / Importar configuración
+                  </Typography.Title>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    Exporta alertas, programaciones y ajustes a un archivo JSON.
+                    Puedes importarlo después para restaurar la configuración.
+                  </Typography.Text>
+                  <Flex gap="middle">
+                    <Button
+                      type="primary"
+                      onClick={async () => {
+                        try {
+                          const res = await apiFetch("/api/admin/export");
+                          const data = await res.json();
+                          const blob = new Blob(
+                            [JSON.stringify(data, null, 2)],
+                            {
+                              type: "application/json",
+                            },
                           );
-                          setTimeout(() => window.location.reload(), 1500);
-                        } else {
-                          const err = await res.text();
-                          setError(`Error al importar: ${err}`);
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `alloy-config-${new Date().toISOString().slice(0, 10)}.json`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                          showSuccess("✅ Configuración exportada");
+                        } catch {
+                          setError("Error al exportar configuración");
                         }
-                      } catch {
-                        setError("Archivo JSON inválido");
-                      }
-                    };
-                    input.click();
-                  }}
-                >
-                  📥 Importar
-                </Button>
-              </Group>
-            </Paper>
-          </Stack>
-        </Tabs.Panel>
-      </Tabs>
-    </Stack>
+                      }}
+                    >
+                      📤 Exportar
+                    </Button>
+                    <Button
+                      style={{
+                        borderColor: "var(--ant-color-warning)",
+                        color: "var(--ant-color-warning)",
+                      }}
+                      onClick={() => {
+                        const input = document.createElement("input");
+                        input.type = "file";
+                        input.accept = ".json";
+                        input.onchange = async (e) => {
+                          const file = (e.target as HTMLInputElement)
+                            .files?.[0];
+                          if (!file) return;
+                          try {
+                            const text = await file.text();
+                            const data = JSON.parse(text);
+                            const res = await apiFetch("/api/admin/import", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                alerts: data.alerts || [],
+                                schedules: data.schedules || [],
+                                settings: data.settings || {},
+                              }),
+                            });
+                            if (res.ok) {
+                              showSuccess(
+                                "✅ Configuración importada. Recarga la página.",
+                              );
+                              setTimeout(() => window.location.reload(), 1500);
+                            } else {
+                              const err = await res.text();
+                              setError(`Error al importar: ${err}`);
+                            }
+                          } catch {
+                            setError("Archivo JSON inválido");
+                          }
+                        };
+                        input.click();
+                      }}
+                    >
+                      📥 Importar
+                    </Button>
+                  </Flex>
+                </Card>
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Space>
   );
 }

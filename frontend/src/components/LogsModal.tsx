@@ -1,4 +1,7 @@
-import { TextInput, Switch, ScrollArea, Code, Group, Stack, Text, Button, Modal } from "@mantine/core";
+import { Button, Flex, Input, Modal, Switch, Typography } from "antd";
+import { SearchOutlined } from "@ant-design/icons";
+
+const { Text } = Typography;
 
 interface LogsModalProps {
   opened: boolean;
@@ -31,72 +34,79 @@ export default function LogsModal({
 
   return (
     <Modal
-      opened={opened}
-      onClose={onClose}
+      open={opened}
+      onCancel={onClose}
       title={`📋 Logs: ${containerName || ""}`}
-      size="xl"
-      scrollAreaComponent={ScrollArea}
+      width={960}
+      footer={
+        <Flex justify="flex-end">
+          <Button onClick={onClose}>Aceptar</Button>
+        </Flex>
+      }
     >
-      <Stack>
-        <Group gap="sm" wrap="nowrap" align="center">
-          <TextInput
-            placeholder="Buscar en logs..."
-            value={logSearch}
-            onChange={(e) => setLogSearch(e.currentTarget.value)}
-            leftSection="🔍"
-            size="sm"
-            style={{ flex: 1 }}
-          />
-          <Switch
-            size="xs"
-            label="Wrap"
-            checked={logWrap}
-            onChange={(e) => setLogWrap(e.currentTarget.checked)}
-            flex="none"
-          />
-        </Group>
-        {logSearch && (
-          <Text size="xs" c="dimmed" ta="right">
-            {filteredLogs.length} de {logs.length} líneas
-          </Text>
-        )}
-        <ScrollArea
-          h={500}
+      <Flex gap={8} wrap="nowrap" align="center" style={{ marginBottom: 8 }}>
+        <Input
+          placeholder="Buscar en logs..."
+          value={logSearch}
+          onChange={(e) => setLogSearch(e.target.value)}
+          prefix={<SearchOutlined />}
+          size="small"
+          allowClear
+          style={{ flex: 1 }}
+        />
+        <Switch
+          size="small"
+          checkedChildren="Wrap"
+          unCheckedChildren="Wrap"
+          checked={logWrap}
+          onChange={(checked) => setLogWrap(checked)}
+          style={{ flex: "none" }}
+        />
+      </Flex>
+      {logSearch && (
+        <Text
+          type="secondary"
           style={{
-            border: "1px solid var(--mantine-color-dark-4)",
-            borderRadius: "var(--mantine-radius-sm)",
-            backgroundColor: "#0d0d0d",
+            fontSize: 12,
+            textAlign: "right",
+            display: "block",
+            marginBottom: 4,
           }}
         >
-          <Code
-            block
-            style={{
-              whiteSpace: logWrap ? "pre-wrap" : "pre",
-              backgroundColor: "transparent",
-              color: "#e0e0e0",
-              padding: "var(--mantine-spacing-sm)",
-              margin: 0,
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-            }}
-          >
-            {filteredLogs.length > 0
-              ? filteredLogs.join("")
-              : logError
-                ? `❌ ${logError}`
-                : logTimeout
-                  ? "No se recibieron logs (el contenedor puede no existir o estar detenido)"
-                  : logs.length > 0
-                    ? "Sin resultados"
-                    : "Esperando logs..."}
-          </Code>
-        </ScrollArea>
-        <Group justify="flex-end">
-          <Button variant="light" onClick={onClose}>
-            Aceptar
-          </Button>
-        </Group>
-      </Stack>
+          {filteredLogs.length} de {logs.length} líneas
+        </Text>
+      )}
+      <div
+        style={{
+          maxHeight: 500,
+          overflow: "auto",
+          border: "1px solid var(--ant-color-border)",
+          borderRadius: "var(--ant-border-radius-sm, 6px)",
+          backgroundColor: "#0d0d0d",
+        }}
+      >
+        <pre
+          style={{
+            whiteSpace: logWrap ? "pre-wrap" : "pre",
+            backgroundColor: "transparent",
+            color: "#e0e0e0",
+            padding: 12,
+            margin: 0,
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          }}
+        >
+          {filteredLogs.length > 0
+            ? filteredLogs.join("")
+            : logError
+              ? `❌ ${logError}`
+              : logTimeout
+                ? "No se recibieron logs (el contenedor puede no existir o estar detenido)"
+                : logs.length > 0
+                  ? "Sin resultados"
+                  : "Esperando logs..."}
+        </pre>
+      </div>
     </Modal>
   );
 }

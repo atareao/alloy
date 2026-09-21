@@ -157,24 +157,18 @@ pub async fn update_check_worker(
             }
 
             // Check remote digest for this container
-            let (has_update, old_digest, new_digest) =
+            let (has_update, old_digest, config_digest, manifest_digest) =
                 match crate::updates::digest::check_remote_digest_with_docker(&image_full, &docker)
                     .await
                 {
-                    Ok((remote_digest, _)) => {
+                    Ok((manifest, config, _)) => {
                         // Usar last_remote_digest de DB si existe (comparación correcta),
                         // fallback a image_id (Docker content hash) solo si es primera vez
                         let local_ref = last_remote_digest_map
                             .get(&name)
                             .map(|s| s.as_str())
                             .unwrap_or(&image_id);
-                        let has_update = if !local_ref.is_empty() {
-                            let local_short = crate::updates::digest::short_digest(local_ref);
-                            let remote_short = crate::updates::digest::short_digest(&remote_digest);
-                            local_short != remote_short
-                        } else {
-                            false
-                        };
+                        let has_update = crate::updates::common::needs_update(local_ref, &config);
                         let old_digest = if last_remote_digest_map.contains_key(&name) {
                             last_remote_digest_map
                                 .get(&name)
@@ -183,7 +177,7 @@ pub async fn update_check_worker(
                         } else {
                             image_id.clone()
                         };
-                        (has_update, old_digest, remote_digest)
+                        (has_update, old_digest, config, manifest)
                     }
                     Err(_) => {
                         let _ = sqlite_update_has_update(&db_pool, &name, false).await;
@@ -216,6 +210,10 @@ pub async fn update_check_worker(
                     status: "⏭️ política: no hacer nada".into(),
                     done: true,
                     error: None,
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
                 });
                 tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
                 continue;
@@ -232,18 +230,27 @@ pub async fn update_check_worker(
                 status: format!("[update-check] 🔍 {}", policy.action),
                 done: false,
                 error: None,
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
             });
 
             let start = std::time::Instant::now();
             match policy.action {
                 UpdateAction::Pull => {
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
-                    if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
+                    if pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout).await
+                    {
                         let _ = update_tx.send(UpdateProgress {
                             container: name.clone(),
                             status: "✅ descargado (update-check)".into(),
                             done: true,
                             error: None,
+                            total: 0,
+                            checked: 0,
+                            updated: 0,
+                            errors: 0,
                         });
                         _ = sqlite_append_update(
                             &db_pool,
@@ -251,7 +258,7 @@ pub async fn update_check_worker(
                             &name,
                             &image_full,
                             &old_digest,
-                            &new_digest,
+                            &config_digest,
                             "update-check-pull",
                             start.elapsed().as_millis() as u64,
                         )
@@ -267,6 +274,10 @@ pub async fn update_check_worker(
                             status: "❌ error al descargar (se reintentará)".into(),
                             done: true,
                             error: Some("pull failed, will retry".into()),
+                            total: 0,
+                            checked: 0,
+                            updated: 0,
+                            errors: 0,
                         });
                     }
                 }
@@ -277,13 +288,14 @@ pub async fn update_check_worker(
                     } else {
                         None
                     };
-                    if pull_image(&docker, &image_full, Some(&new_digest), pull_timeout).await {
+                    if pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout).await
+                    {
                         match recreate_container(
                             &docker,
                             &name,
                             &cid,
                             &image_full,
-                            Some(&new_digest),
+                            Some(&manifest_digest),
                         )
                         .await
                         {
@@ -308,6 +320,10 @@ pub async fn update_check_worker(
                                         status: "⚠️ rollback aplicado (update-check)".into(),
                                         done: true,
                                         error: Some("container no healthy".into()),
+                                        total: 0,
+                                        checked: 0,
+                                        updated: 0,
+                                        errors: 0,
                                     });
                                 } else {
                                     let _ = notif_tx.send(NotifEvent {
@@ -330,7 +346,7 @@ pub async fn update_check_worker(
                                         let _ = db::update_container_last_remote_digest(
                                             &conn.lock().unwrap(),
                                             &name,
-                                            &new_digest,
+                                            &config_digest,
                                         );
                                     }
                                     _ = sqlite_append_update(
@@ -339,7 +355,7 @@ pub async fn update_check_worker(
                                         &name,
                                         &image_full,
                                         &old_digest,
-                                        &new_digest,
+                                        &config_digest,
                                         "update-check-restart",
                                         start.elapsed().as_millis() as u64,
                                     )
@@ -349,6 +365,10 @@ pub async fn update_check_worker(
                                         status: "✅ actualizado + reiniciado (update-check)".into(),
                                         done: true,
                                         error: None,
+                                        total: 0,
+                                        checked: 0,
+                                        updated: 0,
+                                        errors: 0,
                                     });
                                     if policy.cleanup_old_image {
                                         let result = prune_dangling_images(&docker).await;
@@ -368,6 +388,10 @@ pub async fn update_check_worker(
                                     status: "❌ error al recrear contenedor".into(),
                                     done: true,
                                     error: Some(e.to_string()),
+                                    total: 0,
+                                    checked: 0,
+                                    updated: 0,
+                                    errors: 0,
                                 });
                             }
                         }
@@ -377,6 +401,10 @@ pub async fn update_check_worker(
                             status: "❌ error al descargar (se reintentará)".into(),
                             done: true,
                             error: Some("pull failed, will retry".into()),
+                            total: 0,
+                            checked: 0,
+                            updated: 0,
+                            errors: 0,
                         });
                     }
                 }
@@ -401,6 +429,10 @@ pub async fn update_check_worker(
                                 status: format!("📥 Pulling stack '{}'...", project),
                                 done: false,
                                 error: None,
+                                total: 0,
+                                checked: 0,
+                                updated: 0,
+                                errors: 0,
                             });
                             let output = tokio::process::Command::new("docker")
                                 .args(["compose", "-f", file, "pull"])
@@ -417,6 +449,10 @@ pub async fn update_check_worker(
                                         status: "✅ stack actualizado (update-check)".into(),
                                         done: true,
                                         error: None,
+                                        total: 0,
+                                        checked: 0,
+                                        updated: 0,
+                                        errors: 0,
                                     });
                                     if policy.cleanup_old_image {
                                         let result = prune_dangling_images(&docker).await;
@@ -435,6 +471,10 @@ pub async fn update_check_worker(
                                         status: "❌ error stack pull".into(),
                                         done: true,
                                         error: Some("docker compose pull failed".into()),
+                                        total: 0,
+                                        checked: 0,
+                                        updated: 0,
+                                        errors: 0,
                                     });
                                     // Remove from suppression set on error too
                                     {
@@ -452,6 +492,10 @@ pub async fn update_check_worker(
                         status: "⏭️ acción desconocida".into(),
                         done: true,
                         error: None,
+                        total: 0,
+                        checked: 0,
+                        updated: 0,
+                        errors: 0,
                     });
                 }
             }

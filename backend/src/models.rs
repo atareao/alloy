@@ -35,6 +35,14 @@ pub struct UpdateProgress {
     pub status: String,
     pub done: bool,
     pub error: Option<String>,
+    #[serde(default)]
+    pub total: u32,
+    #[serde(default)]
+    pub checked: u32,
+    #[serde(default)]
+    pub updated: u32,
+    #[serde(default)]
+    pub errors: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]

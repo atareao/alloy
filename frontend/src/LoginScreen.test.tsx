@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { MantineProvider } from "@mantine/core";
+import { ConfigProvider } from "antd";
 import LoginScreen from "./components/LoginScreen";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <MantineProvider>{children}</MantineProvider>;
+  return <ConfigProvider>{children}</ConfigProvider>;
 }
 
 describe("LoginScreen", () => {
@@ -25,7 +25,7 @@ describe("LoginScreen", () => {
     );
 
     expect(screen.getByText("Alloy")).toBeInTheDocument();
-    expect(screen.getByText("🔑 Iniciar sesión con OIDC")).toBeInTheDocument();
+    expect(screen.getByText("Iniciar sesión con OIDC")).toBeInTheDocument();
   });
 
   it("redirects to OIDC login on button click", () => {
@@ -35,7 +35,7 @@ describe("LoginScreen", () => {
       </Wrapper>,
     );
 
-    fireEvent.click(screen.getByText("🔑 Iniciar sesión con OIDC"));
+    fireEvent.click(screen.getByText("Iniciar sesión con OIDC"));
 
     expect(window.location.href).toBe("/api/auth/login");
   });

@@ -1,13 +1,7 @@
 import { useState } from "react";
-import {
-  Button,
-  Group,
-  Modal,
-  Select,
-  Stack,
-  Switch,
-  Text,
-} from "@mantine/core";
+import { Button, Flex, Modal, Select, Space, Switch, Typography } from "antd";
+import type { ButtonProps } from "antd";
+import { SettingOutlined } from "@ant-design/icons";
 import { apiFetch } from "../api";
 import type { UpdatePolicy } from "../types";
 
@@ -17,7 +11,7 @@ interface PolicyActionButtonProps {
   setPolicies: React.Dispatch<React.SetStateAction<UpdatePolicy[]>>;
   busy: boolean;
   showToast: (message: string, color: string) => void;
-  size?: string;
+  size?: ButtonProps["size"];
 }
 
 export default function PolicyActionButton({
@@ -26,7 +20,7 @@ export default function PolicyActionButton({
   showToast,
   getPolicy,
   setPolicies,
-  size = "compact-xs",
+  size = "small",
 }: PolicyActionButtonProps) {
   const [showPolicyModal, setShowPolicyModal] = useState(false);
   const [editAction, setEditAction] = useState<string>("pull-restart");
@@ -84,69 +78,115 @@ export default function PolicyActionButton({
     <>
       <Button
         size={size}
-        variant="light"
-        color="gray"
-        leftSection="⚙️"
+        type="default"
+        icon={<SettingOutlined />}
         onClick={openConfig}
         disabled={busy}
       >
         Configurar
       </Button>
       <Modal
-        opened={showPolicyModal}
-        onClose={() => setShowPolicyModal(false)}
-        title={`⚙️ Política: ${containerName}`}
-        size="md"
+        open={showPolicyModal}
+        onCancel={() => setShowPolicyModal(false)}
+        title={
+          <span>
+            <SettingOutlined /> Política: {containerName}
+          </span>
+        }
+        width={520}
+        footer={null}
       >
-        <Stack>
-          <Text size="sm" c="dimmed" mb="xs">
+        <Space direction="vertical" size="small" style={{ width: "100%" }}>
+          <Typography.Text
+            type="secondary"
+            style={{ fontSize: 14, marginBottom: 8 }}
+          >
             Configura qué hacer cuando haya una actualización disponible para
             este contenedor.
-          </Text>
-          <Select
-            label="Acción"
-            data={[
-              { value: "none", label: "❌ No hacer nada" },
-              { value: "pull", label: "⬇️ Pull imagen" },
-              {
-                value: "pull-restart",
-                label: "🔄 Pull + reiniciar contenedor",
-              },
-              {
-                value: "pull-restart-stack",
-                label: "📦 Pull + reiniciar stack",
-              },
-            ]}
-            value={editAction}
-            onChange={(v) => v && setEditAction(v)}
-          />
-          <Switch
-            label="🧹 Borrar imagen anterior"
-            description="Elimina la imagen anterior después de actualizar"
-            checked={editCleanup}
-            onChange={(e) => setEditCleanup(e.currentTarget.checked)}
-          />
-          <Switch
-            label="↩️ Rollback si falla"
-            description="Si el contenedor no arranca correctamente, restaura la imagen anterior"
-            checked={editRollback}
-            onChange={(e) => setEditRollback(e.currentTarget.checked)}
-          />
-          <Switch
-            label="🔔 Notificar eventos"
-            description="Envía notificación (Telegram/Matrix) cuando el contenedor cambie de estado"
-            checked={editNotifyEvents}
-            onChange={(e) => setEditNotifyEvents(e.currentTarget.checked)}
-          />
-          <Group justify="flex-end" mt="md">
-            <Button variant="default" onClick={() => setShowPolicyModal(false)}>
+          </Typography.Text>
+          <div>
+            <Typography.Text
+              style={{ fontSize: 14, display: "block", marginBottom: 4 }}
+            >
+              Acción
+            </Typography.Text>
+            <Select
+              options={[
+                { value: "none", label: "❌ No hacer nada" },
+                { value: "pull", label: "⬇️ Pull imagen" },
+                {
+                  value: "pull-restart",
+                  label: "🔄 Pull + reiniciar contenedor",
+                },
+                {
+                  value: "pull-restart-stack",
+                  label: "📦 Pull + reiniciar stack",
+                },
+              ]}
+              value={editAction}
+              onChange={(v) => v && setEditAction(v)}
+              style={{ width: "100%" }}
+            />
+          </div>
+          <div>
+            <Switch
+              checked={editCleanup}
+              onChange={(checked) => setEditCleanup(checked)}
+            />
+            <Typography.Text style={{ marginLeft: 8, fontSize: 14 }}>
+              🧹 Borrar imagen anterior
+            </Typography.Text>
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginLeft: 36 }}
+            >
+              Elimina la imagen anterior después de actualizar
+            </Typography.Text>
+          </div>
+          <div>
+            <Switch
+              checked={editRollback}
+              onChange={(checked) => setEditRollback(checked)}
+            />
+            <Typography.Text style={{ marginLeft: 8, fontSize: 14 }}>
+              ↩️ Rollback si falla
+            </Typography.Text>
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginLeft: 36 }}
+            >
+              Si el contenedor no arranca correctamente, restaura la imagen
+              anterior
+            </Typography.Text>
+          </div>
+          <div>
+            <Switch
+              checked={editNotifyEvents}
+              onChange={(checked) => setEditNotifyEvents(checked)}
+            />
+            <Typography.Text style={{ marginLeft: 8, fontSize: 14 }}>
+              🔔 Notificar eventos
+            </Typography.Text>
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginLeft: 36 }}
+            >
+              Envía notificación (Telegram/Matrix) cuando el contenedor cambie
+              de estado
+            </Typography.Text>
+          </div>
+          <Flex justify="flex-end" style={{ marginTop: 16 }}>
+            <Button
+              onClick={() => setShowPolicyModal(false)}
+              style={{ marginRight: 8 }}
+            >
               Cancelar
             </Button>
-            <Button onClick={savePolicy} loading={savingPolicy}>
+            <Button type="primary" onClick={savePolicy} loading={savingPolicy}>
               Guardar política
             </Button>
-          </Group>
-        </Stack>
+          </Flex>
+        </Space>
       </Modal>
     </>
   );

@@ -1,18 +1,17 @@
 import {
-  Anchor,
-  Badge,
-  Code,
   Divider,
-  Group,
-  Loader,
+  Flex,
   Modal,
-  ScrollArea,
-  Stack,
+  Space,
+  Spin,
   Table,
   Tabs,
-  Text,
-} from "@mantine/core";
+  Tag,
+  Typography,
+} from "antd";
 import type { InspectData } from "../types";
+
+const { Text, Link } = Typography;
 
 interface InspectModalProps {
   opened: boolean;
@@ -37,282 +36,278 @@ export default function InspectModal({
   loading,
   error,
 }: InspectModalProps) {
+  const portColumns = [
+    { title: "Puerto Privado", dataIndex: "private_port", key: "private_port" },
+    {
+      title: "Puerto Público",
+      dataIndex: "public_port",
+      key: "public_port",
+      render: (val: number | null) => (val != null ? val : "-"),
+    },
+    { title: "Tipo", dataIndex: "type", key: "type" },
+  ];
+
+  const volumeColumns = [
+    { title: "Origen", dataIndex: "source", key: "source" },
+    { title: "Destino", dataIndex: "destination", key: "destination" },
+    {
+      title: "Modo",
+      dataIndex: "mode",
+      key: "mode",
+      render: (mode: string) => <Tag>{mode}</Tag>,
+    },
+  ];
+
+  const networkColumns = [
+    { title: "Red", dataIndex: "name", key: "name" },
+    {
+      title: "IP",
+      dataIndex: "ip_address",
+      key: "ip_address",
+      render: (ip: string) => <code style={{ fontSize: 12 }}>{ip}</code>,
+    },
+    {
+      title: "Gateway",
+      dataIndex: "gateway",
+      key: "gateway",
+      render: (gw: string) => <code style={{ fontSize: 12 }}>{gw}</code>,
+    },
+  ];
+
+  const generalTab = (
+    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+      {inspectData ? (
+        <>
+          <Flex align="center" gap={8}>
+            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+              ID:
+            </Text>
+            <Text style={{ fontFamily: "monospace", fontSize: 11 }}>
+              {inspectData.id}
+            </Text>
+          </Flex>
+          <Flex align="center" gap={8}>
+            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+              Nombre:
+            </Text>
+            <Text style={{ fontSize: 14 }}>{inspectData.name}</Text>
+          </Flex>
+          <Flex align="center" gap={8}>
+            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+              Imagen:
+            </Text>
+            <Text style={{ fontSize: 14 }}>{inspectData.image}</Text>
+          </Flex>
+          <Flex align="center" gap={8}>
+            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+              Creado:
+            </Text>
+            <Text style={{ fontSize: 14 }}>{inspectData.created}</Text>
+          </Flex>
+          <Flex align="center" gap={8}>
+            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+              Estado:
+            </Text>
+            <Tag color={inspectData.state === "running" ? "success" : "error"}>
+              {inspectData.state}
+            </Tag>
+          </Flex>
+          <Flex align="center" gap={8}>
+            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+              Status:
+            </Text>
+            <Text style={{ fontSize: 14 }}>{inspectData.status}</Text>
+          </Flex>
+          {inspectData.restart_policy && (
+            <Flex align="center" gap={8}>
+              <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+                Reinicio:
+              </Text>
+              <Text style={{ fontSize: 14 }}>{inspectData.restart_policy}</Text>
+            </Flex>
+          )}
+          {inspectData.health && (
+            <Flex align="center" gap={8}>
+              <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+                Health:
+              </Text>
+              <Tag
+                color={inspectData.health === "healthy" ? "success" : "warning"}
+              >
+                {inspectData.health}
+              </Tag>
+            </Flex>
+          )}
+          <Divider style={{ margin: "8px 0" }} />
+          {containerInfo && (
+            <>
+              <Text style={{ fontSize: 14, fontWeight: 500 }}>
+                Información adicional
+              </Text>
+              <Flex align="center" gap={8}>
+                <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+                  Imagen:
+                </Text>
+                <Text style={{ fontSize: 14 }}>{containerInfo.image}</Text>
+              </Flex>
+              <Flex align="center" gap={8}>
+                <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+                  Tag:
+                </Text>
+                <Text style={{ fontSize: 14 }}>{containerInfo.image_tag}</Text>
+              </Flex>
+              {containerInfo.registry_url && (
+                <Flex align="center" gap={8}>
+                  <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
+                    Registry:
+                  </Text>
+                  <Link
+                    href={containerInfo.registry_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 14 }}
+                    ellipsis
+                  >
+                    Ver en registry
+                  </Link>
+                </Flex>
+              )}
+            </>
+          )}
+        </>
+      ) : (
+        <Text type="secondary" style={{ fontSize: 14, padding: "16px 0" }}>
+          Selecciona un container para inspeccionar
+        </Text>
+      )}
+    </Space>
+  );
+
+  const portsTab = inspectData?.ports?.length ? (
+    <Table
+      dataSource={inspectData.ports}
+      columns={portColumns}
+      rowKey={(_, index) => `row-${index}`}
+      pagination={false}
+      size="small"
+      scroll={{ x: "max-content" }}
+    />
+  ) : (
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
+      Sin puertos expuestos
+    </Text>
+  );
+
+  const volumesTab = inspectData?.mounts?.length ? (
+    <Table
+      dataSource={inspectData.mounts}
+      columns={volumeColumns}
+      rowKey={(_, index) => `row-${index}`}
+      pagination={false}
+      size="small"
+      scroll={{ x: "max-content" }}
+    />
+  ) : (
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
+      Sin volúmenes montados
+    </Text>
+  );
+
+  const networksTab = inspectData?.networks?.length ? (
+    <Table
+      dataSource={inspectData.networks}
+      columns={networkColumns}
+      rowKey={(_, index) => `row-${index}`}
+      pagination={false}
+      size="small"
+      scroll={{ x: "max-content" }}
+    />
+  ) : (
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
+      Sin redes
+    </Text>
+  );
+
+  const envTab = inspectData?.env?.length ? (
+    <div style={{ maxHeight: 300, overflow: "auto" }}>
+      <pre
+        style={{
+          backgroundColor: "transparent",
+          color: "inherit",
+          padding: 0,
+          margin: 0,
+          fontFamily:
+            "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+        }}
+      >
+        {inspectData.env.map((e, i) => (
+          <div key={i}>{e}</div>
+        ))}
+      </pre>
+    </div>
+  ) : (
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
+      Sin variables de entorno
+    </Text>
+  );
+
+  const labelsTab =
+    inspectData?.labels && Object.keys(inspectData.labels).length > 0 ? (
+      <div style={{ maxHeight: 300, overflow: "auto" }}>
+        {Object.entries(inspectData.labels).map(([k, v]) => (
+          <Flex key={k} gap={4} style={{ marginBottom: 4 }}>
+            <Text style={{ fontSize: 14, fontWeight: 500 }}>{k}:</Text>
+            <Text style={{ fontSize: 14 }}>{v}</Text>
+          </Flex>
+        ))}
+      </div>
+    ) : (
+      <Text
+        type="secondary"
+        style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+      >
+        Sin labels
+      </Text>
+    );
+
+  const tabItems = [
+    { key: "general", label: "General", children: generalTab },
+    { key: "ports", label: "Puertos", children: portsTab },
+    { key: "volumes", label: "Volúmenes", children: volumesTab },
+    { key: "networks", label: "Redes", children: networksTab },
+    { key: "env", label: "ENV", children: envTab },
+    { key: "labels", label: "Labels", children: labelsTab },
+  ];
+
   return (
     <Modal
-      opened={opened}
-      onClose={onClose}
+      open={opened}
+      onCancel={onClose}
       title={`🔍 ${containerName || ""}`}
-      size="xl"
+      width={960}
+      footer={null}
     >
       {loading ? (
-        <Group justify="center" py="xl">
-          <Loader />
-          <Text>Obteniendo información...</Text>
-        </Group>
+        <Flex justify="center" align="center" style={{ padding: "24px 0" }}>
+          <Spin />
+          <Text style={{ marginLeft: 8 }}>Obteniendo información...</Text>
+        </Flex>
       ) : error ? (
-        <Text c="red">{error}</Text>
+        <Text type="danger">{error}</Text>
       ) : (
-        <Tabs defaultValue="general">
-          <Tabs.List mb="sm">
-            <Tabs.Tab value="general">General</Tabs.Tab>
-            <Tabs.Tab value="ports">Puertos</Tabs.Tab>
-            <Tabs.Tab value="volumes">Volúmenes</Tabs.Tab>
-            <Tabs.Tab value="networks">Redes</Tabs.Tab>
-            <Tabs.Tab value="env">ENV</Tabs.Tab>
-            <Tabs.Tab value="labels">Labels</Tabs.Tab>
-          </Tabs.List>
-
-          <Tabs.Panel value="general">
-            {inspectData ? (
-              <Stack gap="xs">
-                <Group>
-                  <Text size="sm" fw={500} w={140}>
-                    ID:
-                  </Text>
-                  <Text
-                    size="sm"
-                    style={{ fontFamily: "monospace", fontSize: 11 }}
-                  >
-                    {inspectData.id}
-                  </Text>
-                </Group>
-                <Group>
-                  <Text size="sm" fw={500} w={140}>
-                    Nombre:
-                  </Text>
-                  <Text size="sm">{inspectData.name}</Text>
-                </Group>
-                <Group>
-                  <Text size="sm" fw={500} w={140}>
-                    Imagen:
-                  </Text>
-                  <Text size="sm">{inspectData.image}</Text>
-                </Group>
-                <Group>
-                  <Text size="sm" fw={500} w={140}>
-                    Creado:
-                  </Text>
-                  <Text size="sm">{inspectData.created}</Text>
-                </Group>
-                <Group>
-                  <Text size="sm" fw={500} w={140}>
-                    Estado:
-                  </Text>
-                  <Badge
-                    color={inspectData.state === "running" ? "green" : "red"}
-                  >
-                    {inspectData.state}
-                  </Badge>
-                </Group>
-                <Group>
-                  <Text size="sm" fw={500} w={140}>
-                    Status:
-                  </Text>
-                  <Text size="sm">{inspectData.status}</Text>
-                </Group>
-                {inspectData.restart_policy && (
-                  <Group>
-                    <Text size="sm" fw={500} w={140}>
-                      Reinicio:
-                    </Text>
-                    <Text size="sm">{inspectData.restart_policy}</Text>
-                  </Group>
-                )}
-                {inspectData.health && (
-                  <Group>
-                    <Text size="sm" fw={500} w={140}>
-                      Health:
-                    </Text>
-                    <Badge
-                      color={
-                        inspectData.health === "healthy" ? "green" : "yellow"
-                      }
-                    >
-                      {inspectData.health}
-                    </Badge>
-                  </Group>
-                )}
-                <Divider my="xs" />
-                {containerInfo && (
-                  <>
-                    <Text size="sm" fw={500}>
-                      Información adicional
-                    </Text>
-                    <Group>
-                      <Text size="sm" fw={500} w={140}>
-                        Imagen:
-                      </Text>
-                      <Text size="sm">{containerInfo.image}</Text>
-                    </Group>
-                    <Group>
-                      <Text size="sm" fw={500} w={140}>
-                        Tag:
-                      </Text>
-                      <Text size="sm">{containerInfo.image_tag}</Text>
-                    </Group>
-                    {containerInfo.registry_url && (
-                      <Group>
-                        <Text size="sm" fw={500} w={140}>
-                          Registry:
-                        </Text>
-                        <Anchor
-                          href={containerInfo.registry_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          size="sm"
-                          truncate
-                        >
-                          Ver en registry
-                        </Anchor>
-                      </Group>
-                    )}
-                  </>
-                )}
-              </Stack>
-            ) : (
-              <Text size="sm" c="dimmed" py="md">
-                Selecciona un container para inspeccionar
-              </Text>
-            )}
-          </Tabs.Panel>
-
-          <Tabs.Panel value="ports">
-            {inspectData?.ports?.length ? (
-              <Table.ScrollContainer minWidth={400}>
-                <Table striped>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Puerto Privado</Table.Th>
-                      <Table.Th>Puerto Público</Table.Th>
-                      <Table.Th>Tipo</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {inspectData.ports.map((p, i) => (
-                      <Table.Tr key={i}>
-                        <Table.Td>{p.private_port}</Table.Td>
-                        <Table.Td>
-                          {p.public_port != null ? p.public_port : "-"}
-                        </Table.Td>
-                        <Table.Td>{p.type}</Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              </Table.ScrollContainer>
-            ) : (
-              <Text size="sm" c="dimmed" py="md">
-                Sin puertos expuestos
-              </Text>
-            )}
-          </Tabs.Panel>
-
-          <Tabs.Panel value="volumes">
-            {inspectData?.mounts?.length ? (
-              <Table.ScrollContainer minWidth={400}>
-                <Table striped>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Origen</Table.Th>
-                      <Table.Th>Destino</Table.Th>
-                      <Table.Th>Modo</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {inspectData.mounts.map((m, i) => (
-                      <Table.Tr key={i}>
-                        <Table.Td>
-                          <Text size="sm">{m.source}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Text size="sm">{m.destination}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Badge variant="light">{m.mode}</Badge>
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              </Table.ScrollContainer>
-            ) : (
-              <Text size="sm" c="dimmed" py="md">
-                Sin volúmenes montados
-              </Text>
-            )}
-          </Tabs.Panel>
-
-          <Tabs.Panel value="networks">
-            {inspectData?.networks?.length ? (
-              <Table.ScrollContainer minWidth={400}>
-                <Table striped>
-                  <Table.Thead>
-                    <Table.Tr>
-                      <Table.Th>Red</Table.Th>
-                      <Table.Th>IP</Table.Th>
-                      <Table.Th>Gateway</Table.Th>
-                    </Table.Tr>
-                  </Table.Thead>
-                  <Table.Tbody>
-                    {inspectData.networks.map((n, i) => (
-                      <Table.Tr key={i}>
-                        <Table.Td>
-                          <Text size="sm">{n.name}</Text>
-                        </Table.Td>
-                        <Table.Td>
-                          <Code>{n.ip_address}</Code>
-                        </Table.Td>
-                        <Table.Td>
-                          <Code>{n.gateway}</Code>
-                        </Table.Td>
-                      </Table.Tr>
-                    ))}
-                  </Table.Tbody>
-                </Table>
-              </Table.ScrollContainer>
-            ) : (
-              <Text size="sm" c="dimmed" py="md">
-                Sin redes
-              </Text>
-            )}
-          </Tabs.Panel>
-
-          <Tabs.Panel value="env">
-            {inspectData?.env?.length ? (
-              <ScrollArea h={300}>
-                <Code block>
-                  {inspectData.env.map((e, i) => (
-                    <div key={i}>{e}</div>
-                  ))}
-                </Code>
-              </ScrollArea>
-            ) : (
-              <Text size="sm" c="dimmed" py="md">
-                Sin variables de entorno
-              </Text>
-            )}
-          </Tabs.Panel>
-
-          <Tabs.Panel value="labels">
-            {inspectData?.labels &&
-            Object.keys(inspectData.labels).length > 0 ? (
-              <ScrollArea h={300}>
-                {Object.entries(inspectData.labels).map(([k, v]) => (
-                  <Group key={k} gap="xs" mb="xs">
-                    <Text size="sm" fw={500}>
-                      {k}:
-                    </Text>
-                    <Text size="sm">{v}</Text>
-                  </Group>
-                ))}
-              </ScrollArea>
-            ) : (
-              <Text size="sm" c="dimmed" py="md">
-                Sin labels
-              </Text>
-            )}
-          </Tabs.Panel>
-        </Tabs>
+        <Tabs items={tabItems} />
       )}
     </Modal>
   );

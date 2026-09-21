@@ -110,13 +110,19 @@ pub fn parse_image_ref(image_full: &str) -> ImageRef {
     }
 }
 
-/// Fetch the config digest (image ID) of a remote image from any registry.
+/// Fetch both the manifest digest and config digest of a remote image from any registry.
 ///
-/// Returns `(config_digest, tag)` where `config_digest` matches what Docker
-/// stores locally as `ImageID`, so a byte-for-byte comparison is correct.
+/// Returns `(manifest_digest, config_digest, tag)` where:
+/// - `manifest_digest` comes from the `Docker-Content-Digest` response header and is
+///   used for pulling images via `image@manifest_digest` (Docker daemon requires a
+///   manifest digest, not a config digest, in the `@digest` position).
+/// - `config_digest` comes from `body["config"]["digest"]` and matches what Docker
+///   stores locally as `ImageID`, so a byte-for-byte comparison is correct.
 ///
 /// For multi-arch (manifest list) images this performs a second request to
-/// resolve the platform-specific manifest and extract its `config.digest`.
+/// resolve the platform-specific manifest and extract both the manifest digest
+/// (from the platform manifest response's `Docker-Content-Digest` header) and
+/// the config digest (from `body["config"]["digest"]`).
 ///
 /// If the HTTP-based check fails with 401/403 (registry requires auth),
 /// falls back to `docker.inspect_registry_image()` which uses the Docker
@@ -124,14 +130,14 @@ pub fn parse_image_ref(image_full: &str) -> ImageRef {
 pub async fn check_remote_digest_with_docker(
     image_full: &str,
     docker: &Docker,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, String), String> {
     check_remote_digest_impl(image_full, Some(docker)).await
 }
 
 async fn check_remote_digest_impl(
     image_full: &str,
     docker: Option<&Docker>,
-) -> Result<(String, String), String> {
+) -> Result<(String, String, String), String> {
     let _permit = digest_semaphore()
         .acquire()
         .await
@@ -153,7 +159,7 @@ async fn check_remote_digest_impl(
         tag
     );
 
-    let config_digest = match registry_host.as_str() {
+    let (manifest_digest, config_digest) = match registry_host.as_str() {
         "docker.io" => {
             let token_url = format!(
                 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
@@ -166,7 +172,8 @@ async fn check_remote_digest_impl(
                 token_url
             );
             let token = fetch_token(client, &token_url, &repo, &tag).await?;
-            resolve_config_digest(client, "registry-1.docker.io", &repo, &tag, Some(&token)).await?
+            fetch_manifest_digests(client, "registry-1.docker.io", &repo, &tag, Some(&token))
+                .await?
         }
         "ghcr.io" => {
             let token_url = format!(
@@ -180,7 +187,7 @@ async fn check_remote_digest_impl(
                 token_url
             );
             let token = fetch_token(client, &token_url, &repo, &tag).await?;
-            resolve_config_digest(client, "ghcr.io", &repo, &tag, Some(&token)).await?
+            fetch_manifest_digests(client, "ghcr.io", &repo, &tag, Some(&token)).await?
         }
         other => {
             // Unknown registry: try Docker daemon FIRST (has credentials configured).
@@ -193,14 +200,58 @@ async fn check_remote_digest_impl(
                 );
                 match d.inspect_registry_image(image_full, None).await {
                     Ok(dist) => {
-                        if let Some(digest) = dist.descriptor.digest {
+                        if let Some(manifest_digest) = dist.descriptor.digest {
                             tracing::info!(
-                                "check_remote_digest [{}:{}]: Docker daemon OK digest={}",
+                                "check_remote_digest [{}:{}]: Docker daemon OK manifest_digest={}",
                                 repo,
                                 tag,
-                                short_digest(&digest)
+                                short_digest(&manifest_digest)
                             );
-                            return Ok((digest, tag));
+                            // Got manifest digest from daemon. Now get config digest via HTTP.
+                            match fetch_manifest_digests(
+                                client,
+                                other,
+                                &repo,
+                                &manifest_digest,
+                                None,
+                            )
+                            .await
+                            {
+                                Ok((_, config_digest)) => {
+                                    return Ok((manifest_digest, config_digest, tag));
+                                }
+                                Err(_) => {
+                                    // Try with auth flow
+                                    match fetch_manifest_with_auth(
+                                        client,
+                                        other,
+                                        &repo,
+                                        &manifest_digest,
+                                    )
+                                    .await
+                                    {
+                                        Ok((resp, _)) => {
+                                            let body: serde_json::Value =
+                                                resp.json().await.map_err(|e| {
+                                                    format!("manifest parse failed: {}", e)
+                                                })?;
+                                            let config_digest = body["config"]["digest"]
+                                                .as_str()
+                                                .ok_or_else(|| "no config digest".to_string())?
+                                                .to_string();
+                                            return Ok((manifest_digest, config_digest, tag));
+                                        }
+                                        Err(_) => {
+                                            // Ultimate fallback: use manifest digest as config (one-time false positive)
+                                            return Ok((
+                                                manifest_digest.clone(),
+                                                manifest_digest,
+                                                tag,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -214,69 +265,85 @@ async fn check_remote_digest_impl(
                 }
             }
 
-            // Fallback: HTTP probe for auth requirements.
-            let probe_url = format!("https://{}/v2/{}/manifests/{}", other, repo, tag);
-            tracing::info!(
-                "check_remote_digest [{}:{}]: registry={} probe_url={}",
-                repo,
-                tag,
-                other,
-                probe_url
-            );
-            let probe = fetch_manifest(client, &probe_url, None).await?;
-            let status = probe.status();
+            // Fallback: HTTP probe + auth flow using fetch_manifest_with_auth
+            match fetch_manifest_with_auth(client, other, &repo, &tag).await {
+                Ok((resp, manifest_digest)) => {
+                    let body: serde_json::Value = resp
+                        .json()
+                        .await
+                        .map_err(|e| format!("manifest parse failed: {}", e))?;
 
-            tracing::info!(
-                "check_remote_digest [{}:{}]: probe status={}",
-                repo,
-                tag,
-                status
-            );
+                    if body.get("manifests").is_some()
+                        && body
+                            .get("mediaType")
+                            .and_then(|m| m.as_str())
+                            .is_some_and(|m| {
+                                m.contains("manifest.list") || m.contains("image.index")
+                            })
+                    {
+                        // Manifest list: resolve platform-specific manifest
+                        let manifests = body["manifests"]
+                            .as_array()
+                            .ok_or_else(|| "no manifests in list".to_string())?;
+                        let platform = crate::models::current_platform();
+                        let parts: Vec<&str> = platform.split('/').collect();
+                        let (os, arch) = if parts.len() == 2 {
+                            (parts[0], parts[1])
+                        } else {
+                            ("linux", "amd64")
+                        };
+                        let amd64_digest = manifests
+                            .iter()
+                            .find(|m| {
+                                let plat = &m["platform"];
+                                plat["architecture"].as_str() == Some(arch)
+                                    && plat["os"].as_str() == Some(os)
+                            })
+                            .or_else(|| {
+                                manifests.iter().find(|m| {
+                                    let plat = &m["platform"];
+                                    plat["architecture"].as_str() == Some("amd64")
+                                        && plat["os"].as_str() == Some("linux")
+                                })
+                            })
+                            .or_else(|| manifests.first())
+                            .and_then(|m| m["digest"].as_str())
+                            .ok_or_else(|| "no suitable platform manifest".to_string())?;
 
-            if status == 401 || status == 403 {
-                // Parse Www-Authenticate to find the real token endpoint.
-                let auth_header = probe
-                    .headers()
-                    .get("www-authenticate")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("");
-                tracing::warn!(
-                    "check_remote_digest [{}:{}]: registry={} requiere auth, Www-Authenticate={:?}",
-                    repo,
-                    tag,
-                    other,
-                    auth_header
-                );
-
-                let realm =
-                    parse_realm(auth_header).unwrap_or_else(|| format!("https://{}/token", other));
-                let token_url =
-                    format!("{}?service={}&scope=repository:{}:pull", realm, other, repo);
-                tracing::info!(
-                    "check_remote_digest [{}:{}]: realm={} token_url={}",
-                    repo,
-                    tag,
-                    realm,
-                    token_url
-                );
-                let token = fetch_token(client, &token_url, &repo, &tag).await?;
-                resolve_config_digest(client, other, &repo, &tag, Some(&token)).await?
-            } else if status.is_success() {
-                // No auth needed — make the actual request.
-                resolve_config_digest(client, other, &repo, &tag, None).await?
-            } else {
-                return Err(format!("manifest status: {}", status));
+                        let (plat_resp, plat_manifest_digest) =
+                            fetch_manifest_with_auth(client, other, &repo, amd64_digest).await?;
+                        let plat_body: serde_json::Value = plat_resp
+                            .json()
+                            .await
+                            .map_err(|e| format!("platform manifest parse failed: {}", e))?;
+                        let config_digest = plat_body["config"]["digest"]
+                            .as_str()
+                            .ok_or_else(|| "no config digest in platform manifest".to_string())?
+                            .to_string();
+                        (plat_manifest_digest, config_digest)
+                    } else {
+                        let config_digest = body["config"]["digest"]
+                            .as_str()
+                            .ok_or_else(|| "no config digest".to_string())?
+                            .to_string();
+                        (manifest_digest, config_digest)
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("manifest fetch failed: {}", e));
+                }
             }
         }
     };
 
     tracing::info!(
-        "check_remote_digest [{}:{}]: OK digest={}",
+        "check_remote_digest [{}:{}]: OK manifest_digest={} config_digest={}",
         repo,
         tag,
+        short_digest(&manifest_digest),
         short_digest(&config_digest)
     );
-    Ok((config_digest, tag))
+    Ok((manifest_digest, config_digest, tag))
 }
 
 /// Parse the realm (token endpoint) from a Www-Authenticate header.
@@ -363,27 +430,43 @@ async fn fetch_token(
     Ok(token)
 }
 
-/// Consulta el manifiesto en `https://{registry_host}/v2/{repo}/manifests/{reference}`
-/// y extrae el `config.digest`, resolviendo manifest lists multi-arch
-/// (seleccionando la plataforma actual con fallback a amd64/linux o al primero).
-/// Incluye reintentos con exponential backoff en caso de HTTP 429 (rate limit).
-async fn resolve_config_digest(
+/// Fetch manifest and config digests from a registry.
+///
+/// Returns `(manifest_digest, config_digest)` where:
+/// - `manifest_digest` comes from the `Docker-Content-Digest` response header
+/// - `config_digest` comes from `body["config"]["digest"]`
+///
+/// For manifest lists (multi-arch): resolves the platform-specific manifest
+/// and extracts BOTH digests from the platform manifest response.
+fn extract_manifest_digest(resp: &reqwest::Response) -> Option<String> {
+    resp.headers()
+        .get("docker-content-digest")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+/// Fetch both manifest digest and config digest from a registry.
+///
+/// Returns `(manifest_digest, config_digest)`.
+/// Includes retries with exponential backoff on HTTP 429 (rate limit).
+async fn fetch_manifest_digests(
     client: &reqwest::Client,
     registry_host: &str,
     repo: &str,
     reference: &str,
     token: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, String), String> {
     let manifest_url = format!(
         "https://{}/v2/{}/manifests/{}",
         registry_host, repo, reference
     );
     tracing::debug!(
-        "resolve_config_digest [{}:{}]: consultando manifiesto en {}",
+        "fetch_manifest_digests [{}:{}]: consultando manifiesto en {}",
         repo,
         reference,
         manifest_url
     );
+
     // Fetch manifest with retry on 429 (rate limit)
     let manifest_resp = {
         let mut last_resp = fetch_manifest(client, &manifest_url, token).await?;
@@ -393,7 +476,7 @@ async fn resolve_config_digest(
             for attempt in 1..=2 {
                 let delay_secs = 2u64 * attempt;
                 tracing::warn!(
-                    "resolve_config_digest [{}:{}]: HTTP 429, reintentando en {}s (intento {}/2)",
+                    "fetch_manifest_digests [{}:{}]: HTTP 429, reintentando en {}s (intento {}/2)",
                     repo,
                     reference,
                     delay_secs,
@@ -410,7 +493,7 @@ async fn resolve_config_digest(
 
         if !status.is_success() {
             tracing::warn!(
-                "resolve_config_digest [{}:{}]: manifest HTTP {}",
+                "fetch_manifest_digests [{}:{}]: manifest HTTP {}",
                 repo,
                 reference,
                 status
@@ -421,26 +504,30 @@ async fn resolve_config_digest(
         last_resp
     };
 
+    let manifest_digest = extract_manifest_digest(&manifest_resp)
+        .ok_or_else(|| "no docker-content-digest header".to_string())?;
+
     let content_type = manifest_resp
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     tracing::debug!(
-        "resolve_config_digest [{}:{}]: content-type={}",
+        "fetch_manifest_digests [{}:{}]: content-type={} docker-content-digest={}",
         repo,
         reference,
-        content_type
+        content_type,
+        &manifest_digest
     );
 
     let config_digest = if content_type.contains("manifest.list")
         || content_type.contains("image.index")
     {
         tracing::debug!(
-                "resolve_config_digest [{}:{}]: manifest list detectado, buscando plataforma amd64/linux",
-                repo,
-                reference
-            );
+            "fetch_manifest_digests [{}:{}]: manifest list detectado, buscando plataforma amd64/linux",
+            repo,
+            reference
+        );
         let body: serde_json::Value = manifest_resp
             .json()
             .await
@@ -479,7 +566,7 @@ async fn resolve_config_digest(
             registry_host, repo, amd64_digest
         );
         tracing::debug!(
-            "resolve_config_digest [{}:{}]: consultando manifiesto de plataforma en {}",
+            "fetch_manifest_digests [{}:{}]: consultando manifiesto de plataforma en {}",
             repo,
             reference,
             plat_url
@@ -507,7 +594,83 @@ async fn resolve_config_digest(
             .to_string()
     };
 
-    Ok(config_digest)
+    Ok((manifest_digest, config_digest))
+}
+
+/// Fetch manifest response from registry, handling auth if needed.
+///
+/// 1. Probes `GET /v2/{repo}/manifests/{reference}` without auth
+/// 2. If 401/403: parses `Www-Authenticate`, extracts realm, fetches token, retries with token
+/// 3. If success: returns `(response, manifest_digest_from_header)`
+async fn fetch_manifest_with_auth(
+    client: &reqwest::Client,
+    registry_host: &str,
+    repo: &str,
+    reference: &str,
+) -> Result<(reqwest::Response, String), String> {
+    let probe_url = format!(
+        "https://{}/v2/{}/manifests/{}",
+        registry_host, repo, reference
+    );
+    tracing::debug!(
+        "fetch_manifest_with_auth [{}:{}]: registry={} probe_url={}",
+        repo,
+        reference,
+        registry_host,
+        probe_url
+    );
+
+    let probe = fetch_manifest(client, &probe_url, None).await?;
+    let status = probe.status();
+
+    if status == 401 || status == 403 {
+        // Parse Www-Authenticate to find the real token endpoint.
+        let auth_header = probe
+            .headers()
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        tracing::warn!(
+            "fetch_manifest_with_auth [{}:{}]: registry={} requiere auth, Www-Authenticate={:?}",
+            repo,
+            reference,
+            registry_host,
+            auth_header
+        );
+
+        let realm =
+            parse_realm(auth_header).unwrap_or_else(|| format!("https://{}/token", registry_host));
+        let token_url = format!(
+            "{}?service={}&scope=repository:{}:pull",
+            realm, registry_host, repo
+        );
+        tracing::info!(
+            "fetch_manifest_with_auth [{}:{}]: realm={} token_url={}",
+            repo,
+            reference,
+            realm,
+            token_url
+        );
+        let token = fetch_token(client, &token_url, repo, reference).await?;
+
+        // Retry with auth token
+        let auth_resp = fetch_manifest(client, &probe_url, Some(&token)).await?;
+        if !auth_resp.status().is_success() {
+            return Err(format!(
+                "manifest status after auth: {}",
+                auth_resp.status()
+            ));
+        }
+        let manifest_digest = extract_manifest_digest(&auth_resp)
+            .ok_or_else(|| "no docker-content-digest header after auth".to_string())?;
+        Ok((auth_resp, manifest_digest))
+    } else if status.is_success() {
+        let manifest_digest = extract_manifest_digest(&probe)
+            .ok_or_else(|| "no docker-content-digest header".to_string())?;
+        Ok((probe, manifest_digest))
+    } else {
+        Err(format!("manifest status: {}", status))
+    }
 }
 
 /// Realiza la petición GET al manifiesto con los Accept headers adecuados,

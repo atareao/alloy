@@ -1,17 +1,18 @@
 import { useState } from "react";
-import { useMediaQuery } from "@mantine/hooks";
+import { useMediaQuery } from "./useMediaQuery";
 import {
-  Badge,
   Button,
-  Group,
-  Modal,
-  Paper,
-  Stack,
-  Table,
-  Text,
+  Card,
   Divider,
+  Flex,
+  Modal,
+  Space,
+  Table,
+  Tag,
   Tooltip,
-} from "@mantine/core";
+  Typography,
+} from "antd";
+import { DeleteOutlined, FileTextOutlined } from "@ant-design/icons";
 import { apiFetch } from "./api";
 
 // ═══════════════════════════════════════════════════════════════
@@ -102,8 +103,8 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
   const statusBg = (status: string) => {
     if (status.toLowerCase() === "skipped") return undefined;
     return isSuccess(status)
-      ? "var(--mantine-color-green-light)"
-      : "var(--mantine-color-red-light)";
+      ? "var(--ant-color-success-bg)"
+      : "var(--ant-color-error-bg)";
   };
 
   const statusTooltipLabel = (entry: HistoryEntry): string => {
@@ -174,201 +175,261 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
     return d.length > 20 ? d.substring(0, 20) + "..." : d;
   };
 
+  const tagColorMap: Record<string, string> = {
+    green: "success",
+    red: "error",
+    yellow: "warning",
+  };
+
+  // ── Table columns ────────────────────────────────────────────
+  const columns = [
+    {
+      title: "Container",
+      dataIndex: "container",
+      key: "container",
+      render: (text: string) => (
+        <Typography.Text strong>{text}</Typography.Text>
+      ),
+    },
+    {
+      title: "Imagen",
+      dataIndex: "image",
+      key: "image",
+      render: (text: string) => (
+        <Tooltip title={text}>
+          <Typography.Text
+            type="secondary"
+            style={{
+              maxWidth: 250,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              display: "inline-block",
+              fontSize: 12,
+            }}
+          >
+            {text}
+          </Typography.Text>
+        </Tooltip>
+      ),
+    },
+    {
+      title: "Versión anterior",
+      dataIndex: "old_digest",
+      key: "old_digest",
+      render: (text: string) => (
+        <Typography.Text
+          type="secondary"
+          style={{ fontFamily: "monospace", fontSize: 12 }}
+        >
+          {shortDigest(text)}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "Nueva versión",
+      dataIndex: "new_digest",
+      key: "new_digest",
+      render: (text: string) => (
+        <Typography.Text
+          type="secondary"
+          style={{ fontFamily: "monospace", fontSize: 12 }}
+        >
+          {shortDigest(text)}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "Estado",
+      key: "status",
+      render: (_: unknown, record: HistoryEntry) => {
+        const c = statusColor(record.status);
+        return (
+          <Tooltip
+            title={statusTooltipLabel(record)}
+            overlayStyle={{ maxWidth: 320 }}
+          >
+            <Tag
+              color={tagColorMap[c] || "default"}
+              style={{ cursor: "pointer" }}
+            >
+              {formatStatus(record.status)}
+            </Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: "Duración",
+      dataIndex: "duration_ms",
+      key: "duration_ms",
+      render: (text: number) => (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {formatDuration(text)}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: "Fecha",
+      dataIndex: "timestamp",
+      key: "timestamp",
+      render: (text: string) => (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {formatDate(text)}
+        </Typography.Text>
+      ),
+    },
+  ];
+
+  const dataSource = history.map((entry, i) => ({ ...entry, key: i }));
+
   // ── Mobile card ─────────────────────────────────────────────
   const renderMobileCard = (entry: HistoryEntry, i: number) => (
-    <Paper
+    <Card
       key={i}
-      shadow="sm"
-      p="sm"
-      withBorder
+      size="small"
+      bordered
       style={
         entry.status.toLowerCase() !== "skipped"
           ? { background: statusBg(entry.status) }
           : undefined
       }
     >
-      <Stack gap="xs">
-        <Group justify="space-between" wrap="nowrap">
-          <Text size="sm" fw={500} truncate flex="1">
+      <Space direction="vertical" size="small" style={{ width: "100%" }}>
+        <Flex justify="space-between" wrap="nowrap" align="center">
+          <Typography.Text strong ellipsis style={{ flex: 1, fontSize: 14 }}>
             {entry.container}
-          </Text>
+          </Typography.Text>
           <Tooltip
-            label={statusTooltipLabel(entry)}
-            multiline
-            w={320}
-            withArrow
-            transitionProps={{ transition: "fade", duration: 200 }}
+            title={statusTooltipLabel(entry)}
+            overlayStyle={{ maxWidth: 320 }}
           >
-            <Badge size="sm" color={statusColor(entry.status)}>
+            <Tag color={tagColorMap[statusColor(entry.status)] || "default"}>
               {formatStatus(entry.status)}
-            </Badge>
+            </Tag>
           </Tooltip>
-        </Group>
+        </Flex>
         <Divider />
-        <Stack gap={2}>
-          <Group gap="xs">
-            <Text size="xs" c="dimmed">
+        <Space direction="vertical" size={2} style={{ width: "100%" }}>
+          <Flex gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Imagen:
-            </Text>
-            <Text size="xs">{entry.image}</Text>
-          </Group>
-          <Group gap="xs">
-            <Text size="xs" c="dimmed">
+            </Typography.Text>
+            <Typography.Text style={{ fontSize: 12 }}>
+              {entry.image}
+            </Typography.Text>
+          </Flex>
+          <Flex gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Anterior:
-            </Text>
-            <Text size="xs" ff="monospace">
+            </Typography.Text>
+            <Typography.Text style={{ fontFamily: "monospace", fontSize: 12 }}>
               {shortDigest(entry.old_digest)}
-            </Text>
-          </Group>
-          <Group gap="xs">
-            <Text size="xs" c="dimmed">
+            </Typography.Text>
+          </Flex>
+          <Flex gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Nueva:
-            </Text>
-            <Text size="xs" ff="monospace">
+            </Typography.Text>
+            <Typography.Text style={{ fontFamily: "monospace", fontSize: 12 }}>
               {shortDigest(entry.new_digest)}
-            </Text>
-          </Group>
-          <Group gap="xs">
-            <Text size="xs" c="dimmed">
+            </Typography.Text>
+          </Flex>
+          <Flex gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Duración:
-            </Text>
-            <Text size="xs">{formatDuration(entry.duration_ms)}</Text>
-          </Group>
-          <Group gap="xs">
-            <Text size="xs" c="dimmed">
+            </Typography.Text>
+            <Typography.Text style={{ fontSize: 12 }}>
+              {formatDuration(entry.duration_ms)}
+            </Typography.Text>
+          </Flex>
+          <Flex gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Fecha:
-            </Text>
-            <Text size="xs">{formatDate(entry.timestamp)}</Text>
-          </Group>
-        </Stack>
-      </Stack>
-    </Paper>
+            </Typography.Text>
+            <Typography.Text style={{ fontSize: 12 }}>
+              {formatDate(entry.timestamp)}
+            </Typography.Text>
+          </Flex>
+        </Space>
+      </Space>
+    </Card>
   );
 
   return (
-    <Stack>
-      <Paper shadow="sm" p="md" mb="md" withBorder>
-        <Group justify="space-between">
-          <Text size="sm" c="dimmed">
-            📜 Histórico de actualizaciones · {history.length} entradas
-          </Text>
+    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Card bordered size="small">
+        <Flex justify="space-between" align="center">
+          <Typography.Text type="secondary">
+            <FileTextOutlined /> Histórico de actualizaciones · {history.length}{" "}
+            entradas
+          </Typography.Text>
           {history.length > 0 && (
             <Button
               onClick={() => setConfirmClear(true)}
-              variant="filled"
-              color="red"
-              size={isMobile ? "xs" : "sm"}
+              danger
+              type="primary"
+              size={isMobile ? "small" : "middle"}
+              icon={<DeleteOutlined />}
             >
-              🗑️ Limpiar
+              Limpiar
             </Button>
           )}
-        </Group>
-      </Paper>
+        </Flex>
+      </Card>
 
       <Modal
-        opened={confirmClear}
-        onClose={() => setConfirmClear(false)}
-        title="🗑️ Limpiar historial"
-        size="sm"
+        open={confirmClear}
+        onCancel={() => setConfirmClear(false)}
+        title={
+          <>
+            <DeleteOutlined /> Limpiar historial
+          </>
+        }
+        width={400}
+        footer={
+          <Flex justify="flex-end" gap={8}>
+            <Button onClick={() => setConfirmClear(false)}>Cancelar</Button>
+            <Button
+              danger
+              type="primary"
+              onClick={handleClear}
+              loading={clearing}
+            >
+              Eliminar todo
+            </Button>
+          </Flex>
+        }
       >
-        <Text size="sm" mb="md">
+        <Typography.Text>
           ¿Estás seguro de que deseas eliminar todo el historial de
           actualizaciones? Esta acción no se puede deshacer.
-        </Text>
-        <Group justify="flex-end">
-          <Button variant="default" onClick={() => setConfirmClear(false)}>
-            Cancelar
-          </Button>
-          <Button color="red" onClick={handleClear} loading={clearing}>
-            Eliminar todo
-          </Button>
-        </Group>
+        </Typography.Text>
       </Modal>
 
       {history.length === 0 ? (
-        <Paper shadow="sm" p="xl" withBorder>
-          <Text ta="center" c="dimmed">
+        <Card bordered>
+          <Typography.Text
+            type="secondary"
+            style={{ textAlign: "center", display: "block" }}
+          >
             No hay historial de actualizaciones. Cuando se actualice un
             container, aparecerá aquí.
-          </Text>
-        </Paper>
+          </Typography.Text>
+        </Card>
       ) : isMobile ? (
-        <Stack gap="sm">
+        <Space direction="vertical" size="small" style={{ width: "100%" }}>
           {history.map((entry, i) => renderMobileCard(entry, i))}
-        </Stack>
+        </Space>
       ) : (
-        <Paper shadow="sm" withBorder>
-          <Table.ScrollContainer minWidth={700}>
-            <Table striped highlightOnHover>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Container</Table.Th>
-                  <Table.Th>Imagen</Table.Th>
-                  <Table.Th>Versión anterior</Table.Th>
-                  <Table.Th>Nueva versión</Table.Th>
-                  <Table.Th>Estado</Table.Th>
-                  <Table.Th>Duración</Table.Th>
-                  <Table.Th>Fecha</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {history.map((entry, i) => (
-                  <Table.Tr key={i}>
-                    <Table.Td>
-                      <Text size="sm" fw={500}>
-                        {entry.container}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Tooltip label={entry.image}>
-                        <Text size="xs" c="dimmed" truncate maw={250}>
-                          {entry.image}
-                        </Text>
-                      </Tooltip>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        {shortDigest(entry.old_digest)}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed" ff="monospace">
-                        {shortDigest(entry.new_digest)}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Tooltip
-                        label={statusTooltipLabel(entry)}
-                        multiline
-                        w={320}
-                        withArrow
-                        transitionProps={{ transition: "fade", duration: 200 }}
-                      >
-                        <Badge
-                          color={statusColor(entry.status)}
-                          style={{ cursor: "pointer" }}
-                        >
-                          {formatStatus(entry.status)}
-                        </Badge>
-                      </Tooltip>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed">
-                        {formatDuration(entry.duration_ms)}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="xs" c="dimmed">
-                        {formatDate(entry.timestamp)}
-                      </Text>
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </Table.ScrollContainer>
-        </Paper>
+        <Card bordered styles={{ body: { padding: 0 } }}>
+          <Table
+            columns={columns}
+            dataSource={dataSource}
+            scroll={{ x: "max-content" }}
+            pagination={false}
+          />
+        </Card>
       )}
-    </Stack>
+    </Space>
   );
 }

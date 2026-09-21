@@ -1,16 +1,15 @@
 import type { ReactNode } from "react";
 import {
-  ActionIcon,
   Button,
-  Chip,
-  Group,
-  Paper,
-  Stack,
+  Card,
+  Flex,
+  Input,
   Switch,
-  Text,
-  TextInput,
+  Tag,
+  Typography,
   Tooltip,
-} from "@mantine/core";
+} from "antd";
+import { SearchOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ContainerInfo } from "../types";
 
 export interface ContainerTableProps {
@@ -30,6 +29,7 @@ export interface ContainerTableProps {
   expandedStacks: Record<string, boolean>;
   renderGroup: (project: string, items: ContainerInfo[]) => ReactNode;
   renderRow: (c: ContainerInfo) => ReactNode;
+  batchPhase: "idle" | "active";
 }
 
 export default function ContainerTable({
@@ -49,90 +49,101 @@ export default function ContainerTable({
   expandedStacks,
   renderGroup,
   renderRow,
+  batchPhase,
 }: ContainerTableProps) {
   return (
     <>
-      {/* Search + filters bar */}
-      <Paper shadow="sm" p="md" mb="md" withBorder>
-        <Stack gap="sm">
-          <Group gap="md" wrap="nowrap" align="flex-end">
-            <TextInput
-              placeholder="Buscar por nombre, imagen, stack..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.currentTarget.value)}
-              rightSection={
-                searchQuery ? (
-                  <ActionIcon
-                    variant="subtle"
-                    size="sm"
-                    onClick={() => setSearchQuery("")}
-                  >
-                    ✕
-                  </ActionIcon>
-                ) : undefined
-              }
-              style={{ flex: 1 }}
-            />
-            <Tooltip label="Comprobar todos contra registry">
-              <Button
-                onClick={onCheckAll}
-                variant="light"
-                color="cyan"
-                size="sm"
-              >
-                {isMobile ? "🔍" : "🔍 Check"}
-              </Button>
-            </Tooltip>
-            </Group>
-          <Group gap="xs" wrap="nowrap" ml="sm">
-            {lastCheck && (
-              <Text size="xs" c="dimmed">
-                Última: {new Date(lastCheck).toLocaleString([], {
-                  year: 'numeric', month: '2-digit', day: '2-digit',
-                  hour: '2-digit', minute: '2-digit', second: '2-digit',
-                  hour12: false
-                })}
-              </Text>
-            )}
-            {nextCheck && (
-              <Text size="xs" c="dimmed">
-                Próxima: {new Date(nextCheck).toLocaleString([], {
-                  year: 'numeric', month: '2-digit', day: '2-digit',
-                  hour: '2-digit', minute: '2-digit', second: '2-digit',
-                  hour12: false
-                })}
-              </Text>
-            )}
-          </Group>
-          <Group gap="md" wrap="wrap" justify="space-between">
-            <Group gap="xs" wrap="wrap">
-              {availableStates.length > 0 && (
-                <Chip.Group
-                  multiple
-                  value={stateFilter}
-                  onChange={setStateFilter}
-                >
-                  <Group gap="xs" wrap="wrap">
-                    {availableStates.map((s) => (
-                      <Chip key={s} value={s} size="xs" variant="outline">
-                        {s}
-                      </Chip>
-                    ))}
-                  </Group>
-                </Chip.Group>
-              )}
-              <Switch
-                label="Solo pendientes de actualizar"
-                checked={showPendingUpdates}
-                onChange={(e) =>
-                  setShowPendingUpdates(e.currentTarget.checked)
-                }
-                size="xs"
+      {/* Search + filters bar — hidden during batch operation */}
+      {batchPhase === "idle" && (
+        <Card bordered style={{ marginBottom: 16 }}>
+          <Flex vertical gap="small">
+            <Flex gap="middle" wrap="nowrap" align="flex-end">
+              <Input
+                placeholder="Buscar por nombre, imagen, stack..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                allowClear
+                onClear={() => setSearchQuery("")}
+                style={{ flex: 1 }}
               />
-            </Group>
-          </Group>
-          </Stack>
-      </Paper>
+              <Tooltip title="Comprobar todos contra registry">
+                <Button
+                  onClick={onCheckAll}
+                  type="default"
+                  size="small"
+                  icon={<SearchOutlined />}
+                >
+                  {isMobile ? "" : " Check"}
+                </Button>
+              </Tooltip>
+            </Flex>
+            <Flex gap="small" wrap="nowrap" style={{ marginLeft: 8 }}>
+              {lastCheck && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Última:{" "}
+                  {new Date(lastCheck).toLocaleString([], {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
+                  })}
+                </Typography.Text>
+              )}
+              {nextCheck && (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Próxima:{" "}
+                  {new Date(nextCheck).toLocaleString([], {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
+                  })}
+                </Typography.Text>
+              )}
+            </Flex>
+            <Flex gap="middle" wrap="wrap" justify="space-between">
+              <Flex gap="small" wrap="wrap" align="center">
+                {availableStates.length > 0 && (
+                  <Flex gap="small" wrap="wrap">
+                    {availableStates.map((s) => (
+                      <Tag
+                        key={s}
+                        color={stateFilter.includes(s) ? "blue" : undefined}
+                        style={{ cursor: "pointer" }}
+                        onClick={() => {
+                          if (stateFilter.includes(s)) {
+                            setStateFilter(stateFilter.filter((f) => f !== s));
+                          } else {
+                            setStateFilter([...stateFilter, s]);
+                          }
+                        }}
+                      >
+                        {s}
+                      </Tag>
+                    ))}
+                  </Flex>
+                )}
+                <Flex align="center" gap="small">
+                  <Switch
+                    checked={showPendingUpdates}
+                    onChange={(checked) => setShowPendingUpdates(checked)}
+                    size="small"
+                  />
+                  <Typography.Text style={{ fontSize: 12 }}>
+                    Solo pendientes de actualizar
+                  </Typography.Text>
+                </Flex>
+              </Flex>
+            </Flex>
+          </Flex>
+        </Card>
+      )}
 
       {/* Stack groups — grid on mobile, list on desktop */}
       {isMobile ? (
@@ -140,8 +151,8 @@ export default function ContainerTable({
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(3, 1fr)",
-            gap: "var(--mantine-spacing-sm)",
-            marginBottom: "var(--mantine-spacing-md)",
+            gap: 8,
+            background: "transparent",
           }}
         >
           {sortedGroups.map(([project, items]) => (
@@ -162,19 +173,45 @@ export default function ContainerTable({
       )}
 
       {/* Ungrouped containers */}
-      {noStack.length > 0 && (
-        <Paper shadow="sm" withBorder>
-          <Group px="md" pt="sm" pb="xs">
-            <Text size="md" fw={700}>
-              📦 Sin stack
-            </Text>
-            <Text size="xs" c="dimmed">
-              {noStack.length} containers
-            </Text>
-          </Group>
-          {noStack.map(renderRow)}
-        </Paper>
-      )}
+      {noStack.length > 0 &&
+        (isMobile ? (
+          <div
+            style={{
+              background: "var(--ant-color-fill-tertiary)",
+              borderRadius: 6,
+              padding: 2,
+              marginTop: 8,
+            }}
+          >
+            <Flex align="center" style={{ padding: "8px 16px" }}>
+              <Typography.Text strong style={{ fontSize: 14 }}>
+                <AppstoreOutlined /> Sin stack
+              </Typography.Text>
+              <Typography.Text
+                type="secondary"
+                style={{ fontSize: 12, marginLeft: 8 }}
+              >
+                {noStack.length} containers
+              </Typography.Text>
+            </Flex>
+            {noStack.map(renderRow)}
+          </div>
+        ) : (
+          <Card bordered>
+            <Flex align="center" style={{ padding: "8px 16px" }}>
+              <Typography.Text strong style={{ fontSize: 14 }}>
+                <AppstoreOutlined /> Sin stack
+              </Typography.Text>
+              <Typography.Text
+                type="secondary"
+                style={{ fontSize: 12, marginLeft: 8 }}
+              >
+                {noStack.length} containers
+              </Typography.Text>
+            </Flex>
+            {noStack.map(renderRow)}
+          </Card>
+        ))}
     </>
   );
 }

@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "alloy"
-version = "0.21.18"
+version = "0.21.17"
 dependencies = [
  "async-stream",
  "axum",

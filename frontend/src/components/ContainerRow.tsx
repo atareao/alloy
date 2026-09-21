@@ -1,17 +1,14 @@
 import {
-  ActionIcon,
-  Anchor,
-  Badge,
   Button,
-  Collapse,
-  Group,
-  Loader,
-  Paper,
-  Table,
-  Text,
+  Card,
+  Flex,
+  Spin,
+  Tag,
   Tooltip,
-} from "@mantine/core";
-import { showNotification } from "@mantine/notifications";
+  Typography,
+  message,
+} from "antd";
+import { LinkOutlined, UpOutlined, DownOutlined } from "@ant-design/icons";
 import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
 import ContainerActions from "./ContainerActions";
 
@@ -80,14 +77,11 @@ export default function ContainerRow({
         : "✅"
       : "🔄"
     : undefined;
-  const showToast = (message: string, color: string) => {
-    showNotification({
-      title: "Alloy",
-      message,
-      color,
-      autoClose: 3000,
-      style: { borderLeft: `4px solid var(--mantine-color-${color}-6)` },
-    });
+
+  const showToast = (msg: string, color: string) => {
+    if (color === "green") message.success(msg, 3);
+    else if (color === "red") message.error(msg, 3);
+    else message.info(msg, 3);
   };
 
   const statusColor = (c: ContainerInfo) =>
@@ -99,150 +93,297 @@ export default function ContainerRow({
 
   const statusDot = (c: ContainerInfo) => {
     const color = statusColor(c);
+    const dotColor =
+      color === "green"
+        ? "var(--ant-color-success)"
+        : color === "blue"
+          ? "var(--ant-color-primary)"
+          : "var(--ant-color-error)";
     return (
       <div
         style={{
           width: 10,
           height: 10,
           borderRadius: "50%",
-          backgroundColor: `var(--mantine-color-${color}-6)`,
+          backgroundColor: dotColor,
           flexShrink: 0,
         }}
       />
     );
   };
 
-  return (
-    <Table.Tr key={c.id}>
-      <Table.Td
-        style={{ padding: 0, border: "none" }}
+  return isMobile ? (
+    <div
+      style={{
+        background: "var(--ant-color-bg-container)",
+        borderRadius: 6,
+        marginBottom: 1,
+        borderBottom: "1px solid var(--ant-color-border)",
+      }}
+    >
+      {/* Main row — clickable header */}
+      <div
+        onClick={() => onToggleExpand(c.name)}
+        style={{
+          cursor: "pointer",
+          padding: isMobile ? 2 : 8,
+          background: "var(--ant-color-bg-elevated)",
+          borderRadius: 6,
+        }}
       >
-        <Paper p="sm" style={{
-            background: isUpdating
-              ? "var(--mantine-color-yellow-0)"
-              : isDone && prog?.error
-                ? "var(--mantine-color-red-0)"
-                : "transparent",
-          }}>
-          <Group
-            justify="space-between"
+        <Flex justify="space-between" wrap="nowrap" align="center">
+          <Flex
+            gap="small"
             wrap="nowrap"
-            style={{ flex: 1, cursor: "pointer" }}
-            onClick={() => onToggleExpand(c.name)}
+            align="center"
+            style={{ flex: 1, minWidth: 0, overflow: "hidden" }}
           >
-            <Group
-              gap="xs"
-              wrap="nowrap"
-              style={{ flex: 1, minWidth: 0, overflow: "hidden" }}
-            >
-              {statusDot(c)}
-              {hasUpdate && (
-                <Badge size="xs" variant="filled" color="yellow" circle>
-                  !
-                </Badge>
-              )}
-              <Text size="sm" fw={500} truncate style={{ minWidth: 60 }}>
-                {isMobile
-                  ? c.name.length > 12
-                    ? c.name.slice(0, 9) + "..."
-                    : c.name
-                  : c.name}
-              </Text>
-              {c.updating && <Loader size="xs" />}
-              <Text size="xs" c="dimmed" truncate style={{ minWidth: 60 }}>
-                {isMobile
-                  ? c.status.length > 20
-                    ? c.status.slice(0, 17) + "..."
-                    : c.status
-                  : c.status}
-              </Text>
-              {prog && (
-                <Tooltip label={prog.status}>
-                  <Badge
-                    size="xs"
-                    variant="light"
-                    color={progressColor}
-                    style={{ flexShrink: 0 }}
-                  >
-                    {isUpdating ? (
-                      <Group gap={4} wrap="nowrap">
-                        <Loader size="xs" />
-                        <Text size="xs">{prog.status.slice(0, 20)}</Text>
-                      </Group>
-                    ) : (
-                      progressLabel
-                    )}
-                  </Badge>
-                </Tooltip>
-              )}
-              {c.traefik_url && isMobile ? (
-                <Button
-                  component="a"
-                  href={c.traefik_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  variant="light"
-                  color="blue"
-                  size="sm"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  🔗
-                </Button>
-              ) : c.traefik_url ? (
-                <Anchor
-                  href={c.traefik_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  size="xs"
-                  truncate
-                  style={{ maxWidth: 180 }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  🔗 {c.traefik_url.replace(/^https?:\/\//, "")}
-                </Anchor>
-              ) : null}
-            </Group>
-            {!isMobile && (
-              <ActionIcon
-                variant="subtle"
-                color="gray"
-                size="sm"
-                style={{ flexShrink: 0 }}
+            {statusDot(c)}
+            {hasUpdate && (
+              <Tag
+                color="yellow"
+                style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}
               >
-                {expanded ? "▲" : "▼"}
-              </ActionIcon>
+                !
+              </Tag>
             )}
-          </Group>
-        </Paper>
-        <Collapse expanded={expanded}>
-          <Paper
-            p="sm"
-            withBorder
-            mx="sm"
-            mb="sm"
-            style={{ background: "var(--mantine-color-dark-6)" }}
-          >
-            <ContainerActions
-              container={c}
-              isMobile={isMobile}
-              progress={progress}
-              batchPhase={batchPhase}
-              loadingActions={loadingActions}
-              containers={containers}
-              getPolicy={getPolicy}
-              setPolicies={setPolicies}
-              onInspect={onInspect}
-              onLogs={onLogs}
-              onStart={onStart}
-              onStop={onStop}
-              onRestart={onRestart}
-              onRemove={onRemove}
-              onStackAction={onStackAction}
-              showToast={showToast}
+            <Typography.Text
+              strong
+              ellipsis
+              style={{ minWidth: 60, fontSize: 14 }}
+            >
+              {isMobile
+                ? c.name.length > 12
+                  ? c.name.slice(0, 9) + "..."
+                  : c.name
+                : c.name}
+            </Typography.Text>
+            {c.updating && <Spin size="small" />}
+            <Typography.Text
+              type="secondary"
+              ellipsis
+              style={{ minWidth: 60, fontSize: 12 }}
+            >
+              {isMobile
+                ? c.status.length > 20
+                  ? c.status.slice(0, 17) + "..."
+                  : c.status
+                : c.status}
+            </Typography.Text>
+            {prog && (
+              <Tooltip title={prog.status}>
+                <Tag color={progressColor} style={{ flexShrink: 0 }}>
+                  {isUpdating ? (
+                    <Flex gap={4} wrap="nowrap" align="center">
+                      <Spin size="small" />
+                      <Typography.Text style={{ fontSize: 12 }}>
+                        {prog.status.slice(0, 20)}
+                      </Typography.Text>
+                    </Flex>
+                  ) : (
+                    progressLabel
+                  )}
+                </Tag>
+              </Tooltip>
+            )}
+            {c.traefik_url && isMobile ? (
+              <Button
+                href={c.traefik_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                type="default"
+                size="small"
+                icon={<LinkOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : c.traefik_url ? (
+              <Typography.Link
+                href={c.traefik_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                ellipsis
+                style={{ maxWidth: 180 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkOutlined /> {c.traefik_url.replace(/^https?:\/\//, "")}
+              </Typography.Link>
+            ) : null}
+          </Flex>
+          {!isMobile && (
+            <Button
+              type="text"
+              size="small"
+              icon={expanded ? <UpOutlined /> : <DownOutlined />}
+              style={{ flexShrink: 0 }}
             />
-          </Paper>
-        </Collapse>
-      </Table.Td>
-    </Table.Tr>
+          )}
+        </Flex>
+      </div>
+
+      {/* Expanded actions panel */}
+      {expanded && (
+        <div
+          style={{
+            background: "var(--ant-color-bg-elevated)",
+            borderRadius: 6,
+            margin: "0 8px 8px 8px",
+          }}
+        >
+          <ContainerActions
+            container={c}
+            isMobile={isMobile}
+            progress={progress}
+            batchPhase={batchPhase}
+            loadingActions={loadingActions}
+            containers={containers}
+            getPolicy={getPolicy}
+            setPolicies={setPolicies}
+            onInspect={onInspect}
+            onLogs={onLogs}
+            onStart={onStart}
+            onStop={onStop}
+            onRestart={onRestart}
+            onRemove={onRemove}
+            onStackAction={onStackAction}
+            showToast={showToast}
+          />
+        </div>
+      )}
+    </div>
+  ) : (
+    <Card
+      bordered
+      size="small"
+      styles={{
+        body: {
+          padding: 0,
+        },
+      }}
+    >
+      {/* Main row — clickable header */}
+      <div
+        onClick={() => onToggleExpand(c.name)}
+        style={{ cursor: "pointer", padding: 8 }}
+      >
+        <Flex justify="space-between" wrap="nowrap" align="center">
+          <Flex
+            gap="small"
+            wrap="nowrap"
+            align="center"
+            style={{ flex: 1, minWidth: 0, overflow: "hidden" }}
+          >
+            {statusDot(c)}
+            {hasUpdate && (
+              <Tag
+                color="yellow"
+                style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}
+              >
+                !
+              </Tag>
+            )}
+            <Typography.Text
+              strong
+              ellipsis
+              style={{ minWidth: 60, fontSize: 14 }}
+            >
+              {isMobile
+                ? c.name.length > 12
+                  ? c.name.slice(0, 9) + "..."
+                  : c.name
+                : c.name}
+            </Typography.Text>
+            {c.updating && <Spin size="small" />}
+            <Typography.Text
+              type="secondary"
+              ellipsis
+              style={{ minWidth: 60, fontSize: 12 }}
+            >
+              {isMobile
+                ? c.status.length > 20
+                  ? c.status.slice(0, 17) + "..."
+                  : c.status
+                : c.status}
+            </Typography.Text>
+            {prog && (
+              <Tooltip title={prog.status}>
+                <Tag color={progressColor} style={{ flexShrink: 0 }}>
+                  {isUpdating ? (
+                    <Flex gap={4} wrap="nowrap" align="center">
+                      <Spin size="small" />
+                      <Typography.Text style={{ fontSize: 12 }}>
+                        {prog.status.slice(0, 20)}
+                      </Typography.Text>
+                    </Flex>
+                  ) : (
+                    progressLabel
+                  )}
+                </Tag>
+              </Tooltip>
+            )}
+            {c.traefik_url && isMobile ? (
+              <Button
+                href={c.traefik_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                type="default"
+                size="small"
+                icon={<LinkOutlined />}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : c.traefik_url ? (
+              <Typography.Link
+                href={c.traefik_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                ellipsis
+                style={{ maxWidth: 180 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <LinkOutlined /> {c.traefik_url.replace(/^https?:\/\//, "")}
+              </Typography.Link>
+            ) : null}
+          </Flex>
+          {!isMobile && (
+            <Button
+              type="text"
+              size="small"
+              icon={expanded ? <UpOutlined /> : <DownOutlined />}
+              style={{ flexShrink: 0 }}
+            />
+          )}
+        </Flex>
+      </div>
+
+      {/* Expanded actions panel */}
+      {expanded && (
+        <Card
+          bordered
+          size="small"
+          style={{
+            background: "var(--ant-color-bg-elevated)",
+            margin: "0 8px 8px 8px",
+          }}
+        >
+          <ContainerActions
+            container={c}
+            isMobile={isMobile}
+            progress={progress}
+            batchPhase={batchPhase}
+            loadingActions={loadingActions}
+            containers={containers}
+            getPolicy={getPolicy}
+            setPolicies={setPolicies}
+            onInspect={onInspect}
+            onLogs={onLogs}
+            onStart={onStart}
+            onStop={onStop}
+            onRestart={onRestart}
+            onRemove={onRemove}
+            onStackAction={onStackAction}
+            showToast={showToast}
+          />
+        </Card>
+      )}
+    </Card>
   );
 }
