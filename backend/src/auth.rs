@@ -187,48 +187,67 @@ async fn auth_callback(
         .unwrap())
 }
 
-async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Json<serde_json::Value> {
+async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Response {
     let secret = config.oidc_client_secret();
     let idle_timeout_secs = config.session_idle_timeout_minutes() * 60;
     let max_duration_secs = config.session_max_duration_hours() * 3600;
-    let extract = |token: &str| -> Option<serde_json::Value> {
-        jsonwebtoken::decode::<SessionClaims>(
+    let extract = |token: &str| -> Result<serde_json::Value, Box<Response>> {
+        let data = jsonwebtoken::decode::<SessionClaims>(
             token,
             &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
             &jsonwebtoken::Validation::default(),
         )
-        .ok()
-        .map(|d| {
-            let now = Utc::now().timestamp() as usize;
-            let idle_remaining =
-                (idle_timeout_secs as usize).saturating_sub(now - d.claims.last_active);
-            let session_remaining = (max_duration_secs as usize).saturating_sub(now - d.claims.iat);
-            json!({
-                "authenticated": true,
-                "user": {
-                    "sub": d.claims.sub,
-                    "name": d.claims.name,
-                    "email": d.claims.email
-                },
-                "session": {
-                    "exp": d.claims.exp,
-                    "iat": d.claims.iat,
-                    "last_active": d.claims.last_active,
-                    "idle_timeout_secs": idle_timeout_secs,
-                    "max_duration_secs": max_duration_secs,
-                    "idle_remaining_secs": idle_remaining,
-                    "session_remaining_secs": session_remaining
-                }
-            })
-        })
+        .map_err(|_| Box::new(unauthorized_json(false, "Invalid session token")))?;
+
+        let claims = data.claims;
+        let now = Utc::now().timestamp() as usize;
+
+        // Check idle timeout
+        let idle_elapsed = now.saturating_sub(claims.last_active);
+        if idle_elapsed > idle_timeout_secs as usize {
+            return Err(Box::new(unauthorized_json(
+                true,
+                "Session expired: inactivity timeout. Please log in again.",
+            )));
+        }
+
+        // Check max session duration
+        let session_elapsed = now.saturating_sub(claims.iat);
+        if session_elapsed > max_duration_secs as usize {
+            return Err(Box::new(unauthorized_json(
+                true,
+                "Session expired: maximum duration reached. Please log in again.",
+            )));
+        }
+
+        let idle_remaining = (idle_timeout_secs as usize).saturating_sub(now - claims.last_active);
+        let session_remaining = (max_duration_secs as usize).saturating_sub(now - claims.iat);
+        Ok(json!({
+            "authenticated": true,
+            "user": {
+                "sub": claims.sub,
+                "name": claims.name,
+                "email": claims.email
+            },
+            "session": {
+                "exp": claims.exp,
+                "iat": claims.iat,
+                "last_active": claims.last_active,
+                "idle_timeout_secs": idle_timeout_secs,
+                "max_duration_secs": max_duration_secs,
+                "idle_remaining_secs": idle_remaining,
+                "session_remaining_secs": session_remaining
+            }
+        }))
     };
 
     // Check session cookie first
     if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
         for part in cookie_str.split("; ") {
             if let Some(value) = part.strip_prefix("session=") {
-                if let Some(resp) = extract(value) {
-                    return Json(resp);
+                match extract(value) {
+                    Ok(resp) => return Json(resp).into_response(),
+                    Err(resp) => return *resp,
                 }
             }
         }
@@ -239,11 +258,12 @@ async fn auth_me(headers: HeaderMap, State(config): State<Config>) -> Json<serde
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
     {
-        if let Some(resp) = extract(token) {
-            return Json(resp);
+        match extract(token) {
+            Ok(resp) => return Json(resp).into_response(),
+            Err(resp) => return *resp,
         }
     }
-    Json(json!({"authenticated": false}))
+    Json(json!({"authenticated": false})).into_response()
 }
 
 async fn auth_logout() -> Response {
@@ -799,6 +819,249 @@ mod tests {
         };
 
         assert!(extract(&token).is_none());
+    }
+
+    // ── auth_me session expiry enforcement ──────────────────
+
+    #[test]
+    fn test_auth_me_active_session_returns_authenticated() {
+        let secret = "test_secret";
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 60,        // 1 minute ago
+            last_active: now - 5, // 5 seconds ago
+            exp: now + 3600,      // 1 hour from now
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let idle_timeout_secs: u64 = 30 * 60; // 30 min
+        let max_duration_secs: u64 = 24 * 3600; // 24 h
+
+        let extract = |t: &str| -> Result<serde_json::Value, Box<crate::auth::Response>> {
+            let data = jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .map_err(|_| {
+                Box::new(crate::auth::unauthorized_json(
+                    false,
+                    "Invalid session token",
+                ))
+            })?;
+            let c = data.claims;
+            let now = Utc::now().timestamp() as usize;
+
+            let idle_elapsed = now.saturating_sub(c.last_active);
+            if idle_elapsed > idle_timeout_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: inactivity timeout. Please log in again.",
+                )));
+            }
+
+            let session_elapsed = now.saturating_sub(c.iat);
+            if session_elapsed > max_duration_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: maximum duration reached. Please log in again.",
+                )));
+            }
+
+            Ok(json!({
+                "authenticated": true,
+                "user": { "sub": c.sub, "name": c.name, "email": c.email },
+                "session": {
+                    "idle_remaining_secs": (idle_timeout_secs as usize).saturating_sub(now - c.last_active),
+                    "session_remaining_secs": (max_duration_secs as usize).saturating_sub(now - c.iat),
+                }
+            }))
+        };
+
+        let result = extract(&token);
+        assert!(result.is_ok());
+        let resp = result.unwrap();
+        assert_eq!(resp["authenticated"], true);
+        assert_eq!(resp["user"]["sub"], "user");
+        assert!(resp["session"]["idle_remaining_secs"].as_u64().unwrap() > 0);
+        assert!(resp["session"]["session_remaining_secs"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn test_auth_me_idle_timeout_rejected() {
+        let secret = "test_secret";
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 3600,         // 1 hour ago
+            last_active: now - 1861, // > 30 min idle (31 min + 1s buffer)
+            exp: now + 3600,
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let idle_timeout_secs: u64 = 30 * 60; // 30 min
+        let max_duration_secs: u64 = 24 * 3600; // 24 h
+
+        let extract = |t: &str| -> Result<serde_json::Value, Box<crate::auth::Response>> {
+            let data = jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .map_err(|_| {
+                Box::new(crate::auth::unauthorized_json(
+                    false,
+                    "Invalid session token",
+                ))
+            })?;
+            let c = data.claims;
+            let now = Utc::now().timestamp() as usize;
+
+            let idle_elapsed = now.saturating_sub(c.last_active);
+            if idle_elapsed > idle_timeout_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: inactivity timeout. Please log in again.",
+                )));
+            }
+
+            let session_elapsed = now.saturating_sub(c.iat);
+            if session_elapsed > max_duration_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: maximum duration reached. Please log in again.",
+                )));
+            }
+
+            Ok(json!({"authenticated": true}))
+        };
+
+        let result = extract(&token);
+        assert!(result.is_err());
+        let resp = result.unwrap_err();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_auth_me_max_duration_rejected() {
+        let secret = "test_secret";
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user".into(),
+            name: "U".into(),
+            email: "u@u.com".into(),
+            iat: now - 25 * 3600,  // 25 hours ago (> 24h max)
+            last_active: now - 10, // 10 seconds ago (within idle)
+            exp: now + 3600,
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create token");
+
+        let idle_timeout_secs: u64 = 30 * 60; // 30 min
+        let max_duration_secs: u64 = 24 * 3600; // 24 h
+
+        let extract = |t: &str| -> Result<serde_json::Value, Box<crate::auth::Response>> {
+            let data = jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .map_err(|_| {
+                Box::new(crate::auth::unauthorized_json(
+                    false,
+                    "Invalid session token",
+                ))
+            })?;
+            let c = data.claims;
+            let now = Utc::now().timestamp() as usize;
+
+            let idle_elapsed = now.saturating_sub(c.last_active);
+            if idle_elapsed > idle_timeout_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: inactivity timeout. Please log in again.",
+                )));
+            }
+
+            let session_elapsed = now.saturating_sub(c.iat);
+            if session_elapsed > max_duration_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: maximum duration reached. Please log in again.",
+                )));
+            }
+
+            Ok(json!({"authenticated": true}))
+        };
+
+        let result = extract(&token);
+        assert!(result.is_err());
+        let resp = result.unwrap_err();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_auth_me_invalid_token_returns_unauthenticated() {
+        let secret = "test_secret";
+        let idle_timeout_secs: u64 = 30 * 60;
+        let max_duration_secs: u64 = 24 * 3600;
+
+        let extract = |t: &str| -> Result<serde_json::Value, Box<crate::auth::Response>> {
+            let data = jsonwebtoken::decode::<SessionClaims>(
+                t,
+                &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+                &jsonwebtoken::Validation::default(),
+            )
+            .map_err(|_| {
+                Box::new(crate::auth::unauthorized_json(
+                    false,
+                    "Invalid session token",
+                ))
+            })?;
+            let c = data.claims;
+            let now = Utc::now().timestamp() as usize;
+
+            let idle_elapsed = now.saturating_sub(c.last_active);
+            if idle_elapsed > idle_timeout_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: inactivity timeout. Please log in again.",
+                )));
+            }
+
+            let session_elapsed = now.saturating_sub(c.iat);
+            if session_elapsed > max_duration_secs as usize {
+                return Err(Box::new(crate::auth::unauthorized_json(
+                    true,
+                    "Session expired: maximum duration reached. Please log in again.",
+                )));
+            }
+
+            Ok(json!({"authenticated": true}))
+        };
+
+        assert!(extract("invalid.token.here").is_err());
+        assert!(extract("").is_err());
+        assert!(extract("not-a-jwt").is_err());
     }
 
     // ── Cookie parsing ───────────────────────────────────────
