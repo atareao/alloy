@@ -1,5 +1,7 @@
-import { Button, Group, Paper, Progress, ScrollArea, Stack, Text } from "@mantine/core";
+import { Button, Card, Flex, Progress, Space, Typography } from "antd";
 import type { UpdateProgress } from "../types";
+
+const { Text } = Typography;
 
 export interface BatchResults {
   total: number;
@@ -11,10 +13,8 @@ export interface BatchResults {
 }
 
 export interface BatchProgressProps {
-  phase: "idle" | "checking" | "updating";
+  phase: "idle" | "active";
   batchProgress: { current: number; total: number };
-  batchCurrentItem: string;
-  checkResults: BatchResults;
   progress: Map<string, UpdateProgress>;
   onCancel: () => void;
 }
@@ -22,132 +22,88 @@ export interface BatchProgressProps {
 export default function BatchProgress({
   phase,
   batchProgress,
-  batchCurrentItem,
-  checkResults,
   progress,
   onCancel,
 }: BatchProgressProps) {
   if (phase === "idle") return null;
 
-  const isUpdatePhase = phase === "updating";
-  const total = isUpdatePhase ? checkResults.updated : batchProgress.total;
-  const pct = total > 0 ? (batchProgress.current / total) * 100 : 0;
+  const total = batchProgress.total;
+  const current = batchProgress.current;
+  const pct = total > 0 ? (current / total) * 100 : 0;
 
-  // Build a sorted list of progress entries for the live log
-  const logEntries = Array.from(progress.entries())
-    .filter(([_, p]) => {
-      // In checking phase, show all; in updating phase, show only update-related
-      if (isUpdatePhase) {
-        return (
-          p.status.startsWith("🔄") ||
-          p.status.startsWith("✅") ||
-          p.status.startsWith("❌") ||
-          p.status.startsWith("⚠️") ||
-          p.status.startsWith("📥") ||
-          p.status.startsWith("⬇️") ||
-          p.status.startsWith("⏭️")
-        );
-      }
-      return true;
-    })
-    .sort(([a], [b]) => a.localeCompare(b));
+  // Determine if batch is complete based on counters, not per-container done flag
+  const isBatchComplete = total > 0 && current >= total;
 
-  const logColor = (p: UpdateProgress) => {
-    if (!p.done) return "yellow";
-    if (p.error) return "red";
-    return "green";
-  };
+  // Find the first non-done entry for current status text
+  const entries = Array.from(progress.values());
+  const currentEntry = entries.find(p => !p.done);
 
-  const logEmoji = (p: UpdateProgress) => {
-    if (!p.done) return "🔄";
-    if (p.error) return "❌";
-    return "✅";
-  };
+  // Use latest entry for aggregate counters (checked, updated, errors)
+  const latestProgress = entries.length > 0 ? entries[entries.length - 1] : null;
+  const checked = latestProgress !== null && latestProgress !== undefined
+    ? latestProgress.checked
+    : current;
+  const updatedCount = latestProgress?.updated ?? 0;
+  const errorsCount = latestProgress?.errors ?? 0;
+  const pending = total > 0 ? total - checked : 0;
 
-  // Compute live counts from progress map
-  const liveDone = Array.from(progress.values()).filter(p => p.done && !p.error).length;
-  const liveFailed = Array.from(progress.values()).filter(p => p.done && p.error).length;
-  const livePending = Array.from(progress.values()).filter(p => !p.done).length;
+  const currentText = isBatchComplete
+    ? "✅ Completado"
+    : currentEntry
+      ? currentEntry.status
+      : "🔍 Verificando...";
 
   return (
-    <Paper shadow="sm" p="md" mb="md" withBorder>
-      <Stack gap="xs">
-        <Group justify="space-between">
-          <Text size="sm" fw={500}>
-            {isUpdatePhase
-              ? "⬆️ Actualizando containers..."
-              : "🔍 Comprobando actualizaciones..."}
+    <Card bordered style={{ marginBottom: 16, padding: 16 }}>
+      <Space direction="vertical" size="small" style={{ width: "100%" }}>
+        <Flex justify="space-between" align="center">
+          <Text style={{ fontSize: 14, fontWeight: 500 }}>
+            🔄 Revisando y actualizando containers...
           </Text>
-          <Group gap="xs">
-            {!isUpdatePhase && (
-              <Text size="xs" c="dimmed" mr="sm">
-                ✅ {liveDone} ok{liveFailed > 0 ? ` · ❌ ${liveFailed}` : ""}{livePending > 0 ? ` · 🔄 ${livePending}` : ""}
-              </Text>
-            )}
+          <Flex gap={4} align="center">
             <Button
-              size="xs"
-              color="red"
-              variant="outline"
+              size="small"
+              danger
               onClick={onCancel}
             >
               Cancelar
             </Button>
-          </Group>
-        </Group>
+          </Flex>
+        </Flex>
 
         <Progress
-          value={pct}
-          animated
-          color={isUpdatePhase ? "yellow" : "cyan"}
+          percent={Math.round(pct)}
+          strokeColor="#13c2c2"
+          showInfo={false}
         />
 
-        <Group justify="space-between">
-          <Text size="xs" c="dimmed">
-            {batchProgress.current} / {total} —{" "}
-            {batchCurrentItem || "iniciando..."}
+        <Flex justify="space-between" align="center">
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {batchProgress.current} / {total} — {currentText}
           </Text>
-          {isUpdatePhase && (
-            <Text size="xs" c="dimmed">
-              ✅ {liveDone} hechos{liveFailed > 0 ? ` · ❌ ${liveFailed} errores` : ""}{livePending > 0 ? ` · 🔄 ${livePending}` : ""}
-            </Text>
-          )}
-        </Group>
+        </Flex>
 
-        {/* Live log of container statuses */}
-        <Text size="xs" c="dimmed">
-          📊 Progreso: {progress.size} entradas · {logEntries.length} visibles
-        </Text>
-        {logEntries.length > 0 && (
-          <ScrollArea h={180} type="always" offsetScrollbars>
-            <Stack gap={2}>
-              {logEntries.map(([name, p]) => (
-                <Paper
-                  key={name}
-                  p="xs"
-                  withBorder={false}
-                  style={{
-                    background: p.done
-                      ? p.error
-                        ? "var(--mantine-color-red-0)"
-                        : "var(--mantine-color-green-0)"
-                      : "var(--mantine-color-yellow-0)",
-                    borderLeft: `3px solid var(--mantine-color-${logColor(p)}-6)`,
-                  }}
-                >
-                  <Group gap="sm" wrap="nowrap">
-                    <Text size="xs" fw={500} style={{ minWidth: 120 }} truncate>
-                      {logEmoji(p)} {name}
-                    </Text>
-                    <Text size="xs" c="dimmed" truncate>
-                      {p.status}
-                    </Text>
-                  </Group>
-                </Paper>
-              ))}
-            </Stack>
-          </ScrollArea>
-        )}
-      </Stack>
-    </Paper>
+        {/* Live summary from backend counters */}
+        <Flex justify="space-between" align="center" style={{ marginTop: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            Total: {total} containers
+          </Text>
+          <Space size="small">
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              ✅ {checked} revisados
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              ⬆️ {updatedCount} actualizados
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              ❌ {errorsCount} errores
+            </Text>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              ⏸️ {pending} pendientes
+            </Text>
+          </Space>
+        </Flex>
+      </Space>
+    </Card>
   );
 }

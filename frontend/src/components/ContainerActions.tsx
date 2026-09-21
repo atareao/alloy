@@ -1,11 +1,19 @@
 import {
   Button,
-  Group,
-  Loader,
-  Stack,
+  Flex,
+  Space,
+  Spin,
   Switch,
-  Text,
-} from "@mantine/core";
+  Typography,
+} from "antd";
+import {
+  SearchOutlined,
+  ReloadOutlined,
+  StopOutlined,
+  PlayCircleOutlined,
+  FileTextOutlined,
+  DeleteOutlined,
+} from "@ant-design/icons";
 import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
 import { apiFetch } from "../api";
 import PolicyActionButton from "./PolicyActionButton";
@@ -55,7 +63,7 @@ export default function ContainerActions({
   const c = container;
   const p = progress.get(c.name);
   const busy = batchPhase !== "idle" || !!p;
-  const btnSize = isMobile ? "sm" : "compact-sm";
+  const btnSize = isMobile ? "small" : "small";
   const policy = getPolicy(c.name);
   const policyAction = policy?.action || "pull-restart";
   const policyLabels: Record<string, string> = {
@@ -71,23 +79,23 @@ export default function ContainerActions({
   const isMultiStack = stackContainers.length > 1;
 
   return (
-    <Stack gap="xs">
-      <Group gap={isMobile ? 8 : 6} wrap="wrap">
+    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+      <Flex gap={isMobile ? 8 : 6} wrap="wrap" align="center">
         <Button
           size={btnSize}
-          variant="light"
-          color="gray"
-          leftSection="🔍"
+          type="default"
+          icon={<SearchOutlined />}
           onClick={() => onInspect(c.name)}
         >
           Inspeccionar
         </Button>
         <Button
           size={btnSize}
-          variant="light"
-          color="orange"
-          leftSection={
-            loadingActions[c.name] === "Reiniciando..." ? undefined : "🔄"
+          type="default"
+          icon={
+            loadingActions[c.name] === "Reiniciando..."
+              ? undefined
+              : <ReloadOutlined />
           }
           onClick={() => onRestart(c.name)}
           loading={loadingActions[c.name] === "Reiniciando..."}
@@ -100,10 +108,11 @@ export default function ContainerActions({
         {c.state === "running" ? (
           <Button
             size={btnSize}
-            variant="light"
-            color="red"
-            leftSection={
-              loadingActions[c.name] === "Parando..." ? undefined : "⏹"
+            danger
+            icon={
+              loadingActions[c.name] === "Parando..."
+                ? undefined
+                : <StopOutlined />
             }
             onClick={() => onStop(c.name)}
             loading={loadingActions[c.name] === "Parando..."}
@@ -114,10 +123,11 @@ export default function ContainerActions({
         ) : (
           <Button
             size={btnSize}
-            variant="light"
-            color="green"
-            leftSection={
-              loadingActions[c.name] === "Iniciando..." ? undefined : "▶"
+            type="primary"
+            icon={
+              loadingActions[c.name] === "Iniciando..."
+                ? undefined
+                : <PlayCircleOutlined />
             }
             onClick={() => onStart(c.name)}
             loading={loadingActions[c.name] === "Iniciando..."}
@@ -132,12 +142,11 @@ export default function ContainerActions({
           <>
             <Button
               size={btnSize}
-              variant="light"
-              color="red"
-              leftSection={
+              danger
+              icon={
                 loadingActions[c.compose_project!] === "Parando todos..."
                   ? undefined
-                  : "⏹"
+                  : <StopOutlined />
               }
               onClick={() =>
                 onStackAction(
@@ -162,12 +171,11 @@ export default function ContainerActions({
             </Button>
             <Button
               size={btnSize}
-              variant="light"
-              color="orange"
-              leftSection={
+              type="default"
+              icon={
                 loadingActions[c.compose_project!] === "Reiniciando todos..."
                   ? undefined
-                  : "🔄"
+                  : <ReloadOutlined />
               }
               onClick={() =>
                 onStackAction(
@@ -193,9 +201,8 @@ export default function ContainerActions({
         )}
         <Button
           size={btnSize}
-          variant="light"
-          color="grape"
-          leftSection="📋"
+          type="default"
+          icon={<FileTextOutlined />}
           onClick={() => onLogs(c.name)}
           disabled={busy}
         >
@@ -203,66 +210,69 @@ export default function ContainerActions({
         </Button>
         <Button
           size={btnSize}
-          variant="light"
-          color="gray"
-          leftSection="🗑"
+          type="default"
+          icon={<DeleteOutlined />}
           onClick={() => onRemove(c.name)}
           disabled={busy}
         >
           Eliminar
         </Button>
-        <Switch
-          size="xs"
-          label="Notificar eventos"
-          checked={getPolicy(c.name)?.notify_events ?? true}
-          disabled={busy}
-          onChange={async () => {
-            const current = getPolicy(c.name);
-            const newVal = !(current?.notify_events ?? true);
-            try {
-              const res = await apiFetch(
-                `/api/update-policies/${encodeURIComponent(c.name)}`,
-                {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    action: current?.action || "pull-restart",
-                    cleanup_old_image: current?.cleanup_old_image || false,
-                    rollback_on_failure: current?.rollback_on_failure || false,
-                    notify_events: newVal,
-                  }),
-                },
-              );
-              if (res.ok) {
-                const updated: UpdatePolicy = await res.json();
-                setPolicies((prev) => {
-                  const next = prev.filter((p) => p.container !== c.name);
-                  next.push(updated);
-                  return next;
-                });
-                showToast(
-                  `🔔 Notificaciones ${newVal ? "activadas" : "desactivadas"} para ${c.name}`,
-                  newVal ? "green" : "gray",
+        <Flex align="center" gap="small">
+          <Switch
+            size="small"
+            checked={getPolicy(c.name)?.notify_events ?? true}
+            disabled={busy}
+            onChange={async (checked) => {
+              const current = getPolicy(c.name);
+              const newVal = checked;
+              try {
+                const res = await apiFetch(
+                  `/api/update-policies/${encodeURIComponent(c.name)}`,
+                  {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      action: current?.action || "pull-restart",
+                      cleanup_old_image: current?.cleanup_old_image || false,
+                      rollback_on_failure: current?.rollback_on_failure || false,
+                      notify_events: newVal,
+                    }),
+                  },
                 );
+                if (res.ok) {
+                  const updated: UpdatePolicy = await res.json();
+                  setPolicies((prev) => {
+                    const next = prev.filter((p) => p.container !== c.name);
+                    next.push(updated);
+                    return next;
+                  });
+                  showToast(
+                    `🔔 Notificaciones ${newVal ? "activadas" : "desactivadas"} para ${c.name}`,
+                    newVal ? "green" : "gray",
+                  );
+                }
+              } catch {
+                showToast(`🔔 Error al cambiar notificaciones`, "red");
               }
-            } catch {
-              showToast(`🔔 Error al cambiar notificaciones`, "red");
-            }
-          }}
-        />
-      </Group>
+            }}
+          />
+          <Typography.Text style={{ fontSize: 12 }}>
+            Notificar eventos
+          </Typography.Text>
+        </Flex>
+      </Flex>
       {p && (
-        <Group gap="xs">
-          <Loader size="xs" />
-          <Text size="xs" c="dimmed">
+        <Flex gap="small" align="center">
+          <Spin size="small" />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {p.status}
-          </Text>
-        </Group>
+          </Typography.Text>
+        </Flex>
       )}
-      <Group gap="xs" wrap="wrap" justify="flex-start">
-        <Text size="xs" c="dimmed">
+      <Flex gap="small" wrap="wrap" justify="flex-start" align="center">
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {policyLabels[policyAction] || policyAction}
-        </Text>
+        </Typography.Text>
         <PolicyActionButton
           containerName={c.name}
           getPolicy={getPolicy}
@@ -271,25 +281,25 @@ export default function ContainerActions({
           showToast={showToast}
           size={btnSize}
         />
-      </Group>
+      </Flex>
       {c.last_check && (
-        <Text size="xs" c="dimmed">
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           Última revisión: {new Date(c.last_check).toLocaleString([], {
             year: 'numeric', month: '2-digit', day: '2-digit',
             hour: '2-digit', minute: '2-digit', second: '2-digit',
             hour12: false
           })}
-        </Text>
+        </Typography.Text>
       )}
       {c.next_check && (
-        <Text size="xs" c="dimmed">
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           Próxima revisión: {new Date(c.next_check).toLocaleString([], {
             year: 'numeric', month: '2-digit', day: '2-digit',
             hour: '2-digit', minute: '2-digit', second: '2-digit',
             hour12: false
           })}
-        </Text>
+        </Typography.Text>
       )}
-    </Stack>
+    </Space>
   );
 }

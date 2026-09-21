@@ -1,15 +1,13 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useMediaQuery } from "@mantine/hooks";
-import { showNotification } from "@mantine/notifications";
+import { useMediaQuery } from "./useMediaQuery";
+import { notification } from "antd";
+import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
-  AppShell,
-  Button,
-  Container,
-  Group,
-  Stack,
-  Text,
-  Title,
-} from "@mantine/core";
+  BarChartOutlined,
+  FileTextOutlined,
+  SettingOutlined,
+  LogoutOutlined,
+} from "@ant-design/icons";
 import type {
   ContainerInfo,
   UpdateProgress,
@@ -25,6 +23,8 @@ import ConfigPage from "./components/ConfigPage";
 import HistoryPage from "./HistoryPage";
 import BatchProgress from "./components/BatchProgress";
 import SummaryDialog from "./components/SummaryDialog";
+
+const { Text, Title } = Typography;
 
 interface AppProps {
   colorScheme: "dark" | "light";
@@ -148,11 +148,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     notifSource.addEventListener("notification", (e) => {
       try {
         const notif: NotifEvent = JSON.parse(e.data);
-        showNotification({
-          title: notif.container,
-          message: notif.status,
-          color: "blue",
-          autoClose: 5000,
+        notification.info({
+          message: notif.container,
+          description: notif.status,
+          duration: 5,
         });
       } catch (err) {
         console.error("SSE update-progress parse error:", err, "raw:", e.data);
@@ -181,17 +180,32 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     evtSource.addEventListener("update-progress", (e) => {
       try {
         const data: UpdateProgress = JSON.parse(e.data);
+        console.log("SSE update-progress:", data);
         setProgress((prev) => {
           const next = new Map(prev);
           next.set(data.container, data);
           return next;
         });
-        if (data.done) {
-          api("/api/history").then((d) => {
-            if (d) setHistory(d);
-          });
-          api("/api/config").then((d) => {
-            if (d) setConfig(d);
+        // Auto-show progress card when progress arrives and phase is idle
+        if (!data.done && batchPhaseRef.current === "idle") {
+          setBatchPhase("active");
+          setBatchProgress({ current: data.checked, total: data.total });
+        }
+        // Update batchProgress from backend counters
+        if (data.total > 0) {
+          setBatchProgress({ current: data.checked, total: data.total });
+        }
+        // Batch complete event (sent by backend after all containers processed)
+        if (data.container === "__batch__" && data.done) {
+          setBatchPhase("idle");
+          setShowSummary(true);
+          api("/api/history").then((d) => { if (d) setHistory(d); });
+          api("/api/config").then((d) => { if (d) setConfig(d); });
+          const notifMethod = data.errors > 0 ? "warning" : "success";
+          notification[notifMethod]({
+            message: "✅ Batch completado",
+            description: `${data.checked} containers · ${data.updated} ok · ${data.errors} errores`,
+            duration: 8,
           });
         }
       } catch (err) {
@@ -215,7 +229,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   }, []);
 
   // ── Batch check/update state (lives in App to survive tab switches) ──
-  type CheckAllPhase = "idle" | "checking" | "updating";
+  type CheckAllPhase = "idle" | "active";
 
   interface CheckAllResults {
     total: number;
@@ -227,37 +241,36 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   }
 
   const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
+  const batchPhaseRef = useRef(batchPhase);
+  useEffect(() => { batchPhaseRef.current = batchPhase; }, [batchPhase]);
 
-  // ── Polling fallback for progress updates ──
+  // ── Recovery on page reload: check for in-progress updates ──
   useEffect(() => {
-    if (batchPhase === "idle") return;
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/check-progress", { credentials: "include" });
-        if (res.ok) {
-          const data: Record<string, UpdateProgress> = await res.json();
-          const entries = Object.entries(data);
-          if (entries.length > 0) {
-            setProgress((prev) => {
-              const next = new Map(prev);
-              for (const [key, val] of entries) {
-                next.set(key, val);
-              }
-              return next;
-            });
-          }
+    if (!authenticated) return;
+    fetch("/api/check-progress", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: Record<string, UpdateProgress> | null) => {
+        if (!data) return;
+        const entries = Object.values(data);
+        const hasActive = entries.some((e) => !e.done);
+        if (!hasActive) return;
+        setProgress((prev) => {
+          const next = new Map(prev);
+          for (const entry of entries) next.set(entry.container, entry);
+          return next;
+        });
+        setBatchPhase("active");
+        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
+        if (best.total > 0) {
+          setBatchProgress({ current: best.checked, total: best.total });
         }
-      } catch {
-        // ignore network errors during polling
-      }
-    }, 500);
-    return () => clearInterval(interval);
-  }, [batchPhase]);
+      })
+      .catch(() => {});
+  }, [authenticated]);
 
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-  const [batchCurrentItem, setBatchCurrentItem] = useState("");
   const cancelBatchRef = useRef(false);
-  const pendingTotalRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const [checkResults, setCheckResults] = useState<CheckAllResults>({
     total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [],
   });
@@ -282,150 +295,53 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     fetchCheckConfig();
   }, [authenticated, fetchCheckConfig]);
 
-  // Detect in-progress updates on reconnect (e.g. after logout/login)
-  // If SSE delivers progress entries and batchPhase is idle, infer a batch is running
-  useEffect(() => {
-    if (batchPhase !== "idle") return;
-    let hasActive = false;
-    progress.forEach((p) => {
-      if (!p.done) hasActive = true;
-    });
-    if (hasActive) {
-      setBatchPhase("updating");
-      // Don't set pendingTotalRef — we don't know the total yet.
-      // The completion check below falls back to "all progress entries done".
-      setBatchProgress({ current: 0, total: 0 });
-      setBatchCurrentItem("⬆️ Retomando...");
-    }
-  }, [progress, batchPhase]);
-
-  // Monitor progress map to advance batch progress bar and update live counters
-  useEffect(() => {
-    if (batchPhase === "idle") return;
-    let doneCount = 0;
-    let currentItem = "";
-    let liveDone = 0;
-    let liveFailed = 0;
-    progress.forEach((p) => {
-      if (batchPhase === "updating") {
-        const isUpdate =
-          p.status.startsWith("🔄") ||
-          p.status.startsWith("✅ actualizado") ||
-          p.status.startsWith("✅ pulled") ||
-          p.status.startsWith("✅ stack") ||
-          p.status.startsWith("❌") ||
-          p.status.startsWith("⚠️") ||
-          p.status.startsWith("📥") ||
-          p.status.startsWith("✅ Updated");
-        if (!isUpdate) return;
-      }
-      if (p.done) {
-        doneCount++;
-        if (p.error || p.status.startsWith("❌") || p.status.startsWith("⚠️")) {
-          liveFailed++;
-        } else {
-          liveDone++;
-        }
-      } else if (currentItem === "") currentItem = p.container;
-    });
-    setBatchProgress((prev) =>
-      doneCount !== prev.current ? { ...prev, current: doneCount } : prev,
-    );
-    // Update live counters for the updating phase
-    if (batchPhase === "updating") {
-      setUpdateResults((prev) => {
-        if (prev.done !== liveDone || prev.failed !== liveFailed) {
-          return { ...prev, done: liveDone, failed: liveFailed };
-        }
-        return prev;
-      });
-    }
-    if (currentItem) setBatchCurrentItem(currentItem);
-    if (
-      batchPhase === "updating" &&
-      doneCount > 0 &&
-      (doneCount >= pendingTotalRef.current ||
-        // Recovery mode: no pendingTotalRef set — complete when all progress entries are done
-        (pendingTotalRef.current === 0 &&
-          progress.size > 0 &&
-          Array.from(progress.values()).every((p) => p.done)))
-    ) {
-      setTimeout(() => {
-        setBatchPhase("idle");
-        setShowSummary(true);
-        // Count results from live progress map
-        let done = 0, failed = 0;
-        progress.forEach((p) => {
-          if (p.done) {
-            if (p.error || p.status.startsWith("❌") || p.status.startsWith("⚠️")) {
-              failed++;
-            } else {
-              done++;
-            }
-          }
-        });
-        const total = done + failed;
-        if (total > 0) {
-          showNotification({
-            title: "✅ Batch completado",
-            message: failed > 0
-              ? `${total} containers · ${done} ok · ${failed} errores`
-              : `${total} containers actualizados correctamente`,
-            color: failed > 0 ? "yellow" : "green",
-            autoClose: 8000,
-          });
-        }
-      }, 1500);
-    }
-  }, [progress, batchPhase]);
-
-  // checkAll: POST /api/check-all, then auto-update containers with pending updates
+  // checkAll: POST /api/check-all
   const checkAll = useCallback(async () => {
     cancelBatchRef.current = false;
     clearProgress();
-    setBatchPhase("checking");
+    setBatchPhase("active");
     setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [] });
     setUpdateResults({ total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [] });
     setBatchProgress({ current: 0, total: containers.length });
-    setBatchCurrentItem("🔍 Verificando...");
     setShowSummary(false);
-    let updatedCount = 0;
-    let uptodateCount = 0;
-    let failedCount = 0;
-    const errors: string[] = [];
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
-      const res = await apiFetch("/api/check-all", { method: "POST" });
+      const res = await apiFetch("/api/check-all", { method: "POST", signal: controller.signal });
       if (res.ok) {
         const updated: ContainerInfo[] = await res.json();
         setContainers((prev) =>
           prev.map((c) => updated.find((u) => u.name === c.name) || c),
         );
-        updatedCount = updated.filter((c) => c.has_update).length;
-        uptodateCount = updated.filter((c) => !c.has_update).length;
-      } else {
-        failedCount = containers.length;
-        errors.push(`HTTP ${res.status}`);
       }
-    } catch (e: any) {
-      failedCount = containers.length;
-      errors.push(`${e.message || "unknown error"}`);
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        // Cancelled by user — ignore
+        return;
+      }
     }
-    setCheckResults({ total: containers.length, updated: updatedCount, uptodate: uptodateCount, failed: failedCount, done: 0, errors });
-    setBatchProgress({ current: containers.length, total: containers.length });
-    setBatchCurrentItem("");
     fetchCheckConfig();
-    if (updatedCount > 0) {
-      setBatchPhase("updating");
-      pendingTotalRef.current = updatedCount;
-      setBatchProgress({ current: 0, total: updatedCount });
-      setBatchCurrentItem("⬆️ Aplicando políticas...");
-    } else {
-      setTimeout(() => {
-        setBatchPhase("idle");
-        setShowSummary(true);
-      }, 500);
-    }
   }, [containers, clearProgress, setContainers, fetchCheckConfig]);
+
+  // Cancel the batch operation
+  const cancelBatch = useCallback(async () => {
+    cancelBatchRef.current = true;
+    // Abort the in-flight fetch
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    // Notify backend
+    try {
+      await apiFetch("/api/check-all/cancel", { method: "POST" });
+    } catch {
+      // Ignore if endpoint doesn't exist yet
+    }
+    // Reset state
+    setBatchPhase("idle");
+    clearProgress();
+    setBatchProgress({ current: 0, total: 0 });
+  }, [clearProgress]);
 
   const logout = () => {
     window.location.href = "/api/auth/logout";
@@ -439,110 +355,109 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   if (!authenticated) return <LoginScreen />;
 
   return (
-    <AppShell padding="md">
-      <Container size="lg" py="md">
-        <Stack mb="lg" gap="xs">
-          <Group justify="space-between" wrap="nowrap">
-            <Group gap="md" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ flexShrink: 0 }}>
-                <Title order={2} style={{ whiteSpace: "nowrap" }}>
-                  <img
-                    src="/icon-48x48.png"
-                    width="28"
-                    height="28"
-                    style={{ verticalAlign: "middle", marginRight: 8 }}
-                    alt="Alloy"
-                  />
-                  Alloy
-                </Title>
-                {user && (
-                  <Text size="sm" c="dimmed" ml={36}>
-                    {user.name}
-                  </Text>
-                )}
-              </div>
-              <Group gap={isMobile ? 4 : "xs"} wrap="nowrap" style={{ flex: 1 }} justify="center">
-                <Button
-                  size="sm"
-                  variant={view === "dashboard" ? "filled" : "light"}
-                  color={view === "dashboard" ? "blue" : "gray"}
-                  onClick={() => setView("dashboard")}
-                >
-                  {isMobile ? "📊" : "📊 Dashboard"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant={view === "history" ? "filled" : "light"}
-                  color={view === "history" ? "blue" : "gray"}
-                  onClick={() => setView("history")}
-                >
-                  {isMobile ? "📜" : "📜 Historial"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant={view === "config" ? "filled" : "light"}
-                  color={view === "config" ? "blue" : "gray"}
-                  onClick={() => setView("config")}
-                >
-                  {isMobile ? "⚙️" : "⚙️ Config"}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="light"
-                  color="gray"
-                  onClick={logout}
-                >
-                  {isMobile ? "🚪" : "🚪 Salir"}
-                </Button>
-              </Group>
-            </Group>
-          </Group>
-        </Stack>
+    <Layout style={{ minHeight: '100vh' }}>
+      <Layout>
+        <Layout.Header
+          style={{
+            height: 60,
+            padding: "0 16px",
+            display: "flex",
+            alignItems: "center",
+            background: "var(--ant-container-bg)",
+            borderBottom: "1px solid var(--ant-color-border)",
+          }}
+        >
+          <Flex justify="space-between" align="center" style={{ width: "100%", maxWidth: 1200, margin: "0 auto" }}>
+            {/* Left: logo + name */}
+            <Flex align="center" gap="small">
+              <img src="/icon-48x48.png" width="28" height="28" alt="Alloy" />
+              <Title level={4} style={{ margin: 0, whiteSpace: "nowrap" }}>Alloy</Title>
+              {user && !isMobile && (
+                <Text type="secondary" style={{ marginLeft: 8 }}>{user.name}</Text>
+              )}
+            </Flex>
 
-        <BatchProgress
-          phase={batchPhase}
-          batchProgress={batchProgress}
-          batchCurrentItem={batchCurrentItem}
-          checkResults={checkResults}
-          progress={progress}
-          onCancel={() => { cancelBatchRef.current = true; }}
-        />
+            {/* Right: navigation buttons */}
+            <Space size={isMobile ? 4 : 8}>
+              <Button
+                type={view === "dashboard" ? "primary" : "text"}
+                icon={<BarChartOutlined />}
+                onClick={() => setView("dashboard")}
+              >
+                {!isMobile && "Dashboard"}
+              </Button>
+              <Button
+                type={view === "history" ? "primary" : "text"}
+                icon={<FileTextOutlined />}
+                onClick={() => setView("history")}
+              >
+                {!isMobile && "Historial"}
+              </Button>
+              <Button
+                type={view === "config" ? "primary" : "text"}
+                icon={<SettingOutlined />}
+                onClick={() => setView("config")}
+              >
+                {!isMobile && "Config"}
+              </Button>
+              <Button
+                type="text"
+                icon={<LogoutOutlined />}
+                onClick={logout}
+                danger
+              >
+                {!isMobile && "Salir"}
+              </Button>
+            </Space>
+          </Flex>
+        </Layout.Header>
+        <Layout.Content style={{ padding: 16 }}>
+          <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+            <BatchProgress
+              phase={batchPhase}
+              batchProgress={batchProgress}
+              progress={progress}
+              onCancel={cancelBatch}
+            />
 
-        {view === "dashboard" && (
-          <DashboardPage
-            containers={containers}
-            setContainers={setContainers}
-            progress={progress}
-            containersLoaded={containersLoaded}
-            batchPhase={batchPhase}
-            checkResults={checkResults}
-            updateResults={updateResults}
-            showSummary={showSummary}
-            setShowSummary={setShowSummary}
-            checkConfig={checkConfig}
-            onCheckAll={checkAll}
-          />
-        )}
-        {view === "history" && (
-          <HistoryPage history={history} setHistory={setHistory} />
-        )}
-        {view === "config" && (
-          <ConfigPage
-            config={config}
-            setConfig={setConfig}
-            colorScheme={colorScheme}
-            setColorScheme={setColorScheme}
-          />
-        )}
+            {view === "dashboard" && (
+              <DashboardPage
+                containers={containers}
+                setContainers={setContainers}
+                progress={progress}
+                containersLoaded={containersLoaded}
+                batchPhase={batchPhase}
+                checkResults={checkResults}
+                updateResults={updateResults}
+                showSummary={showSummary}
+                setShowSummary={setShowSummary}
+                checkConfig={checkConfig}
+                onCheckAll={checkAll}
+              />
+            )}
+            {view === "history" && (
+              <HistoryPage history={history} setHistory={setHistory} />
+            )}
+            {view === "config" && (
+              <ConfigPage
+                config={config}
+                setConfig={setConfig}
+                colorScheme={colorScheme}
+                setColorScheme={setColorScheme}
+              />
+            )}
 
-        <SummaryDialog
-          opened={showSummary}
-          onClose={() => setShowSummary(false)}
-          checkResults={checkResults}
-          updateResults={updateResults}
-          phase={batchPhase}
-        />
-      </Container>
-    </AppShell>
+            <SummaryDialog
+              opened={showSummary}
+              onClose={() => setShowSummary(false)}
+              checkResults={checkResults}
+              updateResults={updateResults}
+              phase={batchPhase}
+            />
+          </div>
+        </Layout.Content>
+      </Layout>
+
+      </Layout>
   );
 }

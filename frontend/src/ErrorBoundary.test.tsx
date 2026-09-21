@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { MantineProvider } from "@mantine/core";
+import { ConfigProvider } from "antd";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <MantineProvider>{children}</MantineProvider>;
+  return <ConfigProvider>{children}</ConfigProvider>;
 }
 
 describe("ErrorBoundary", () => {
@@ -36,7 +36,7 @@ describe("ErrorBoundary", () => {
       </Wrapper>,
     );
 
-    expect(screen.getByText("⚠️ Algo salió mal")).toBeInTheDocument();
+    expect(screen.getByText("Algo salió mal")).toBeInTheDocument();
     expect(screen.getByText("boom!")).toBeInTheDocument();
     expect(screen.getByText("Recargar página")).toBeInTheDocument();
   });

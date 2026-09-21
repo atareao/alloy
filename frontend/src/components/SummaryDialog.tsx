@@ -1,5 +1,7 @@
-import { Button, Group, Modal, Paper, Stack, Text } from "@mantine/core";
+import { Button, Card, Flex, Modal, Space, Typography } from "antd";
 import type { BatchResults } from "./BatchProgress";
+
+const { Text } = Typography;
 
 export interface SummaryDialogProps {
   opened: boolean;
@@ -24,102 +26,107 @@ export default function SummaryDialog({
 
   return (
     <Modal
-      opened={opened}
-      onClose={onClose}
+      open={opened}
+      onCancel={onClose}
       title={
         hasUpdates
           ? "📋 Resumen de actualización"
           : "📋 Resumen de comprobación"
       }
-      size="sm"
+      width={400}
+      footer={
+        <Flex justify="flex-end">
+          <Button onClick={onClose}>Cerrar</Button>
+        </Flex>
+      }
     >
-      <Stack gap="md">
+      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         {/* Check results */}
-        <Paper p="md" withBorder>
-          <Text size="sm" c="dimmed" mb="xs">
+        <Card bordered size="small">
+          <Text type="secondary" style={{ fontSize: 14, marginBottom: 4, display: "block" }}>
             🔍 Comprobación
           </Text>
-          <Group gap="lg">
-            <Stack gap="0" align="center">
-              <Text size="xl" fw={700}>
+          <Flex gap={24}>
+            <Space direction="vertical" align="center" size={0}>
+              <Text style={{ fontSize: 20, fontWeight: 700 }}>
                 {checkResults.total}
               </Text>
-              <Text size="xs" c="dimmed">
+              <Text type="secondary" style={{ fontSize: 12 }}>
                 Comprobados
               </Text>
-            </Stack>
-            <Stack gap="0" align="center">
-              <Text size="xl" fw={700} c="yellow">
+            </Space>
+            <Space direction="vertical" align="center" size={0}>
+              <Text style={{ fontSize: 20, fontWeight: 700, color: "var(--ant-color-warning)" }}>
                 {checkResults.updated}
               </Text>
-              <Text size="xs" c="dimmed">
+              <Text type="secondary" style={{ fontSize: 12 }}>
                 Actualizables
               </Text>
-            </Stack>
-            <Stack gap="0" align="center">
-              <Text size="xl" fw={700} c="green">
+            </Space>
+            <Space direction="vertical" align="center" size={0}>
+              <Text style={{ fontSize: 20, fontWeight: 700, color: "var(--ant-color-success)" }}>
                 {checkResults.uptodate}
               </Text>
-              <Text size="xs" c="dimmed">
+              <Text type="secondary" style={{ fontSize: 12 }}>
                 Actuales
               </Text>
-            </Stack>
-            <Stack gap="0" align="center">
-              <Text size="xl" fw={700} c="red">
+            </Space>
+            <Space direction="vertical" align="center" size={0}>
+              <Text style={{ fontSize: 20, fontWeight: 700, color: "var(--ant-color-error)" }}>
                 {checkResults.failed}
               </Text>
-              <Text size="xs" c="dimmed">
+              <Text type="secondary" style={{ fontSize: 12 }}>
                 Errores
               </Text>
-            </Stack>
-          </Group>
-        </Paper>
+            </Space>
+          </Flex>
+        </Card>
 
         {/* Update results */}
         {hasUpdates && (
-          <Paper p="md" withBorder>
-            <Text size="sm" c="dimmed" mb="xs">
+          <Card bordered size="small">
+            <Text type="secondary" style={{ fontSize: 14, marginBottom: 4, display: "block" }}>
               ⬆️ Actualización
             </Text>
-            <Group gap="lg">
-              <Stack gap="0" align="center">
-                <Text size="xl" fw={700} c="green">
+            <Flex gap={24}>
+              <Space direction="vertical" align="center" size={0}>
+                <Text style={{ fontSize: 20, fontWeight: 700, color: "var(--ant-color-success)" }}>
                   {updateResults.done}
                 </Text>
-                <Text size="xs" c="dimmed">
+                <Text type="secondary" style={{ fontSize: 12 }}>
                   Actualizados
                 </Text>
-              </Stack>
-              <Stack gap="0" align="center">
-                <Text size="xl" fw={700} c="red">
+              </Space>
+              <Space direction="vertical" align="center" size={0}>
+                <Text style={{ fontSize: 20, fontWeight: 700, color: "var(--ant-color-error)" }}>
                   {updateResults.failed}
                 </Text>
-                <Text size="xs" c="dimmed">
+                <Text type="secondary" style={{ fontSize: 12 }}>
                   Fallos
                 </Text>
-              </Stack>
-            </Group>
-          </Paper>
+              </Space>
+            </Flex>
+          </Card>
         )}
 
         {/* Errors */}
         {allErrors.length > 0 && (
-          <Paper p="sm" withBorder bg="red.0">
-            <Text size="xs" fw={500} mb="xs" c="red">
+          <Card
+            bordered
+            size="small"
+            style={{ background: "#fff2f0" }}
+          >
+            <Text style={{ fontSize: 12, fontWeight: 500, marginBottom: 4, display: "block", color: "var(--ant-color-error)" }}>
               Errores:
             </Text>
             {allErrors.map((err, i) => (
-              <Text key={i} size="xs" c="red">
+              <Text key={i} style={{ fontSize: 12, color: "var(--ant-color-error)" }}>
                 {err}
               </Text>
             ))}
-          </Paper>
+          </Card>
         )}
-
-        <Group justify="flex-end">
-          <Button onClick={onClose}>Cerrar</Button>
-        </Group>
-      </Stack>
+      </Space>
     </Modal>
   );
 }

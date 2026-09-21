@@ -1,11 +1,23 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { MantineProvider } from "@mantine/core";
+import { ConfigProvider } from "antd";
+
+// Polyfill ResizeObserver for jsdom (required by antd Card)
+beforeAll(() => {
+  if (typeof ResizeObserver === "undefined") {
+    class ResizeObserverMock {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    (globalThis as any).ResizeObserver = ResizeObserverMock;
+  }
+});
 import NotifToast from "./components/NotifToast";
 import type { NotifEvent } from "./types";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
-  return <MantineProvider>{children}</MantineProvider>;
+  return <ConfigProvider>{children}</ConfigProvider>;
 }
 
 describe("NotifToast", () => {

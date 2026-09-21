@@ -1,18 +1,20 @@
 import { useState, useMemo, useEffect } from "react";
-import { useMediaQuery } from "@mantine/hooks";
+import { useMediaQuery } from "../useMediaQuery";
 import {
-  Badge,
   Button,
-  Collapse,
-  Group,
+  Card,
+  Flex,
   Modal,
-  Paper,
-  SimpleGrid,
-  Stack,
-  Table,
-  Text,
-} from "@mantine/core";
-import { showNotification } from "@mantine/notifications";
+  Row,
+  Col,
+  Tag,
+  Typography,
+  notification,
+} from "antd";
+import {
+  DeleteOutlined,
+  AppstoreOutlined,
+} from "@ant-design/icons";
 import type {
   ContainerInfo,
   UpdateProgress,
@@ -35,7 +37,7 @@ interface DashboardPageProps {
   progress: Map<string, UpdateProgress>;
   containersLoaded: boolean;
   // Batch state (managed in App to survive tab switches)
-  batchPhase: "idle" | "checking" | "updating";
+  batchPhase: "idle" | "active";
   checkResults: BatchResults;
   updateResults: BatchResults;
   showSummary: boolean;
@@ -144,12 +146,16 @@ export default function DashboardPage({
   };
 
   const showToast = (message: string, color: string, title?: string) => {
-    showNotification({
-      title: title || "Alloy",
-      message,
-      color,
-      autoClose: 3000,
-      style: { borderLeft: `4px solid var(--mantine-color-${color}-6)` },
+    const typeMap: Record<string, "success" | "error" | "warning" | "info"> = {
+      green: "success",
+      red: "error",
+      yellow: "warning",
+    };
+    const type = typeMap[color] || "info";
+    notification[type]({
+      message: title || "Alloy",
+      description: message,
+      duration: 3,
     });
   };
 
@@ -167,7 +173,7 @@ export default function DashboardPage({
     setLogError(null);
     setLogTimeout(false);
     const timeoutId = setTimeout(() => {
-      if (logs.length === 0) setLogTimeout(true);
+      setLogTimeout(true);
     }, 5000);
     const evtSource = new EventSource(
       `/api/containers/${encodeURIComponent(logsContainer)}/logs`,
@@ -309,21 +315,23 @@ export default function DashboardPage({
     if (isMobile) {
       const isExpanded = !!expandedStacks[project];
       return (
-        <Paper
-          shadow="sm"
-          withBorder
+        <Card
           key={project}
-          style={{
-            height: "100%",
-            width: "100%",
-            display: "flex",
-            flexDirection: "column",
+          size="small"
+          style={{ height: '100%' }}
+          styles={{
+            body: {
+              height: "100%",
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              padding: 0,
+            },
           }}
         >
-          <Paper
-            p="xs"
+          <div
             style={{
-              background: "var(--mantine-color-dark-6)",
+              background: "transparent",
               cursor: "pointer",
               display: "flex",
               flexDirection: "column",
@@ -332,26 +340,23 @@ export default function DashboardPage({
               textAlign: "center",
               overflow: "hidden",
               flex: isExpanded ? undefined : 1,
+              padding: isMobile ? 6 : 10,
             }}
             onClick={() => toggleStackExpand(project)}
           >
-            <Text size="sm" fw={700} truncate ta="center" mb={4} w="100%">
-              📦 {project}
-            </Text>
-            <Badge
-              size="sm"
-              variant="light"
-              color={running === items.length ? "green" : "yellow"}
-            >
-              {running}/{items.length}
-            </Badge>
-          </Paper>
-          <Collapse expanded={isExpanded}>
-            <div style={{ overflowX: "auto", width: "100%" }}>
-              <Table>
-                <Table.Tbody>
-                  {items.map((c) => (
-                  <ContainerRow
+            <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
+              <AppstoreOutlined /> {project}
+            </Typography.Text>
+            <div style={{ marginTop: 4 }}>
+              <Tag color={running === items.length ? "success" : "warning"}>
+                {running}/{items.length}
+              </Tag>
+            </div>
+          </div>
+          {isExpanded && (
+            <div>
+              {items.map((c) => (
+                <ContainerRow
                   key={c.id}
                   container={c}
                   isMobile={isMobile}
@@ -372,29 +377,27 @@ export default function DashboardPage({
                   onStackAction={handleStackAction}
                 />
               ))}
-              </Table.Tbody>
-            </Table>
             </div>
-          </Collapse>
-        </Paper>
+          )}
+        </Card>
       );
     }
     return (
-      <Paper shadow="sm" withBorder mb="md" key={project}>
-        <Stack gap={0}>
-          <Paper p="sm" style={{ background: "var(--mantine-color-dark-6)" }}>
-            <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
-              <Text size="md" fw={700} truncate>📦 {project}</Text>
-              <Badge size="sm" variant="light" color={running === items.length ? "green" : "yellow"}>
-                {running}/{items.length}
-              </Badge>
-            </Group>
-          </Paper>
-          <Table>
-            <Table.Tbody>{items.map(renderRow)}</Table.Tbody>
-          </Table>
-        </Stack>
-      </Paper>
+      <Card bordered size="small" key={project} style={{ marginBottom: 16 }}>
+        <div style={{ padding: "8px 12px", background: "var(--ant-color-bg-layout)" }}>
+          <Flex gap="small" wrap="nowrap" align="center" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
+            <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
+              <AppstoreOutlined /> {project}
+            </Typography.Text>
+            <Tag color={running === items.length ? "success" : "warning"}>
+              {running}/{items.length}
+            </Tag>
+          </Flex>
+        </div>
+        <table style={{ width: "100%" }}>
+          <tbody>{items.map(renderRow)}</tbody>
+        </table>
+      </Card>
     );
   };
 
@@ -402,28 +405,52 @@ export default function DashboardPage({
   return (
     <>
       {/* Stats bar */}
-      <SimpleGrid cols={{ base: 4 }} mb="md">
-        <Paper shadow="sm" p={isMobile ? "xs" : "sm"} withBorder
-          style={{ borderTop: "3px solid var(--mantine-color-blue-6)" }}>
-          <Text ta="center" size={isMobile ? "sm" : "xl"} fw={700}>{containers.length}</Text>
-          <Text ta="center" size="xs" c="dimmed">Total</Text>
-        </Paper>
-        <Paper shadow="sm" p={isMobile ? "xs" : "sm"} withBorder
-          style={{ borderTop: "3px solid var(--mantine-color-green-6)" }}>
-          <Text ta="center" size={isMobile ? "sm" : "xl"} fw={700}>{statsRunning}</Text>
-          <Text ta="center" size="xs" c="dimmed">Running</Text>
-        </Paper>
-        <Paper shadow="sm" p={isMobile ? "xs" : "sm"} withBorder
-          style={{ borderTop: "3px solid var(--mantine-color-red-6)" }}>
-          <Text ta="center" size={isMobile ? "sm" : "xl"} fw={700}>{statsStopped}</Text>
-          <Text ta="center" size="xs" c="dimmed">Stopped</Text>
-        </Paper>
-        <Paper shadow="sm" p={isMobile ? "xs" : "sm"} withBorder
-          style={{ borderTop: `3px solid var(--mantine-color-${statsUpdates > 0 ? "yellow" : "gray"}-6)` }}>
-          <Text ta="center" size={isMobile ? "sm" : "xl"} fw={700}>{statsUpdates}</Text>
-          <Text ta="center" size="xs" c="dimmed">Updates</Text>
-        </Paper>
-      </SimpleGrid>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col span={6}>
+          <Card size="small"
+            style={{ borderTop: "3px solid var(--ant-color-primary)" }}>
+            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+              {containers.length}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+              Total
+            </Typography.Text>
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card size="small"
+            style={{ borderTop: "3px solid var(--ant-color-success)" }}>
+            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+              {statsRunning}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+              Running
+            </Typography.Text>
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card size="small"
+            style={{ borderTop: "3px solid var(--ant-color-error)" }}>
+            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+              {statsStopped}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+              Stopped
+            </Typography.Text>
+          </Card>
+        </Col>
+        <Col span={6}>
+          <Card size="small"
+            style={{ borderTop: `3px solid ${statsUpdates > 0 ? "var(--ant-color-warning)" : "var(--ant-color-text-quaternary)"}` }}>
+            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+              {statsUpdates}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+              Updates
+            </Typography.Text>
+          </Card>
+        </Col>
+      </Row>
 
       {/* Container table (search + filters + groups) */}
       <ContainerTable
@@ -443,6 +470,7 @@ export default function DashboardPage({
           expandedStacks={expandedStacks}
           renderGroup={renderGroup}
           renderRow={renderRow}
+          batchPhase={batchPhase}
         />
 
       {/* Inspect modal */}
@@ -466,26 +494,29 @@ export default function DashboardPage({
 
       {/* Confirm delete modal */}
       <Modal
-        opened={confirmDelete !== null}
-        onClose={() => setConfirmDelete(null)}
-        title="🗑️ Confirmar Eliminación"
-        size="sm"
+        open={confirmDelete !== null}
+        onCancel={() => setConfirmDelete(null)}
+        title={<><DeleteOutlined /> Confirmar Eliminación</>}
+        width={400}
+        footer={
+          <Flex justify="flex-end" gap="small">
+            <Button onClick={() => setConfirmDelete(null)}>
+              Cancelar
+            </Button>
+            <Button
+              danger
+              type="primary"
+              onClick={() => confirmDelete && handleRemove(confirmDelete)}
+            >
+              Eliminar
+            </Button>
+          </Flex>
+        }
       >
-        <Text mb="md">
+        <Typography.Text>
           ¿Seguro que quieres eliminar <b>{confirmDelete}</b>? Esta acción no se
           puede deshacer.
-        </Text>
-        <Group justify="flex-end">
-          <Button variant="default" onClick={() => setConfirmDelete(null)}>
-            Cancelar
-          </Button>
-          <Button
-            color="red"
-            onClick={() => confirmDelete && handleRemove(confirmDelete)}
-          >
-            Eliminar
-          </Button>
-        </Group>
+        </Typography.Text>
       </Modal>
 
       {/* Summary dialog */}

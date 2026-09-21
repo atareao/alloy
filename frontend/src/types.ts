@@ -21,6 +21,10 @@ export interface UpdateProgress {
   status: string;
   done: boolean;
   error: string | null;
+  total: number;
+  checked: number;
+  updated: number;
+  errors: number;
 }
 
 export interface NotifEvent {

@@ -1,25 +1,48 @@
-import { useState, StrictMode } from "react";
+import { StrictMode, useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { MantineProvider } from "@mantine/core";
-import { Notifications } from "@mantine/notifications";
-import "@mantine/core/styles.css";
-import "@mantine/notifications/styles.css";
-import App from "./App.tsx";
-import ErrorBoundary from "./components/ErrorBoundary.tsx";
+import { ConfigProvider, theme, App } from "antd";
+import AppComponent from "./App";
+import ErrorBoundary from "./components/ErrorBoundary";
 
-function Root() {
-  const [colorScheme, setColorScheme] = useState<"dark" | "light">(
-    () => (localStorage.getItem("color-scheme") as "dark" | "light") || "dark",
-  );
+export function Root() {
+  const [colorScheme, setColorScheme] = useState<"light" | "dark">(() => {
+    const stored = localStorage.getItem("color-scheme");
+    if (stored === "light" || stored === "dark") return stored;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  });
+
+  useEffect(() => {
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => {
+      if (!localStorage.getItem("color-scheme")) {
+        setColorScheme(e.matches ? "dark" : "light");
+      }
+    };
+    mql.addEventListener("change", handler);
+    return () => mql.removeEventListener("change", handler);
+  }, []);
 
   return (
     <StrictMode>
-      <MantineProvider forceColorScheme={colorScheme}>
-        <Notifications position="bottom-right" zIndex={1000} />
-        <ErrorBoundary>
-          <App colorScheme={colorScheme} setColorScheme={setColorScheme} />
-        </ErrorBoundary>
-      </MantineProvider>
+      <ConfigProvider
+        theme={{
+          algorithm:
+            colorScheme === "dark"
+              ? theme.darkAlgorithm
+              : theme.defaultAlgorithm,
+        }}
+      >
+        <App>
+          <ErrorBoundary>
+            <AppComponent
+              colorScheme={colorScheme}
+              setColorScheme={setColorScheme}
+            />
+          </ErrorBoundary>
+        </App>
+      </ConfigProvider>
     </StrictMode>
   );
 }

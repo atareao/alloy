@@ -1,13 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import {
-  Container,
-  Paper,
-  Text,
-  Title,
-  Button,
-  Stack,
-  Code,
-} from "@mantine/core";
+import { Card, Typography, Button, Space } from "antd";
+import { WarningOutlined, ReloadOutlined } from "@ant-design/icons";
+
+const { Text, Title } = Typography;
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -40,43 +35,58 @@ export default class ErrorBoundary extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <Container py="xl">
-          <Paper shadow="sm" p="lg" withBorder>
-            <Title order={3} mb="md" c="red">
-              ⚠️ Algo salió mal
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            padding: "var(--ant-padding-xl)",
+          }}
+        >
+          <Card variant="outlined" style={{ maxWidth: 600, width: "100%" }}>
+            <Title level={3} style={{ color: "var(--ant-color-error)" }}>              
+              <WarningOutlined style={{ marginRight: 8 }} />
+              Algo salió mal
             </Title>
-            <Stack gap="xs" mb="md">
-              <Text size="sm">
-                {this.state.error?.message || "Error desconocido"}
-              </Text>
+            <Space direction="vertical" size="small" style={{ width: "100%", marginBottom: "var(--ant-margin-md)" }}>
+              <Text>{this.state.error?.message || "Error desconocido"}</Text>
               {this.state.error?.stack && (
-                <Code
-                  block
+                <pre
                   style={{
                     whiteSpace: "pre-wrap",
                     fontSize: "0.75rem",
                     maxHeight: 300,
                     overflow: "auto",
+                    background: "var(--ant-color-bg-container)",
+                    border: "1px solid var(--ant-color-border)",
+                    borderRadius: "var(--ant-border-radius)",
+                    padding: "var(--ant-padding-xs)",
+                    margin: 0,
+                    color: "var(--ant-color-text)",
                   }}
                 >
                   {this.state.error.stack}
-                </Code>
+                </pre>
               )}
               {this.state.errorInfo?.componentStack && (
-                <Code
-                  block
+                <pre
                   style={{
                     whiteSpace: "pre-wrap",
                     fontSize: "0.7rem",
-                    color: "gray",
+                    color: "var(--ant-color-text-secondary)",
+                    background: "var(--ant-color-bg-container)",
+                    border: "1px solid var(--ant-color-border)",
+                    borderRadius: "var(--ant-border-radius)",
+                    padding: "var(--ant-padding-xs)",
+                    margin: 0,
                   }}
                 >
                   {this.state.errorInfo.componentStack}
-                </Code>
+                </pre>
               )}
-            </Stack>
+            </Space>
             <Button
-              variant="light"
+              type="default"
+              icon={<ReloadOutlined />}
               onClick={() => {
                 this.setState({
                   hasError: false,
@@ -88,8 +98,8 @@ export default class ErrorBoundary extends Component<
             >
               Recargar página
             </Button>
-          </Paper>
-        </Container>
+          </Card>
+        </div>
       );
     }
     return this.props.children;
