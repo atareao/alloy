@@ -1,4 +1,9 @@
 # Changelog
+## [0.22.3] - 2026-09-21
+
+### Other
+
+- V0.23.0
 ## [0.22.2] - 2026-09-21
 
 ### Documentation
@@ -9,6 +14,10 @@
 
 - Update reliability - digest comparison, pull by digest, cancel support
 - [**breaking**] Migrate Mantine to Ant Design + live progress feedback
+
+### Miscellaneous Tasks
+
+- Release v0.22.2
 
 ### Other
 
