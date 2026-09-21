@@ -1,4 +1,23 @@
 # Changelog
+## [0.22.2] - 2026-09-21
+
+### Documentation
+
+- Update AGENTS.md with project state + add openspec specs
+
+### Features
+
+- Update reliability - digest comparison, pull by digest, cancel support
+- [**breaking**] Migrate Mantine to Ant Design + live progress feedback
+
+### Other
+
+- V0.22.0
+## [0.22.1] - 2026-09-13
+
+### Miscellaneous Tasks
+
+- Release v0.22.1
 ## [0.22.0] - 2026-09-13
 
 ### Bug Fixes
