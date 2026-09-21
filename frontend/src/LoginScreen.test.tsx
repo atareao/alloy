@@ -25,9 +25,7 @@ describe("LoginScreen", () => {
     );
 
     expect(screen.getByText("Alloy")).toBeInTheDocument();
-    expect(
-      screen.getByText("Iniciar sesión con OIDC"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Iniciar sesión con OIDC")).toBeInTheDocument();
   });
 
   it("redirects to OIDC login on button click", () => {

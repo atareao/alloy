@@ -80,19 +80,29 @@ export default function ContainerTable({
             <Flex gap="small" wrap="nowrap" style={{ marginLeft: 8 }}>
               {lastCheck && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Última: {new Date(lastCheck).toLocaleString([], {
-                    year: 'numeric', month: '2-digit', day: '2-digit',
-                    hour: '2-digit', minute: '2-digit', second: '2-digit',
-                    hour12: false
+                  Última:{" "}
+                  {new Date(lastCheck).toLocaleString([], {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
                   })}
                 </Typography.Text>
               )}
               {nextCheck && (
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Próxima: {new Date(nextCheck).toLocaleString([], {
-                    year: 'numeric', month: '2-digit', day: '2-digit',
-                    hour: '2-digit', minute: '2-digit', second: '2-digit',
-                    hour12: false
+                  Próxima:{" "}
+                  {new Date(nextCheck).toLocaleString([], {
+                    year: "numeric",
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
                   })}
                 </Typography.Text>
               )}
@@ -142,7 +152,7 @@ export default function ContainerTable({
             display: "grid",
             gridTemplateColumns: "repeat(3, 1fr)",
             gap: 8,
-            background: 'transparent',
+            background: "transparent",
           }}
         >
           {sortedGroups.map(([project, items]) => (
@@ -163,31 +173,45 @@ export default function ContainerTable({
       )}
 
       {/* Ungrouped containers */}
-      {noStack.length > 0 && (isMobile ? (
-        <div style={{ background: 'var(--ant-color-fill-tertiary)', borderRadius: 6, padding: 2, marginTop: 8 }}>
-          <Flex align="center" style={{ padding: "8px 16px" }}>
-            <Typography.Text strong style={{ fontSize: 14 }}>
-              <AppstoreOutlined /> Sin stack
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-              {noStack.length} containers
-            </Typography.Text>
-          </Flex>
-          {noStack.map(renderRow)}
-        </div>
-      ) : (
-        <Card bordered>
-          <Flex align="center" style={{ padding: "8px 16px" }}>
-            <Typography.Text strong style={{ fontSize: 14 }}>
-              <AppstoreOutlined /> Sin stack
-            </Typography.Text>
-            <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
-              {noStack.length} containers
-            </Typography.Text>
-          </Flex>
-          {noStack.map(renderRow)}
-        </Card>
-      ))}
+      {noStack.length > 0 &&
+        (isMobile ? (
+          <div
+            style={{
+              background: "var(--ant-color-fill-tertiary)",
+              borderRadius: 6,
+              padding: 2,
+              marginTop: 8,
+            }}
+          >
+            <Flex align="center" style={{ padding: "8px 16px" }}>
+              <Typography.Text strong style={{ fontSize: 14 }}>
+                <AppstoreOutlined /> Sin stack
+              </Typography.Text>
+              <Typography.Text
+                type="secondary"
+                style={{ fontSize: 12, marginLeft: 8 }}
+              >
+                {noStack.length} containers
+              </Typography.Text>
+            </Flex>
+            {noStack.map(renderRow)}
+          </div>
+        ) : (
+          <Card bordered>
+            <Flex align="center" style={{ padding: "8px 16px" }}>
+              <Typography.Text strong style={{ fontSize: 14 }}>
+                <AppstoreOutlined /> Sin stack
+              </Typography.Text>
+              <Typography.Text
+                type="secondary"
+                style={{ fontSize: 12, marginLeft: 8 }}
+              >
+                {noStack.length} containers
+              </Typography.Text>
+            </Flex>
+            {noStack.map(renderRow)}
+          </Card>
+        ))}
     </>
   );
 }

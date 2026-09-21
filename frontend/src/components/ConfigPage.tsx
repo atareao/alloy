@@ -13,7 +13,11 @@ import {
   Tag,
   Typography,
 } from "antd";
-import type { AppConfig, DefaultUpdatePolicy, UpdateCheckConfig } from "../types";
+import type {
+  AppConfig,
+  DefaultUpdatePolicy,
+  UpdateCheckConfig,
+} from "../types";
 import { apiFetch } from "../api";
 
 const CRON_PRESETS = [
@@ -64,7 +68,9 @@ export default function ConfigPage({
   const [ucNotify, setUcNotify] = useState(false);
 
   // Update check config — fetched separately
-  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
+  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
+    null,
+  );
 
   // Pull timeout
   const [pullTimeout, setPullTimeout] = useState(600);
@@ -76,7 +82,8 @@ export default function ConfigPage({
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
-        if (data.pull_timeout_secs != null) setPullTimeout(data.pull_timeout_secs);
+        if (data.pull_timeout_secs != null)
+          setPullTimeout(data.pull_timeout_secs);
       })
       .catch(() => {});
   }, []);
@@ -204,7 +211,8 @@ export default function ConfigPage({
         setUcCron(data.cron);
         setUcEnabled(data.enabled);
         setUcNotify(data.notify);
-        if (data.pull_timeout_secs != null) setPullTimeout(data.pull_timeout_secs);
+        if (data.pull_timeout_secs != null)
+          setPullTimeout(data.pull_timeout_secs);
         showSuccess(
           ucEnabled
             ? "✅ Revisión programada activada"
@@ -272,10 +280,18 @@ export default function ConfigPage({
             key: "notifications",
             label: "🔔 Notificaciones",
             children: (
-              <Space direction="vertical" size="middle" style={{ width: "100%", paddingTop: 16 }}>
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%", paddingTop: 16 }}
+              >
                 {/* ═══ Telegram ═══ */}
                 <Card bordered size="small">
-                  <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
                     <Typography.Title level={4} style={{ margin: 0 }}>
                       📱 Telegram
                     </Typography.Title>
@@ -284,14 +300,27 @@ export default function ConfigPage({
                         checked={tgEnabled}
                         onChange={(checked) => setTgEnabled(checked)}
                       />
-                      <Typography.Text>{tgEnabled ? "Activado" : "Desactivado"}</Typography.Text>
+                      <Typography.Text>
+                        {tgEnabled ? "Activado" : "Desactivado"}
+                      </Typography.Text>
                     </Flex>
                   </Flex>
                   {tgEnabled && (
-                    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
                         <Typography.Text strong>Token del Bot</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
                           Token que te proporciona @BotFather
                         </Typography.Text>
                         <Input.Password
@@ -300,9 +329,16 @@ export default function ConfigPage({
                           onChange={(e) => setTgToken(e.target.value)}
                         />
                       </Space>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
                         <Typography.Text strong>Chat ID</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
                           ID del chat o grupo donde recibir notificaciones
                         </Typography.Text>
                         <Input
@@ -313,26 +349,37 @@ export default function ConfigPage({
                       </Space>
                     </Space>
                   )}
-                  <Flex justify="flex-end" gap="middle" style={{ marginTop: 16 }}>
+                  <Flex
+                    justify="flex-end"
+                    gap="middle"
+                    style={{ marginTop: 16 }}
+                  >
                     {tgEnabled && (
                       <Button
                         onClick={async () => {
                           setTesting("telegram");
                           setError(null);
                           try {
-                            const res = await apiFetch("/api/notifications/test", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ channel: "telegram" }),
-                            });
+                            const res = await apiFetch(
+                              "/api/notifications/test",
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: "telegram" }),
+                              },
+                            );
                             setTesting(null);
                             if (res.ok) {
-                              showSuccess("📤 Mensaje de prueba enviado a Telegram");
+                              showSuccess(
+                                "📤 Mensaje de prueba enviado a Telegram",
+                              );
                             } else {
                               const data = await res
                                 .json()
                                 .catch(() => ({ error: "Error desconocido" }));
-                              setError(data.error || `Error HTTP ${res.status}`);
+                              setError(
+                                data.error || `Error HTTP ${res.status}`,
+                              );
                             }
                           } catch {
                             setTesting(null);
@@ -340,7 +387,10 @@ export default function ConfigPage({
                           }
                         }}
                         loading={testing === "telegram"}
-                        style={{ borderColor: "var(--ant-color-success)", color: "var(--ant-color-success)" }}
+                        style={{
+                          borderColor: "var(--ant-color-success)",
+                          color: "var(--ant-color-success)",
+                        }}
                       >
                         📤 Test
                       </Button>
@@ -359,7 +409,11 @@ export default function ConfigPage({
 
                 {/* ═══ Matrix ═══ */}
                 <Card bordered size="small">
-                  <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
                     <Typography.Title level={4} style={{ margin: 0 }}>
                       💬 Matrix
                     </Typography.Title>
@@ -368,14 +422,27 @@ export default function ConfigPage({
                         checked={mxEnabled}
                         onChange={(checked) => setMxEnabled(checked)}
                       />
-                      <Typography.Text>{mxEnabled ? "Activado" : "Desactivado"}</Typography.Text>
+                      <Typography.Text>
+                        {mxEnabled ? "Activado" : "Desactivado"}
+                      </Typography.Text>
                     </Flex>
                   </Flex>
                   {mxEnabled && (
-                    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
                         <Typography.Text strong>Homeserver</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
                           URL del servidor Matrix (ej: https://matrix.org)
                         </Typography.Text>
                         <Input
@@ -384,9 +451,16 @@ export default function ConfigPage({
                           onChange={(e) => setMxHomeserver(e.target.value)}
                         />
                       </Space>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
                         <Typography.Text strong>Access Token</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
                           Token de acceso de la cuenta de bot
                         </Typography.Text>
                         <Input.Password
@@ -395,9 +469,16 @@ export default function ConfigPage({
                           onChange={(e) => setMxToken(e.target.value)}
                         />
                       </Space>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
                         <Typography.Text strong>Room ID</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
                           ID de la sala donde enviar notificaciones
                         </Typography.Text>
                         <Input
@@ -408,26 +489,37 @@ export default function ConfigPage({
                       </Space>
                     </Space>
                   )}
-                  <Flex justify="flex-end" gap="middle" style={{ marginTop: 16 }}>
+                  <Flex
+                    justify="flex-end"
+                    gap="middle"
+                    style={{ marginTop: 16 }}
+                  >
                     {mxEnabled && (
                       <Button
                         onClick={async () => {
                           setTesting("matrix");
                           setError(null);
                           try {
-                            const res = await apiFetch("/api/notifications/test", {
-                              method: "POST",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ channel: "matrix" }),
-                            });
+                            const res = await apiFetch(
+                              "/api/notifications/test",
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: "matrix" }),
+                              },
+                            );
                             setTesting(null);
                             if (res.ok) {
-                              showSuccess("📤 Mensaje de prueba enviado a Matrix");
+                              showSuccess(
+                                "📤 Mensaje de prueba enviado a Matrix",
+                              );
                             } else {
                               const data = await res
                                 .json()
                                 .catch(() => ({ error: "Error desconocido" }));
-                              setError(data.error || `Error HTTP ${res.status}`);
+                              setError(
+                                data.error || `Error HTTP ${res.status}`,
+                              );
                             }
                           } catch {
                             setTesting(null);
@@ -435,7 +527,10 @@ export default function ConfigPage({
                           }
                         }}
                         loading={testing === "matrix"}
-                        style={{ borderColor: "var(--ant-color-success)", color: "var(--ant-color-success)" }}
+                        style={{
+                          borderColor: "var(--ant-color-success)",
+                          color: "var(--ant-color-success)",
+                        }}
                       >
                         📤 Test
                       </Button>
@@ -458,10 +553,18 @@ export default function ConfigPage({
             key: "updates",
             label: "⬆️ Actualizaciones",
             children: (
-              <Space direction="vertical" size="middle" style={{ width: "100%", paddingTop: 16 }}>
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%", paddingTop: 16 }}
+              >
                 {/* ═══ Revisión de actualizaciones ═══ */}
                 <Card bordered size="small">
-                  <Flex justify="space-between" align="center" style={{ marginBottom: 16 }}>
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
                     <Typography.Title level={4} style={{ margin: 0 }}>
                       ⏰ Revisión de actualizaciones
                     </Typography.Title>
@@ -470,40 +573,70 @@ export default function ConfigPage({
                         checked={ucEnabled}
                         onChange={(checked) => setUcEnabled(checked)}
                       />
-                      <Typography.Text>{ucEnabled ? "Activada" : "Desactivada"}</Typography.Text>
+                      <Typography.Text>
+                        {ucEnabled ? "Activada" : "Desactivada"}
+                      </Typography.Text>
                     </Flex>
                   </Flex>
-                  <Typography.Text type="secondary" style={{ display: "block", marginBottom: 16 }}>
-                    Programa revisiones periódicas de imágenes. Cuando se detecte una
-                    actualización pendiente, se marcará el contenedor y se podrá actuar
-                    desde el Dashboard.
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    Programa revisiones periódicas de imágenes. Cuando se
+                    detecte una actualización pendiente, se marcará el
+                    contenedor y se podrá actuar desde el Dashboard.
                   </Typography.Text>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 16 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                      marginBottom: 16,
+                    }}
+                  >
                     <Typography.Text type="secondary">
                       Zona horaria: {configProp?.timezone || "UTC"}
                     </Typography.Text>
                     {checkConfig?.last_run_at && (
                       <Typography.Text type="secondary">
-                        Última revisión: {new Date(checkConfig.last_run_at).toLocaleString([], {
-                          year: "numeric", month: "2-digit", day: "2-digit",
-                          hour: "2-digit", minute: "2-digit", second: "2-digit",
+                        Última revisión:{" "}
+                        {new Date(checkConfig.last_run_at).toLocaleString([], {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
                           hour12: false,
                         })}
                       </Typography.Text>
                     )}
                     {checkConfig?.next_run_at && (
                       <Typography.Text type="secondary">
-                        Próxima revisión: {new Date(checkConfig.next_run_at).toLocaleString([], {
-                          year: "numeric", month: "2-digit", day: "2-digit",
-                          hour: "2-digit", minute: "2-digit", second: "2-digit",
+                        Próxima revisión:{" "}
+                        {new Date(checkConfig.next_run_at).toLocaleString([], {
+                          year: "numeric",
+                          month: "2-digit",
+                          day: "2-digit",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
                           hour12: false,
                         })}
                       </Typography.Text>
                     )}
                   </div>
                   {ucEnabled && (
-                    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
                         <Typography.Text strong>Frecuencia</Typography.Text>
                         <Select
                           options={CRON_PRESETS}
@@ -513,9 +646,18 @@ export default function ConfigPage({
                           style={{ width: "100%" }}
                         />
                       </Space>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                        <Typography.Text strong>Expresión Cron (personalizada)</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          Expresión Cron (personalizada)
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
                           Edita directamente si los presets no se ajustan
                         </Typography.Text>
                         <Input
@@ -529,12 +671,24 @@ export default function ConfigPage({
                           checked={ucNotify}
                           onChange={(checked) => setUcNotify(checked)}
                         />
-                        <Typography.Text>🔔 Notificar vía Telegram/Matrix</Typography.Text>
+                        <Typography.Text>
+                          🔔 Notificar vía Telegram/Matrix
+                        </Typography.Text>
                       </Flex>
-                      <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                        <Typography.Text strong>⏱️ Timeout pull (segundos)</Typography.Text>
-                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                          Aumentar para imágenes grandes (&gt;500MB) o conexiones lentas. Default: 1800 (30 min)
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          ⏱️ Timeout pull (segundos)
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Aumentar para imágenes grandes (&gt;500MB) o
+                          conexiones lentas. Default: 1800 (30 min)
                         </Typography.Text>
                         <InputNumber
                           value={pullTimeout}
@@ -560,17 +714,33 @@ export default function ConfigPage({
 
                 {/* ═══ Política de actualización por defecto ═══ */}
                 <Card bordered size="small">
-                  <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 16 }}>
+                  <Typography.Title
+                    level={4}
+                    style={{ marginTop: 0, marginBottom: 16 }}
+                  >
                     📋 Política de actualización por defecto
                   </Typography.Title>
-                  <Typography.Text type="secondary" style={{ display: "block", marginBottom: 16 }}>
-                    Esta política se aplica a los contenedores que no tengan una política
-                    individual configurada. Puedes sobrescribirla para cada contenedor
-                    desde el Dashboard con el botón ⚙️.
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    Esta política se aplica a los contenedores que no tengan una
+                    política individual configurada. Puedes sobrescribirla para
+                    cada contenedor desde el Dashboard con el botón ⚙️.
                   </Typography.Text>
-                  <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
-                      <Typography.Text strong>Acción por defecto</Typography.Text>
+                  <Space
+                    direction="vertical"
+                    size="middle"
+                    style={{ width: "100%" }}
+                  >
+                    <Space
+                      direction="vertical"
+                      size={4}
+                      style={{ width: "100%" }}
+                    >
+                      <Typography.Text strong>
+                        Acción por defecto
+                      </Typography.Text>
                       <Select
                         options={[
                           { value: "none", label: "❌ No hacer nada" },
@@ -595,9 +765,14 @@ export default function ConfigPage({
                           checked={defCleanup}
                           onChange={(checked) => setDefCleanup(checked)}
                         />
-                        <Typography.Text>🧹 Borrar imagen anterior</Typography.Text>
+                        <Typography.Text>
+                          🧹 Borrar imagen anterior
+                        </Typography.Text>
                       </Flex>
-                      <Typography.Text type="secondary" style={{ fontSize: 12, paddingLeft: 36 }}>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12, paddingLeft: 36 }}
+                      >
                         Elimina la imagen anterior después de actualizar
                       </Typography.Text>
                     </Space>
@@ -609,7 +784,10 @@ export default function ConfigPage({
                         />
                         <Typography.Text>↩️ Rollback si falla</Typography.Text>
                       </Flex>
-                      <Typography.Text type="secondary" style={{ fontSize: 12, paddingLeft: 36 }}>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12, paddingLeft: 36 }}
+                      >
                         Si el contenedor no arranca, restaura la imagen anterior
                       </Typography.Text>
                     </Space>
@@ -631,31 +809,51 @@ export default function ConfigPage({
             key: "info",
             label: "ℹ️ Información",
             children: (
-              <Space direction="vertical" size="middle" style={{ width: "100%", paddingTop: 16 }}>
+              <Space
+                direction="vertical"
+                size="middle"
+                style={{ width: "100%", paddingTop: 16 }}
+              >
                 {/* ═══ Versión e información ═══ */}
                 <Card bordered size="small">
-                  <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 16 }}>
+                  <Typography.Title
+                    level={4}
+                    style={{ marginTop: 0, marginBottom: 16 }}
+                  >
                     ℹ️ Información de la aplicación
                   </Typography.Title>
-                  <Space direction="vertical" size="small" style={{ width: "100%" }}>
+                  <Space
+                    direction="vertical"
+                    size="small"
+                    style={{ width: "100%" }}
+                  >
                     <Flex gap="middle" align="center">
-                      <Typography.Text strong style={{ minWidth: 100 }}>Versión</Typography.Text>
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Versión
+                      </Typography.Text>
                       <Tag color="blue">v{configProp?.version || "—"}</Tag>
                     </Flex>
                     <Flex gap="middle" align="center">
-                      <Typography.Text strong style={{ minWidth: 100 }}>Compilado</Typography.Text>
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Compilado
+                      </Typography.Text>
                       <Typography.Text type="secondary">
                         {configProp?.build_date
                           ? new Date(configProp.build_date).toLocaleString([], {
-                              year: "numeric", month: "long", day: "numeric",
-                              hour: "2-digit", minute: "2-digit",
+                              year: "numeric",
+                              month: "long",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
                               hour12: false,
                             })
                           : "—"}
                       </Typography.Text>
                     </Flex>
                     <Flex gap="middle" align="center">
-                      <Typography.Text strong style={{ minWidth: 100 }}>Repositorio</Typography.Text>
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Repositorio
+                      </Typography.Text>
                       <Typography.Link
                         href={configProp?.repo_url || "#"}
                         target="_blank"
@@ -665,15 +863,25 @@ export default function ConfigPage({
                       </Typography.Link>
                     </Flex>
                     <Flex gap="middle" align="center">
-                      <Typography.Text strong style={{ minWidth: 100 }}>Zona horaria</Typography.Text>
-                      <Typography.Text type="secondary">{configProp?.timezone || "UTC"}</Typography.Text>
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Zona horaria
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {configProp?.timezone || "UTC"}
+                      </Typography.Text>
                     </Flex>
                     <Flex gap="middle" align="center">
-                      <Typography.Text strong style={{ minWidth: 100 }}>Puerto</Typography.Text>
-                      <Typography.Text type="secondary">{configProp?.port || 3066}</Typography.Text>
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Puerto
+                      </Typography.Text>
+                      <Typography.Text type="secondary">
+                        {configProp?.port || 3066}
+                      </Typography.Text>
                     </Flex>
                     <Flex gap="middle" align="center">
-                      <Typography.Text strong style={{ minWidth: 100 }}>Auth</Typography.Text>
+                      <Typography.Text strong style={{ minWidth: 100 }}>
+                        Auth
+                      </Typography.Text>
                       <Tag color="green">OIDC</Tag>
                     </Flex>
                   </Space>
@@ -705,12 +913,18 @@ export default function ConfigPage({
 
                 {/* ═══ Export / Import ═══ */}
                 <Card bordered size="small">
-                  <Typography.Title level={4} style={{ marginTop: 0, marginBottom: 16 }}>
+                  <Typography.Title
+                    level={4}
+                    style={{ marginTop: 0, marginBottom: 16 }}
+                  >
                     📦 Exportar / Importar configuración
                   </Typography.Title>
-                  <Typography.Text type="secondary" style={{ display: "block", marginBottom: 16 }}>
-                    Exporta alertas, programaciones y ajustes a un archivo JSON. Puedes
-                    importarlo después para restaurar la configuración.
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    Exporta alertas, programaciones y ajustes a un archivo JSON.
+                    Puedes importarlo después para restaurar la configuración.
                   </Typography.Text>
                   <Flex gap="middle">
                     <Button
@@ -719,9 +933,12 @@ export default function ConfigPage({
                         try {
                           const res = await apiFetch("/api/admin/export");
                           const data = await res.json();
-                          const blob = new Blob([JSON.stringify(data, null, 2)], {
-                            type: "application/json",
-                          });
+                          const blob = new Blob(
+                            [JSON.stringify(data, null, 2)],
+                            {
+                              type: "application/json",
+                            },
+                          );
                           const url = URL.createObjectURL(blob);
                           const a = document.createElement("a");
                           a.href = url;
@@ -737,13 +954,17 @@ export default function ConfigPage({
                       📤 Exportar
                     </Button>
                     <Button
-                      style={{ borderColor: "var(--ant-color-warning)", color: "var(--ant-color-warning)" }}
+                      style={{
+                        borderColor: "var(--ant-color-warning)",
+                        color: "var(--ant-color-warning)",
+                      }}
                       onClick={() => {
                         const input = document.createElement("input");
                         input.type = "file";
                         input.accept = ".json";
                         input.onchange = async (e) => {
-                          const file = (e.target as HTMLInputElement).files?.[0];
+                          const file = (e.target as HTMLInputElement)
+                            .files?.[0];
                           if (!file) return;
                           try {
                             const text = await file.text();

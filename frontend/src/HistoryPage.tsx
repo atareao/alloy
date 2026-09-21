@@ -322,9 +322,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Anterior:
             </Typography.Text>
-            <Typography.Text
-              style={{ fontFamily: "monospace", fontSize: 12 }}
-            >
+            <Typography.Text style={{ fontFamily: "monospace", fontSize: 12 }}>
               {shortDigest(entry.old_digest)}
             </Typography.Text>
           </Flex>
@@ -332,9 +330,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               Nueva:
             </Typography.Text>
-            <Typography.Text
-              style={{ fontFamily: "monospace", fontSize: 12 }}
-            >
+            <Typography.Text style={{ fontFamily: "monospace", fontSize: 12 }}>
               {shortDigest(entry.new_digest)}
             </Typography.Text>
           </Flex>
@@ -364,8 +360,8 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
       <Card bordered size="small">
         <Flex justify="space-between" align="center">
           <Typography.Text type="secondary">
-            <FileTextOutlined /> Histórico de actualizaciones ·{" "}
-            {history.length} entradas
+            <FileTextOutlined /> Histórico de actualizaciones · {history.length}{" "}
+            entradas
           </Typography.Text>
           {history.length > 0 && (
             <Button

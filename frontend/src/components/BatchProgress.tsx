@@ -36,13 +36,15 @@ export default function BatchProgress({
 
   // Find the first non-done entry for current status text
   const entries = Array.from(progress.values());
-  const currentEntry = entries.find(p => !p.done);
+  const currentEntry = entries.find((p) => !p.done);
 
   // Use latest entry for aggregate counters (checked, updated, errors)
-  const latestProgress = entries.length > 0 ? entries[entries.length - 1] : null;
-  const checked = latestProgress !== null && latestProgress !== undefined
-    ? latestProgress.checked
-    : current;
+  const latestProgress =
+    entries.length > 0 ? entries[entries.length - 1] : null;
+  const checked =
+    latestProgress !== null && latestProgress !== undefined
+      ? latestProgress.checked
+      : current;
   const updatedCount = latestProgress?.updated ?? 0;
   const errorsCount = latestProgress?.errors ?? 0;
   const pending = total > 0 ? total - checked : 0;
@@ -61,11 +63,7 @@ export default function BatchProgress({
             🔄 Revisando y actualizando containers...
           </Text>
           <Flex gap={4} align="center">
-            <Button
-              size="small"
-              danger
-              onClick={onCancel}
-            >
+            <Button size="small" danger onClick={onCancel}>
               Cancelar
             </Button>
           </Flex>

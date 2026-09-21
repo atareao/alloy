@@ -1,11 +1,4 @@
-import {
-  Button,
-  Flex,
-  Space,
-  Spin,
-  Switch,
-  Typography,
-} from "antd";
+import { Button, Flex, Space, Spin, Switch, Typography } from "antd";
 import {
   SearchOutlined,
   ReloadOutlined,
@@ -93,9 +86,9 @@ export default function ContainerActions({
           size={btnSize}
           type="default"
           icon={
-            loadingActions[c.name] === "Reiniciando..."
-              ? undefined
-              : <ReloadOutlined />
+            loadingActions[c.name] === "Reiniciando..." ? undefined : (
+              <ReloadOutlined />
+            )
           }
           onClick={() => onRestart(c.name)}
           loading={loadingActions[c.name] === "Reiniciando..."}
@@ -110,9 +103,9 @@ export default function ContainerActions({
             size={btnSize}
             danger
             icon={
-              loadingActions[c.name] === "Parando..."
-                ? undefined
-                : <StopOutlined />
+              loadingActions[c.name] === "Parando..." ? undefined : (
+                <StopOutlined />
+              )
             }
             onClick={() => onStop(c.name)}
             loading={loadingActions[c.name] === "Parando..."}
@@ -125,9 +118,9 @@ export default function ContainerActions({
             size={btnSize}
             type="primary"
             icon={
-              loadingActions[c.name] === "Iniciando..."
-                ? undefined
-                : <PlayCircleOutlined />
+              loadingActions[c.name] === "Iniciando..." ? undefined : (
+                <PlayCircleOutlined />
+              )
             }
             onClick={() => onStart(c.name)}
             loading={loadingActions[c.name] === "Iniciando..."}
@@ -144,9 +137,10 @@ export default function ContainerActions({
               size={btnSize}
               danger
               icon={
-                loadingActions[c.compose_project!] === "Parando todos..."
-                  ? undefined
-                  : <StopOutlined />
+                loadingActions[c.compose_project!] ===
+                "Parando todos..." ? undefined : (
+                  <StopOutlined />
+                )
               }
               onClick={() =>
                 onStackAction(
@@ -173,9 +167,10 @@ export default function ContainerActions({
               size={btnSize}
               type="default"
               icon={
-                loadingActions[c.compose_project!] === "Reiniciando todos..."
-                  ? undefined
-                  : <ReloadOutlined />
+                loadingActions[c.compose_project!] ===
+                "Reiniciando todos..." ? undefined : (
+                  <ReloadOutlined />
+                )
               }
               onClick={() =>
                 onStackAction(
@@ -234,7 +229,8 @@ export default function ContainerActions({
                     body: JSON.stringify({
                       action: current?.action || "pull-restart",
                       cleanup_old_image: current?.cleanup_old_image || false,
-                      rollback_on_failure: current?.rollback_on_failure || false,
+                      rollback_on_failure:
+                        current?.rollback_on_failure || false,
                       notify_events: newVal,
                     }),
                   },
@@ -284,19 +280,29 @@ export default function ContainerActions({
       </Flex>
       {c.last_check && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Última revisión: {new Date(c.last_check).toLocaleString([], {
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
+          Última revisión:{" "}
+          {new Date(c.last_check).toLocaleString([], {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
           })}
         </Typography.Text>
       )}
       {c.next_check && (
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          Próxima revisión: {new Date(c.next_check).toLocaleString([], {
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', second: '2-digit',
-            hour12: false
+          Próxima revisión:{" "}
+          {new Date(c.next_check).toLocaleString([], {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
           })}
         </Typography.Text>
       )}

@@ -64,7 +64,15 @@ export default function LogsModal({
         />
       </Flex>
       {logSearch && (
-        <Text type="secondary" style={{ fontSize: 12, textAlign: "right", display: "block", marginBottom: 4 }}>
+        <Text
+          type="secondary"
+          style={{
+            fontSize: 12,
+            textAlign: "right",
+            display: "block",
+            marginBottom: 4,
+          }}
+        >
           {filteredLogs.length} de {logs.length} líneas
         </Text>
       )}

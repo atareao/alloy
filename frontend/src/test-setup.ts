@@ -20,7 +20,10 @@ class EventSourceMock {
   OPEN: number = 1;
   CLOSED: number = 2;
 
-  constructor(url: string, eventSourceInitDict?: { withCredentials?: boolean }) {
+  constructor(
+    url: string,
+    eventSourceInitDict?: { withCredentials?: boolean },
+  ) {
     this.url = url;
     this.withCredentials = eventSourceInitDict?.withCredentials ?? false;
   }
@@ -28,7 +31,9 @@ class EventSourceMock {
   addEventListener() {}
   removeEventListener() {}
   close() {}
-  dispatchEvent() { return false; }
+  dispatchEvent() {
+    return false;
+  }
 }
 
 (globalThis as any).EventSource = EventSourceMock;

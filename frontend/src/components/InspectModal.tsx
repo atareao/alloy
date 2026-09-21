@@ -1,4 +1,14 @@
-import { Divider, Flex, Modal, Space, Spin, Table, Tabs, Tag, Typography } from "antd";
+import {
+  Divider,
+  Flex,
+  Modal,
+  Space,
+  Spin,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
+} from "antd";
 import type { InspectData } from "../types";
 
 const { Text, Link } = Typography;
@@ -54,17 +64,13 @@ export default function InspectModal({
       title: "IP",
       dataIndex: "ip_address",
       key: "ip_address",
-      render: (ip: string) => (
-        <code style={{ fontSize: 12 }}>{ip}</code>
-      ),
+      render: (ip: string) => <code style={{ fontSize: 12 }}>{ip}</code>,
     },
     {
       title: "Gateway",
       dataIndex: "gateway",
       key: "gateway",
-      render: (gw: string) => (
-        <code style={{ fontSize: 12 }}>{gw}</code>
-      ),
+      render: (gw: string) => <code style={{ fontSize: 12 }}>{gw}</code>,
     },
   ];
 
@@ -187,7 +193,10 @@ export default function InspectModal({
       scroll={{ x: "max-content" }}
     />
   ) : (
-    <Text type="secondary" style={{ fontSize: 14, padding: "16px 0", display: "block" }}>
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
       Sin puertos expuestos
     </Text>
   );
@@ -202,7 +211,10 @@ export default function InspectModal({
       scroll={{ x: "max-content" }}
     />
   ) : (
-    <Text type="secondary" style={{ fontSize: 14, padding: "16px 0", display: "block" }}>
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
       Sin volúmenes montados
     </Text>
   );
@@ -217,7 +229,10 @@ export default function InspectModal({
       scroll={{ x: "max-content" }}
     />
   ) : (
-    <Text type="secondary" style={{ fontSize: 14, padding: "16px 0", display: "block" }}>
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
       Sin redes
     </Text>
   );
@@ -240,7 +255,10 @@ export default function InspectModal({
       </pre>
     </div>
   ) : (
-    <Text type="secondary" style={{ fontSize: 14, padding: "16px 0", display: "block" }}>
+    <Text
+      type="secondary"
+      style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+    >
       Sin variables de entorno
     </Text>
   );
@@ -256,7 +274,10 @@ export default function InspectModal({
         ))}
       </div>
     ) : (
-      <Text type="secondary" style={{ fontSize: 14, padding: "16px 0", display: "block" }}>
+      <Text
+        type="secondary"
+        style={{ fontSize: 14, padding: "16px 0", display: "block" }}
+      >
         Sin labels
       </Text>
     );

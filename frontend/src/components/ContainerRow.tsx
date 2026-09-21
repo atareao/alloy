@@ -8,11 +8,7 @@ import {
   Typography,
   message,
 } from "antd";
-import {
-  LinkOutlined,
-  UpOutlined,
-  DownOutlined,
-} from "@ant-design/icons";
+import { LinkOutlined, UpOutlined, DownOutlined } from "@ant-design/icons";
 import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
 import ContainerActions from "./ContainerActions";
 
@@ -117,11 +113,23 @@ export default function ContainerRow({
   };
 
   return isMobile ? (
-    <div style={{ background: 'var(--ant-color-bg-container)', borderRadius: 6, marginBottom: 1, borderBottom: '1px solid var(--ant-color-border)' }}>
+    <div
+      style={{
+        background: "var(--ant-color-bg-container)",
+        borderRadius: 6,
+        marginBottom: 1,
+        borderBottom: "1px solid var(--ant-color-border)",
+      }}
+    >
       {/* Main row — clickable header */}
       <div
         onClick={() => onToggleExpand(c.name)}
-        style={{ cursor: "pointer", padding: isMobile ? 2 : 8, background: 'var(--ant-color-bg-elevated)', borderRadius: 6 }}
+        style={{
+          cursor: "pointer",
+          padding: isMobile ? 2 : 8,
+          background: "var(--ant-color-bg-elevated)",
+          borderRadius: 6,
+        }}
       >
         <Flex justify="space-between" wrap="nowrap" align="center">
           <Flex
@@ -132,7 +140,10 @@ export default function ContainerRow({
           >
             {statusDot(c)}
             {hasUpdate && (
-              <Tag color="yellow" style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}>
+              <Tag
+                color="yellow"
+                style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}
+              >
                 !
               </Tag>
             )}
@@ -161,10 +172,7 @@ export default function ContainerRow({
             </Typography.Text>
             {prog && (
               <Tooltip title={prog.status}>
-                <Tag
-                  color={progressColor}
-                  style={{ flexShrink: 0 }}
-                >
+                <Tag color={progressColor} style={{ flexShrink: 0 }}>
                   {isUpdating ? (
                     <Flex gap={4} wrap="nowrap" align="center">
                       <Spin size="small" />
@@ -266,7 +274,10 @@ export default function ContainerRow({
           >
             {statusDot(c)}
             {hasUpdate && (
-              <Tag color="yellow" style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}>
+              <Tag
+                color="yellow"
+                style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}
+              >
                 !
               </Tag>
             )}
@@ -295,10 +306,7 @@ export default function ContainerRow({
             </Typography.Text>
             {prog && (
               <Tooltip title={prog.status}>
-                <Tag
-                  color={progressColor}
-                  style={{ flexShrink: 0 }}
-                >
+                <Tag color={progressColor} style={{ flexShrink: 0 }}>
                   {isUpdating ? (
                     <Flex gap={4} wrap="nowrap" align="center">
                       <Spin size="small" />

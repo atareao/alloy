@@ -55,7 +55,13 @@ describe("BatchProgress", () => {
 
   it("does NOT render a scrollable list of entries", () => {
     const progress = new Map<string, UpdateProgress>();
-    progress.set("nginx", makeProgress("nginx", { status: "🔍 Verificando nginx:latest...", done: false }));
+    progress.set(
+      "nginx",
+      makeProgress("nginx", {
+        status: "🔍 Verificando nginx:latest...",
+        done: false,
+      }),
+    );
 
     const { container } = render(
       <Wrapper>
@@ -70,16 +76,29 @@ describe("BatchProgress", () => {
 
     // Verify no entry list with scroll exists
     const hasEntryList = Array.from(container.querySelectorAll("*")).some(
-      (el) => el.textContent?.includes("nginx") && el.closest('[style*="overflow"]'),
+      (el) =>
+        el.textContent?.includes("nginx") && el.closest('[style*="overflow"]'),
     );
     expect(hasEntryList).toBe(false);
   });
 
   it("shows current/total — status with the first non-done container", () => {
     const progress = new Map<string, UpdateProgress>();
-    progress.set("nginx", makeProgress("nginx", { status: "✅ Sin cambios", done: true }));
-    progress.set("crowdsec", makeProgress("crowdsec", { status: "🔍 Verificando crowdsec:latest...", done: false }));
-    progress.set("zennotes", makeProgress("zennotes", { status: "⏹️ No aplicable", done: true }));
+    progress.set(
+      "nginx",
+      makeProgress("nginx", { status: "✅ Sin cambios", done: true }),
+    );
+    progress.set(
+      "crowdsec",
+      makeProgress("crowdsec", {
+        status: "🔍 Verificando crowdsec:latest...",
+        done: false,
+      }),
+    );
+    progress.set(
+      "zennotes",
+      makeProgress("zennotes", { status: "⏹️ No aplicable", done: true }),
+    );
 
     render(
       <Wrapper>
@@ -99,8 +118,17 @@ describe("BatchProgress", () => {
 
   it('shows "✅ Completado" when all containers are done', () => {
     const progress = new Map<string, UpdateProgress>();
-    progress.set("nginx", makeProgress("nginx", { status: "✅ Sin cambios", done: true }));
-    progress.set("crowdsec", makeProgress("crowdsec", { status: "✅ actualizado + reiniciado", done: true }));
+    progress.set(
+      "nginx",
+      makeProgress("nginx", { status: "✅ Sin cambios", done: true }),
+    );
+    progress.set(
+      "crowdsec",
+      makeProgress("crowdsec", {
+        status: "✅ actualizado + reiniciado",
+        done: true,
+      }),
+    );
 
     render(
       <Wrapper>
@@ -120,7 +148,17 @@ describe("BatchProgress", () => {
   it("shows live summary with counters from backend", () => {
     const progress = new Map<string, UpdateProgress>();
     // Last entry has the authoritative counters from backend
-    progress.set("traefik", makeProgress("traefik", { status: "🔍 Verificando traefik:latest...", done: false, total: 4, checked: 3, updated: 1, errors: 1 }));
+    progress.set(
+      "traefik",
+      makeProgress("traefik", {
+        status: "🔍 Verificando traefik:latest...",
+        done: false,
+        total: 4,
+        checked: 3,
+        updated: 1,
+        errors: 1,
+      }),
+    );
 
     render(
       <Wrapper>
@@ -159,7 +197,9 @@ describe("BatchProgress", () => {
       </Wrapper>,
     );
 
-    expect(screen.getByRole("button", { name: /cancelar/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /cancelar/i }),
+    ).toBeInTheDocument();
   });
 
   it("shows the title 'Revisando y actualizando containers...'", () => {
@@ -174,7 +214,9 @@ describe("BatchProgress", () => {
       </Wrapper>,
     );
 
-    expect(screen.getByText(/Revisando y actualizando containers/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Revisando y actualizando containers/),
+    ).toBeInTheDocument();
   });
 
   it("does NOT show 'iniciando...' when no progress entries exist", () => {

@@ -67,19 +67,22 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   // Periodic auth check to detect session expiry (every 5 minutes)
   useEffect(() => {
     if (!authenticated) return;
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch("/api/auth/me", { credentials: "include" });
-        if (res.status === 401) {
-          const body = await res.json();
-          if (body.session_expired) {
-            window.location.href = "/api/auth/login";
+    const interval = setInterval(
+      async () => {
+        try {
+          const res = await fetch("/api/auth/me", { credentials: "include" });
+          if (res.status === 401) {
+            const body = await res.json();
+            if (body.session_expired) {
+              window.location.href = "/api/auth/login";
+            }
           }
+        } catch {
+          // Network error — ignore, retry next interval
         }
-      } catch {
-        // Network error — ignore, retry next interval
-      }
-    }, 5 * 60 * 1000);
+      },
+      5 * 60 * 1000,
+    );
     return () => clearInterval(interval);
   }, [authenticated]);
 
@@ -128,13 +131,15 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
       // The browser will auto-reconnect. Only redirect if we detect session expiry.
       // Check by making a lightweight fetch to /api/auth/me
-      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        if (res.status === 401) {
-          window.location.href = "/api/auth/login";
-        }
-      }).catch(() => {
-        // Network error — ignore, SSE will reconnect
-      });
+      fetch("/api/auth/me", { credentials: "include" })
+        .then((res) => {
+          if (res.status === 401) {
+            window.location.href = "/api/auth/login";
+          }
+        })
+        .catch(() => {
+          // Network error — ignore, SSE will reconnect
+        });
     };
     return () => evtSource.close();
   }, [authenticated]);
@@ -160,13 +165,15 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     notifSource.onerror = () => {
       // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
       // The browser will auto-reconnect. Only redirect if we detect session expiry.
-      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        if (res.status === 401) {
-          window.location.href = "/api/auth/login";
-        }
-      }).catch(() => {
-        // Network error — ignore, SSE will reconnect
-      });
+      fetch("/api/auth/me", { credentials: "include" })
+        .then((res) => {
+          if (res.status === 401) {
+            window.location.href = "/api/auth/login";
+          }
+        })
+        .catch(() => {
+          // Network error — ignore, SSE will reconnect
+        });
     };
     return () => notifSource.close();
   }, [authenticated]);
@@ -199,8 +206,12 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         if (data.container === "__batch__" && data.done) {
           setBatchPhase("idle");
           setShowSummary(true);
-          api("/api/history").then((d) => { if (d) setHistory(d); });
-          api("/api/config").then((d) => { if (d) setConfig(d); });
+          api("/api/history").then((d) => {
+            if (d) setHistory(d);
+          });
+          api("/api/config").then((d) => {
+            if (d) setConfig(d);
+          });
           const notifMethod = data.errors > 0 ? "warning" : "success";
           notification[notifMethod]({
             message: "✅ Batch completado",
@@ -213,13 +224,15 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     });
     evtSource.addEventListener("error", () => {
-      fetch("/api/auth/me", { credentials: "include" }).then((res) => {
-        if (res.status === 401) {
-          window.location.href = "/api/auth/login";
-        }
-      }).catch(() => {
-        // Network error — ignore, SSE will reconnect
-      });
+      fetch("/api/auth/me", { credentials: "include" })
+        .then((res) => {
+          if (res.status === 401) {
+            window.location.href = "/api/auth/login";
+          }
+        })
+        .catch(() => {
+          // Network error — ignore, SSE will reconnect
+        });
     });
     return () => evtSource.close();
   }, [authenticated, api]);
@@ -242,7 +255,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   const [batchPhase, setBatchPhase] = useState<CheckAllPhase>("idle");
   const batchPhaseRef = useRef(batchPhase);
-  useEffect(() => { batchPhaseRef.current = batchPhase; }, [batchPhase]);
+  useEffect(() => {
+    batchPhaseRef.current = batchPhase;
+  }, [batchPhase]);
 
   // ── Recovery on page reload: check for in-progress updates ──
   useEffect(() => {
@@ -272,13 +287,25 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const cancelBatchRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [checkResults, setCheckResults] = useState<CheckAllResults>({
-    total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [],
+    total: 0,
+    updated: 0,
+    uptodate: 0,
+    failed: 0,
+    done: 0,
+    errors: [],
   });
   const [updateResults, setUpdateResults] = useState<CheckAllResults>({
-    total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [],
+    total: 0,
+    updated: 0,
+    uptodate: 0,
+    done: 0,
+    failed: 0,
+    errors: [],
   });
   const [showSummary, setShowSummary] = useState(false);
-  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(null);
+  const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
+    null,
+  );
 
   // Fetch update check config on mount (for last/next check times)
   const fetchCheckConfig = useCallback(async () => {
@@ -287,7 +314,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       if (res.ok) {
         setCheckConfig(await res.json());
       }
-    } catch {/* ignore */}
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
@@ -300,14 +329,31 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     cancelBatchRef.current = false;
     clearProgress();
     setBatchPhase("active");
-    setCheckResults({ total: 0, updated: 0, uptodate: 0, failed: 0, done: 0, errors: [] });
-    setUpdateResults({ total: 0, updated: 0, uptodate: 0, done: 0, failed: 0, errors: [] });
+    setCheckResults({
+      total: 0,
+      updated: 0,
+      uptodate: 0,
+      failed: 0,
+      done: 0,
+      errors: [],
+    });
+    setUpdateResults({
+      total: 0,
+      updated: 0,
+      uptodate: 0,
+      done: 0,
+      failed: 0,
+      errors: [],
+    });
     setBatchProgress({ current: 0, total: containers.length });
     setShowSummary(false);
     const controller = new AbortController();
     abortControllerRef.current = controller;
     try {
-      const res = await apiFetch("/api/check-all", { method: "POST", signal: controller.signal });
+      const res = await apiFetch("/api/check-all", {
+        method: "POST",
+        signal: controller.signal,
+      });
       if (res.ok) {
         const updated: ContainerInfo[] = await res.json();
         setContainers((prev) =>
@@ -355,7 +401,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   if (!authenticated) return <LoginScreen />;
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ minHeight: "100vh" }}>
       <Layout>
         <Layout.Header
           style={{
@@ -367,13 +413,21 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             borderBottom: "1px solid var(--ant-color-border)",
           }}
         >
-          <Flex justify="space-between" align="center" style={{ width: "100%", maxWidth: 1200, margin: "0 auto" }}>
+          <Flex
+            justify="space-between"
+            align="center"
+            style={{ width: "100%", maxWidth: 1200, margin: "0 auto" }}
+          >
             {/* Left: logo + name */}
             <Flex align="center" gap="small">
               <img src="/icon-48x48.png" width="28" height="28" alt="Alloy" />
-              <Title level={4} style={{ margin: 0, whiteSpace: "nowrap" }}>Alloy</Title>
+              <Title level={4} style={{ margin: 0, whiteSpace: "nowrap" }}>
+                Alloy
+              </Title>
               {user && !isMobile && (
-                <Text type="secondary" style={{ marginLeft: 8 }}>{user.name}</Text>
+                <Text type="secondary" style={{ marginLeft: 8 }}>
+                  {user.name}
+                </Text>
               )}
             </Flex>
 
@@ -457,7 +511,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </div>
         </Layout.Content>
       </Layout>
-
-      </Layout>
+    </Layout>
   );
 }

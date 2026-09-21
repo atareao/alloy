@@ -11,10 +11,7 @@ import {
   Typography,
   notification,
 } from "antd";
-import {
-  DeleteOutlined,
-  AppstoreOutlined,
-} from "@ant-design/icons";
+import { DeleteOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type {
   ContainerInfo,
   UpdateProgress,
@@ -71,10 +68,14 @@ export default function DashboardPage({
   const [logWrap, setLogWrap] = useState(false);
   const [logError, setLogError] = useState<string | null>(null);
   const [logTimeout, setLogTimeout] = useState(false);
-  const [loadingActions, setLoadingActions] = useState<Record<string, string>>({});
+  const [loadingActions, setLoadingActions] = useState<Record<string, string>>(
+    {},
+  );
   const [policies, setPolicies] = useState<UpdatePolicy[]>([]);
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
-  const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>({});
+  const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>(
+    {},
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<string[]>([]);
   const [showPendingUpdates, setShowPendingUpdates] = useState(false);
@@ -102,7 +103,8 @@ export default function DashboardPage({
   const filteredContainers = useMemo(() => {
     return containers.filter((c) => {
       if (showPendingUpdates && !c.has_update) return false;
-      if (stateFilter.length > 0 && !stateFilter.includes(c.state)) return false;
+      if (stateFilter.length > 0 && !stateFilter.includes(c.state))
+        return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
         return (
@@ -125,7 +127,9 @@ export default function DashboardPage({
         ungrouped.push(c);
       }
     }
-    const sorted = Object.entries(grouped).sort(([a], [b]) => a.localeCompare(b));
+    const sorted = Object.entries(grouped).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
     return { sortedGroups: sorted, noStack: ungrouped };
   }, [filteredContainers]);
 
@@ -304,7 +308,9 @@ export default function DashboardPage({
       onLogs={handleLogs}
       onStart={(name) => handleContainerAction(name, "start", "Iniciando...")}
       onStop={(name) => handleContainerAction(name, "stop", "Parando...")}
-      onRestart={(name) => handleContainerAction(name, "restart", "Reiniciando...")}
+      onRestart={(name) =>
+        handleContainerAction(name, "restart", "Reiniciando...")
+      }
       onRemove={(name) => setConfirmDelete(name)}
       onStackAction={handleStackAction}
     />
@@ -318,7 +324,7 @@ export default function DashboardPage({
         <Card
           key={project}
           size="small"
-          style={{ height: '100%' }}
+          style={{ height: "100%" }}
           styles={{
             body: {
               height: "100%",
@@ -370,9 +376,15 @@ export default function DashboardPage({
                   containers={containers}
                   onInspect={handleInspect}
                   onLogs={handleLogs}
-                  onStart={(name) => handleContainerAction(name, "start", "Iniciando...")}
-                  onStop={(name) => handleContainerAction(name, "stop", "Parando...")}
-                  onRestart={(name) => handleContainerAction(name, "restart", "Reiniciando...")}
+                  onStart={(name) =>
+                    handleContainerAction(name, "start", "Iniciando...")
+                  }
+                  onStop={(name) =>
+                    handleContainerAction(name, "stop", "Parando...")
+                  }
+                  onRestart={(name) =>
+                    handleContainerAction(name, "restart", "Reiniciando...")
+                  }
                   onRemove={(name) => setConfirmDelete(name)}
                   onStackAction={handleStackAction}
                 />
@@ -384,8 +396,18 @@ export default function DashboardPage({
     }
     return (
       <Card bordered size="small" key={project} style={{ marginBottom: 16 }}>
-        <div style={{ padding: "8px 12px", background: "var(--ant-color-bg-layout)" }}>
-          <Flex gap="small" wrap="nowrap" align="center" style={{ minWidth: 0, flex: 1, overflow: "hidden" }}>
+        <div
+          style={{
+            padding: "8px 12px",
+            background: "var(--ant-color-bg-layout)",
+          }}
+        >
+          <Flex
+            gap="small"
+            wrap="nowrap"
+            align="center"
+            style={{ minWidth: 0, flex: 1, overflow: "hidden" }}
+          >
             <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
               <AppstoreOutlined /> {project}
             </Typography.Text>
@@ -407,45 +429,95 @@ export default function DashboardPage({
       {/* Stats bar */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col span={6}>
-          <Card size="small"
-            style={{ borderTop: "3px solid var(--ant-color-primary)" }}>
-            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+          <Card
+            size="small"
+            style={{ borderTop: "3px solid var(--ant-color-primary)" }}
+          >
+            <Typography.Text
+              strong
+              style={{
+                textAlign: "center",
+                display: "block",
+                fontSize: isMobile ? 14 : 20,
+              }}
+            >
               {containers.length}
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+            <Typography.Text
+              type="secondary"
+              style={{ textAlign: "center", display: "block", fontSize: 12 }}
+            >
               Total
             </Typography.Text>
           </Card>
         </Col>
         <Col span={6}>
-          <Card size="small"
-            style={{ borderTop: "3px solid var(--ant-color-success)" }}>
-            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+          <Card
+            size="small"
+            style={{ borderTop: "3px solid var(--ant-color-success)" }}
+          >
+            <Typography.Text
+              strong
+              style={{
+                textAlign: "center",
+                display: "block",
+                fontSize: isMobile ? 14 : 20,
+              }}
+            >
               {statsRunning}
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+            <Typography.Text
+              type="secondary"
+              style={{ textAlign: "center", display: "block", fontSize: 12 }}
+            >
               Running
             </Typography.Text>
           </Card>
         </Col>
         <Col span={6}>
-          <Card size="small"
-            style={{ borderTop: "3px solid var(--ant-color-error)" }}>
-            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+          <Card
+            size="small"
+            style={{ borderTop: "3px solid var(--ant-color-error)" }}
+          >
+            <Typography.Text
+              strong
+              style={{
+                textAlign: "center",
+                display: "block",
+                fontSize: isMobile ? 14 : 20,
+              }}
+            >
               {statsStopped}
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+            <Typography.Text
+              type="secondary"
+              style={{ textAlign: "center", display: "block", fontSize: 12 }}
+            >
               Stopped
             </Typography.Text>
           </Card>
         </Col>
         <Col span={6}>
-          <Card size="small"
-            style={{ borderTop: `3px solid ${statsUpdates > 0 ? "var(--ant-color-warning)" : "var(--ant-color-text-quaternary)"}` }}>
-            <Typography.Text strong style={{ textAlign: "center", display: "block", fontSize: isMobile ? 14 : 20 }}>
+          <Card
+            size="small"
+            style={{
+              borderTop: `3px solid ${statsUpdates > 0 ? "var(--ant-color-warning)" : "var(--ant-color-text-quaternary)"}`,
+            }}
+          >
+            <Typography.Text
+              strong
+              style={{
+                textAlign: "center",
+                display: "block",
+                fontSize: isMobile ? 14 : 20,
+              }}
+            >
               {statsUpdates}
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ textAlign: "center", display: "block", fontSize: 12 }}>
+            <Typography.Text
+              type="secondary"
+              style={{ textAlign: "center", display: "block", fontSize: 12 }}
+            >
               Updates
             </Typography.Text>
           </Card>
@@ -454,24 +526,24 @@ export default function DashboardPage({
 
       {/* Container table (search + filters + groups) */}
       <ContainerTable
-          sortedGroups={sortedGroups}
-          noStack={noStack}
-          searchQuery={searchQuery}
-          setSearchQuery={setSearchQuery}
-          stateFilter={stateFilter}
-          setStateFilter={setStateFilter}
-          showPendingUpdates={showPendingUpdates}
-          setShowPendingUpdates={setShowPendingUpdates}
-          availableStates={availableStates}
-          isMobile={isMobile}
-          onCheckAll={onCheckAll}
-          lastCheck={globalLastCheck}
-          nextCheck={globalNextCheck}
-          expandedStacks={expandedStacks}
-          renderGroup={renderGroup}
-          renderRow={renderRow}
-          batchPhase={batchPhase}
-        />
+        sortedGroups={sortedGroups}
+        noStack={noStack}
+        searchQuery={searchQuery}
+        setSearchQuery={setSearchQuery}
+        stateFilter={stateFilter}
+        setStateFilter={setStateFilter}
+        showPendingUpdates={showPendingUpdates}
+        setShowPendingUpdates={setShowPendingUpdates}
+        availableStates={availableStates}
+        isMobile={isMobile}
+        onCheckAll={onCheckAll}
+        lastCheck={globalLastCheck}
+        nextCheck={globalNextCheck}
+        expandedStacks={expandedStacks}
+        renderGroup={renderGroup}
+        renderRow={renderRow}
+        batchPhase={batchPhase}
+      />
 
       {/* Inspect modal */}
       <InspectModal
@@ -484,7 +556,11 @@ export default function DashboardPage({
         containerName={inspectName}
         containerInfo={
           inspectName && containerInfo
-            ? { image: containerInfo.image, image_tag: containerInfo.image_tag, registry_url: containerInfo.registry_url }
+            ? {
+                image: containerInfo.image,
+                image_tag: containerInfo.image_tag,
+                registry_url: containerInfo.registry_url,
+              }
             : null
         }
         inspectData={inspectData}
@@ -496,13 +572,15 @@ export default function DashboardPage({
       <Modal
         open={confirmDelete !== null}
         onCancel={() => setConfirmDelete(null)}
-        title={<><DeleteOutlined /> Confirmar Eliminación</>}
+        title={
+          <>
+            <DeleteOutlined /> Confirmar Eliminación
+          </>
+        }
         width={400}
         footer={
           <Flex justify="flex-end" gap="small">
-            <Button onClick={() => setConfirmDelete(null)}>
-              Cancelar
-            </Button>
+            <Button onClick={() => setConfirmDelete(null)}>Cancelar</Button>
             <Button
               danger
               type="primary"

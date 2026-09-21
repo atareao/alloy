@@ -1,13 +1,5 @@
 import { useState } from "react";
-import {
-  Button,
-  Flex,
-  Modal,
-  Select,
-  Space,
-  Switch,
-  Typography,
-} from "antd";
+import { Button, Flex, Modal, Select, Space, Switch, Typography } from "antd";
 import type { ButtonProps } from "antd";
 import { SettingOutlined } from "@ant-design/icons";
 import { apiFetch } from "../api";
@@ -96,17 +88,26 @@ export default function PolicyActionButton({
       <Modal
         open={showPolicyModal}
         onCancel={() => setShowPolicyModal(false)}
-        title={<span><SettingOutlined /> Política: {containerName}</span>}
+        title={
+          <span>
+            <SettingOutlined /> Política: {containerName}
+          </span>
+        }
         width={520}
         footer={null}
       >
         <Space direction="vertical" size="small" style={{ width: "100%" }}>
-          <Typography.Text type="secondary" style={{ fontSize: 14, marginBottom: 8 }}>
+          <Typography.Text
+            type="secondary"
+            style={{ fontSize: 14, marginBottom: 8 }}
+          >
             Configura qué hacer cuando haya una actualización disponible para
             este contenedor.
           </Typography.Text>
           <div>
-            <Typography.Text style={{ fontSize: 14, display: "block", marginBottom: 4 }}>
+            <Typography.Text
+              style={{ fontSize: 14, display: "block", marginBottom: 4 }}
+            >
               Acción
             </Typography.Text>
             <Select
@@ -135,7 +136,10 @@ export default function PolicyActionButton({
             <Typography.Text style={{ marginLeft: 8, fontSize: 14 }}>
               🧹 Borrar imagen anterior
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ display: "block", fontSize: 12, marginLeft: 36 }}>
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginLeft: 36 }}
+            >
               Elimina la imagen anterior después de actualizar
             </Typography.Text>
           </div>
@@ -147,8 +151,12 @@ export default function PolicyActionButton({
             <Typography.Text style={{ marginLeft: 8, fontSize: 14 }}>
               ↩️ Rollback si falla
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ display: "block", fontSize: 12, marginLeft: 36 }}>
-              Si el contenedor no arranca correctamente, restaura la imagen anterior
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginLeft: 36 }}
+            >
+              Si el contenedor no arranca correctamente, restaura la imagen
+              anterior
             </Typography.Text>
           </div>
           <div>
@@ -159,12 +167,19 @@ export default function PolicyActionButton({
             <Typography.Text style={{ marginLeft: 8, fontSize: 14 }}>
               🔔 Notificar eventos
             </Typography.Text>
-            <Typography.Text type="secondary" style={{ display: "block", fontSize: 12, marginLeft: 36 }}>
-              Envía notificación (Telegram/Matrix) cuando el contenedor cambie de estado
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginLeft: 36 }}
+            >
+              Envía notificación (Telegram/Matrix) cuando el contenedor cambie
+              de estado
             </Typography.Text>
           </div>
           <Flex justify="flex-end" style={{ marginTop: 16 }}>
-            <Button onClick={() => setShowPolicyModal(false)} style={{ marginRight: 8 }}>
+            <Button
+              onClick={() => setShowPolicyModal(false)}
+              style={{ marginRight: 8 }}
+            >
               Cancelar
             </Button>
             <Button type="primary" onClick={savePolicy} loading={savingPolicy}>

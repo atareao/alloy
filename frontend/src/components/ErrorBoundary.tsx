@@ -43,11 +43,15 @@ export default class ErrorBoundary extends Component<
           }}
         >
           <Card variant="outlined" style={{ maxWidth: 600, width: "100%" }}>
-            <Title level={3} style={{ color: "var(--ant-color-error)" }}>              
+            <Title level={3} style={{ color: "var(--ant-color-error)" }}>
               <WarningOutlined style={{ marginRight: 8 }} />
               Algo salió mal
             </Title>
-            <Space direction="vertical" size="small" style={{ width: "100%", marginBottom: "var(--ant-margin-md)" }}>
+            <Space
+              direction="vertical"
+              size="small"
+              style={{ width: "100%", marginBottom: "var(--ant-margin-md)" }}
+            >
               <Text>{this.state.error?.message || "Error desconocido"}</Text>
               {this.state.error?.stack && (
                 <pre
