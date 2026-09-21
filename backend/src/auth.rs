@@ -442,6 +442,20 @@ pub async fn auth_middleware(
     // Run the request
     let mut response = next.run(req).await;
 
+    // SSE responses must not have their headers modified
+    // to avoid buffering the stream (Axum buffers when middleware
+    // touches headers on streaming responses)
+    let is_sse = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.starts_with("text/event-stream"))
+        .unwrap_or(false);
+
+    if is_sse {
+        return Ok(response);
+    }
+
     // Sliding session: if more than half the idle timeout has elapsed,
     // refresh the session cookie with a new `last_active` timestamp.
     let now = Utc::now().timestamp() as usize;
@@ -1276,5 +1290,153 @@ mod tests {
             };
             assert_eq!(claims.iat, original.iat);
         }
+    }
+
+    // ── Auth middleware SSE sliding session tests ────────────
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// Helper: create a session token whose `last_active` is past the
+    /// sliding threshold so that the middleware will attempt a refresh.
+    fn make_session_token_for_sliding(secret: &str, idle_timeout_minutes: u64) -> (String, String) {
+        let now = Utc::now().timestamp() as usize;
+        let sliding_threshold = (idle_timeout_minutes * 60 / 2) as usize;
+        let claims = SessionClaims {
+            sub: "sse_test_user".into(),
+            name: "SSE Test".into(),
+            email: "sse@test.com".into(),
+            iat: now - 3600,                          // 1 hour ago
+            last_active: now - sliding_threshold - 5, // past sliding threshold
+            exp: now + 3600,                          // valid 1 more hour
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("should create session token");
+        (token, secret.to_string())
+    }
+
+    // ── SSE test: middleware must NOT add Set-Cookie ──────────
+
+    async fn sse_handler() -> Response {
+        Response::builder()
+            .status(200)
+            .header("content-type", "text/event-stream")
+            .body(Body::from("data: test\n\n"))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_middleware_does_not_modify_sse_headers() {
+        let idle_timeout_minutes = 1u64;
+        let secret = "test_sse_secret_12345";
+        let config = crate::config::Config {
+            session_idle_timeout_minutes: Some(idle_timeout_minutes),
+            session_max_duration_hours: Some(24),
+            ..Default::default()
+        };
+
+        let (token, secret) = make_session_token_for_sliding(secret, idle_timeout_minutes);
+        let secret_clone = secret.clone();
+        let config_clone = config.clone();
+
+        let app = Router::new()
+            .route("/api/updates", axum::routing::get(sse_handler))
+            .layer(axum::middleware::from_fn(
+                move |headers: HeaderMap,
+                      mut req: axum::extract::Request,
+                      next: middleware::Next| {
+                    let s = secret_clone.clone();
+                    let c = config_clone.clone();
+                    async move {
+                        req.extensions_mut().insert(s);
+                        req.extensions_mut().insert(c);
+                        auth_middleware(headers, req, next).await
+                    }
+                },
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/updates")
+                    .header("cookie", format!("session={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // SSE responses MUST NOT have the Set-Cookie header
+        assert!(
+            !response.headers().contains_key(header::SET_COOKIE),
+            "SSE response should not contain Set-Cookie header, but it did"
+        );
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── Non-SSE test: middleware MUST add Set-Cookie ─────────
+
+    async fn json_handler() -> Response {
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"containers":[]}"#))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_middleware_does_modify_non_sse_headers() {
+        let idle_timeout_minutes = 1u64;
+        let secret = "test_json_secret_12345";
+        let config = crate::config::Config {
+            session_idle_timeout_minutes: Some(idle_timeout_minutes),
+            session_max_duration_hours: Some(24),
+            ..Default::default()
+        };
+
+        let (token, secret) = make_session_token_for_sliding(secret, idle_timeout_minutes);
+        let secret_clone = secret.clone();
+        let config_clone = config.clone();
+
+        let app = Router::new()
+            .route("/api/containers", axum::routing::get(json_handler))
+            .layer(axum::middleware::from_fn(
+                move |headers: HeaderMap,
+                      mut req: axum::extract::Request,
+                      next: middleware::Next| {
+                    let s = secret_clone.clone();
+                    let c = config_clone.clone();
+                    async move {
+                        req.extensions_mut().insert(s);
+                        req.extensions_mut().insert(c);
+                        auth_middleware(headers, req, next).await
+                    }
+                },
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/containers")
+                    .header("cookie", format!("session={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Non-SSE responses SHOULD have the Set-Cookie header
+        assert!(
+            response.headers().contains_key(header::SET_COOKIE),
+            "Non-SSE response should contain Set-Cookie header, but it did not"
+        );
+        assert_eq!(response.headers()["content-type"], "application/json");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
