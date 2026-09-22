@@ -1,5 +1,25 @@
 # Changelog
+## [0.23.0] - 2026-09-22
+
+### Bug Fixes
+
+- *(auth)* Skip sliding session headers on SSE responses to prevent buffering
+
+### Features
+
+- *(sse)* Replace 3 SSE connections with single multiplexed /api/stream endpoint
+- Replace SSE/WebSocket with GET /api/state long-polling endpoint
+- Implement long-polling redesign with BatchProgress and Notify pattern
+- Implement long-polling redesign with BatchProgress and Notify pattern
+
+### Other
+
+- V0.23.0
 ## [0.22.3] - 2026-09-21
+
+### Miscellaneous Tasks
+
+- Release v0.22.3
 
 ### Other
 
