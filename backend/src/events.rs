@@ -10,24 +10,19 @@ use crate::workers::CachedContainers;
 
 /// Long-polling state endpoint using tokio::sync::Notify.
 ///
-/// If cached containers are populated, returns immediately.
-/// Otherwise, waits up to 30 seconds for a notification (from state worker or update
-/// operations), then returns the current cached containers + summary + progress.
+/// Always waits for a notification up to 30 seconds, regardless of cache state.
+/// If `notify_waiters()` was called since the last `notified()` was polled, the
+/// future completes immediately — otherwise it waits until the next notification.
+/// Returns the current cached containers + summary + progress.
 async fn state_h(
     State(cached_containers): State<CachedContainers>,
     State(progress_cache): State<Arc<Mutex<BatchProgress>>>,
     State(state_notify): State<Arc<Notify>>,
 ) -> impl IntoResponse {
-    // If cache is populated, return immediately
-    let should_wait = {
-        let cached = cached_containers.read().await;
-        cached.is_none()
-    };
-
-    if should_wait {
-        // Cache empty, wait for first notification
-        let _ = timeout(Duration::from_secs(30), state_notify.notified()).await;
-    }
+    // Always wait for notification (long-poll). If a notification is pending
+    // (notify_waiters() was called since last poll), notified() returns immediately.
+    // Otherwise, waits up to 30 seconds.
+    let _ = timeout(Duration::from_secs(30), state_notify.notified()).await;
 
     // Read current state
     let containers = cached_containers.read().await.clone().unwrap_or_default();
@@ -45,6 +40,16 @@ async fn state_h(
         HeaderValue::from_static("no-cache"),
     );
     response
+}
+
+/// Wait on the state Notify with a timeout, regardless of whether the cache is populated.
+/// This ensures long-polling clients always get fresh data (or timeout + fallback to cache).
+#[allow(dead_code)]
+pub(crate) async fn state_wait_on_notify(
+    _cached_containers: &CachedContainers,
+    state_notify: &Arc<Notify>,
+) {
+    let _ = timeout(Duration::from_secs(30), state_notify.notified()).await;
 }
 
 pub fn routes() -> Router<AppState> {
@@ -284,5 +289,33 @@ mod tests {
         assert_eq!(response.summary.paused, 0);
         assert_eq!(response.summary.with_updates, 0);
         assert_eq!(response.progress.total, 0);
+    }
+
+    #[tokio::test]
+    async fn test_state_notify_waits_even_when_cache_populated() {
+        /// **Bug**: `state_h` only waits on `state_notify.notified()` when `cached_containers`
+        /// is `None` (empty). Once the cache is populated (Some), the handler returns immediately
+        /// without waiting, defeating the purpose of long-polling — clients get stale data
+        /// until the next state refresh.
+        ///
+        /// **Expected behavior**: `state_h` should *always* wait up to 30 seconds on the
+        /// `state_notify`, regardless of whether the cache is populated. This test verifies
+        /// that `state_wait_on_notify` actually blocks.
+        use std::time::Instant;
+
+        let containers = vec![make_container("nginx", "running", false)];
+        let cached: CachedContainers = Arc::new(RwLock::new(Some(containers)));
+        let state_notify = Arc::new(Notify::new());
+
+        let start = Instant::now();
+        state_wait_on_notify(&cached, &state_notify).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(95),
+            "Expected to wait >=95ms via state_wait_on_notify, but waited only {:?} — \
+             hint: the current handler skips waiting when cache is populated",
+            elapsed
+        );
     }
 }

@@ -869,6 +869,10 @@ async fn check_and_apply_all(
     )
     .await;
 
+    // Reset progress cache after batch completes so the next state poll
+    // returns default (idle) progress rather than stale "__batch__" data.
+    reset_progress_cache(progress_cache, state_notify).await;
+
     containers
 }
 
@@ -1540,5 +1544,56 @@ async fn check_remote_digest_on_image(image_full: &str, docker: &Docker) -> Stri
     match crate::updates::digest::check_remote_digest_with_docker(image_full, docker).await {
         Ok((_manifest, config, _)) => config,
         Err(_) => String::new(),
+    }
+}
+
+// ── Test helpers (implemented in GREEN phase) ──────────────
+
+/// Reset the progress cache to default and notify waiting state handlers.
+/// This MUST be called after `check_and_apply_all` completes to clear
+/// the "checking" field and prevent stale batch progress on the frontend.
+pub(crate) async fn reset_progress_cache(
+    progress_cache: &Arc<Mutex<BatchProgress>>,
+    state_notify: &Arc<Notify>,
+) {
+    let mut cache = progress_cache.lock().await;
+    *cache = BatchProgress::default();
+    drop(cache);
+    state_notify.notify_waiters();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, Notify};
+
+    /// Verifies that `reset_progress_cache` resets a populated progress cache to default.
+    ///
+    /// **Bug**: `check_and_apply_all` sends a final `update_progress` with total/checked/updated/errors
+    /// values but never resets the `progress_cache` to `BatchProgress::default()`. This leaves stale
+    /// "checking: __batch__" on the frontend until the next batch cycle.
+    ///
+    /// **Expected behavior**: After `check_and_apply_all` completes, `reset_progress_cache` is called
+    /// to zero out all fields and clear the "checking" marker.
+    #[tokio::test]
+    async fn test_reset_progress_cache_clears_non_default_values() {
+        let progress_cache: Arc<Mutex<BatchProgress>> = Arc::new(Mutex::new(BatchProgress {
+            total: 5,
+            checked: 5,
+            updated: 2,
+            errors: 0,
+            checking: "__batch__".into(),
+        }));
+        let state_notify = Arc::new(Notify::new());
+
+        reset_progress_cache(&progress_cache, &state_notify).await;
+
+        let cache = progress_cache.lock().await;
+        assert_eq!(cache.total, 0, "total should be reset to 0");
+        assert_eq!(cache.checked, 0, "checked should be reset to 0");
+        assert_eq!(cache.updated, 0, "updated should be reset to 0");
+        assert_eq!(cache.errors, 0, "errors should be reset to 0");
+        assert!(cache.checking.is_empty(), "checking should be cleared");
     }
 }
