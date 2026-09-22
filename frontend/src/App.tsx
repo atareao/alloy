@@ -151,6 +151,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         const bp = state.progress;
         setProgress(bp);
         // Check for batch complete: checking === "__batch__" and checked >= total
+        // OR progress reset to default while batch is active (race condition workaround)
         if (
           bp.checking === "__batch__" &&
           bp.total > 0 &&
@@ -169,6 +170,22 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             message: "✅ Batch completado",
             description: `${bp.checked} containers · ${bp.updated} ok · ${bp.errors} errores`,
             duration: 8,
+          });
+        } else if (
+          batchPhaseRef.current === "active" &&
+          bp.total === 0 &&
+          bp.checking === ""
+        ) {
+          // Race condition: backend reset progress_cache to default before
+          // state_h could read the "__batch__" marker. Detect completion
+          // via progress reset while batch is active.
+          setBatchPhase("idle");
+          setShowSummary(true);
+          api("/api/history").then((d) => {
+            if (d) setHistory(d);
+          });
+          api("/api/config").then((d) => {
+            if (d) setConfig(d);
           });
         }
       },
@@ -239,6 +256,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // checkAll: POST /api/check-all
   const checkAll = useCallback(async () => {
+    batchPhaseRef.current = "active";
     setBatchPhase("active");
     setCheckResults({
       total: 0,
@@ -294,6 +312,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       // Ignore if endpoint doesn't exist yet
     }
     // Reset state
+    batchPhaseRef.current = "idle";
     setBatchPhase("idle");
     setBatchProgress({ current: 0, total: 0 });
   }, []);
