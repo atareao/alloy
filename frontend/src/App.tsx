@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useMediaQuery } from "./useMediaQuery";
-import { useStatePoll } from "./useStatePoll";
+import { useSSE } from "./useSSE";
 import { notification } from "antd";
 import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
@@ -15,6 +15,7 @@ import type {
   HistoryEntry,
   AppConfig,
   UpdateCheckConfig,
+  NotifEvent,
 } from "./types";
 import { apiFetch } from "./api";
 import LoginScreen from "./components/LoginScreen";
@@ -118,15 +119,73 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     });
   }, [authenticated, api]);
 
-  // ── State polling (long-polling via GET /api/state) ────────────
-  useStatePoll(
-    useCallback((incoming: ContainerInfo[]) => {
-      console.log("[STATE] containers received, count:", incoming.length);
-      setContainers(incoming);
-      setContainersLoaded(true);
+  // ── SSE: container state events ────────────────────────────────
+  useSSE(
+    "/api/events",
+    "state",
+    useCallback((data: string) => {
+      try {
+        const parsed: ContainerInfo[] = JSON.parse(data);
+        setContainers(parsed);
+        setContainersLoaded(true);
+      } catch (e) {
+        console.error("[SSE] Failed to parse state event:", e);
+      }
     }, []),
-    useCallback(() => {
-      console.error("[STATE] polling failed after max retries");
+  );
+
+  // ── SSE: update progress events ────────────────────────────────
+  useSSE(
+    "/api/updates",
+    "progress",
+    useCallback((data: string) => {
+      try {
+        const parsed: Record<string, UpdateProgress> = JSON.parse(data);
+        const entries = Object.values(parsed);
+        if (entries.length === 0) return;
+        setProgress((prev) => {
+          const next = new Map(prev);
+          for (const entry of entries) next.set(entry.container, entry);
+          return next;
+        });
+        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
+        if (best.total > 0) {
+          setBatchProgress({ current: best.checked, total: best.total });
+        }
+        const batchEntry = entries.find((e) => e.container === "__batch__" && e.done);
+        if (batchEntry) {
+          setBatchPhase("idle");
+          setShowSummary(true);
+          api("/api/history").then((d) => { if (d) setHistory(d); });
+          api("/api/config").then((d) => { if (d) setConfig(d); });
+          const notifMethod = batchEntry.errors > 0 ? "warning" : "success";
+          notification[notifMethod]({
+            message: "✅ Batch completado",
+            description: `${batchEntry.checked} containers · ${batchEntry.updated} ok · ${batchEntry.errors} errores`,
+            duration: 8,
+          });
+        }
+      } catch (e) {
+        console.error("[SSE] Failed to parse progress event:", e);
+      }
+    }, [api]),
+  );
+
+  // ── SSE: notification events ──────────────────────────────────
+  useSSE(
+    "/api/notifications",
+    "notification",
+    useCallback((data: string) => {
+      try {
+        const parsed: NotifEvent = JSON.parse(data);
+        notification.open({
+          message: `📬 ${parsed.container}`,
+          description: parsed.status,
+          duration: 6,
+        });
+      } catch (e) {
+        console.error("[SSE] Failed to parse notification event:", e);
+      }
     }, []),
   );
 
@@ -147,51 +206,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   useEffect(() => {
     batchPhaseRef.current = batchPhase;
   }, [batchPhase]);
-
-  // ── Progress polling during batch operations ──────────────────
-  useEffect(() => {
-    if (batchPhase !== "active") return;
-    let cancelled = false;
-    const pollProgress = async () => {
-      try {
-        const res = await fetch("/api/check-progress", { credentials: "include" });
-        if (!res.ok) return;
-        const data: Record<string, UpdateProgress> = await res.json();
-        if (cancelled) return;
-        const entries = Object.values(data);
-        if (entries.length === 0) return;
-        setProgress((prev) => {
-          const next = new Map(prev);
-          for (const entry of entries) next.set(entry.container, entry);
-          return next;
-        });
-        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
-        if (best.total > 0) {
-          setBatchProgress({ current: best.checked, total: best.total });
-        }
-        // Check for batch complete
-        const batchEntry = entries.find((e) => e.container === "__batch__" && e.done);
-        if (batchEntry) {
-          setBatchPhase("idle");
-          setShowSummary(true);
-          api("/api/history").then((d) => { if (d) setHistory(d); });
-          api("/api/config").then((d) => { if (d) setConfig(d); });
-          const notifMethod = batchEntry.errors > 0 ? "warning" : "success";
-          notification[notifMethod]({
-            message: "✅ Batch completado",
-            description: `${batchEntry.checked} containers · ${batchEntry.updated} ok · ${batchEntry.errors} errores`,
-            duration: 8,
-          });
-          return;
-        }
-      } catch {
-        // Ignore errors, retry on next interval
-      }
-      if (!cancelled) setTimeout(pollProgress, 2000);
-    };
-    pollProgress();
-    return () => { cancelled = true; };
-  }, [batchPhase, api]);
 
   const clearProgress = useCallback(() => {
     setProgress(new Map());
@@ -452,3 +466,4 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     </Layout>
   );
 }
+

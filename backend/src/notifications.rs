@@ -1,8 +1,22 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::models::Settings;
-use crate::state::http_client;
+use axum::{
+    extract::State,
+    http::{HeaderMap, HeaderValue},
+    response::sse::{Event, KeepAlive, Sse},
+    response::Json,
+    routing::{get, post},
+    Router,
+};
+use std::convert::Infallible;
+use tokio::sync::broadcast;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio_stream::wrappers::BroadcastStream;
+
+use crate::models::{NotifEvent, Settings, TestNotificationReq};
+use crate::state::{http_client, AppState};
 
 /// Resolve telegram token from settings
 fn tg_token(settings: &Settings) -> Option<&str> {
@@ -167,11 +181,6 @@ pub async fn notify_all(settings: &Arc<Mutex<Settings>>, container: &str, status
 
 // ── Test notification endpoint ──────────────────────────────
 
-use axum::{extract::State, response::Json, routing::post, Router};
-
-use crate::models::TestNotificationReq;
-use crate::state::AppState;
-
 async fn test_notification_h(
     State(settings): State<std::sync::Arc<tokio::sync::Mutex<crate::models::Settings>>>,
     Json(body): Json<TestNotificationReq>,
@@ -207,8 +216,37 @@ async fn test_notification_h(
     }
 }
 
+/// SSE endpoint for notification events.
+///
+/// Subscribes to the `NotifEvent` broadcast channel and forwards all events
+/// as SSE messages with event name `"notification"` and JSON-encoded data.
+async fn notifications_sse_h(
+    State(tx): State<broadcast::Sender<NotifEvent>>,
+) -> (HeaderMap, Sse<impl futures::Stream<Item = Result<Event, Infallible>>>) {
+    let rx = tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+        Ok(evt) => {
+            let data = serde_json::to_string(&evt).unwrap_or_default();
+            Some(Ok(Event::default().event("notification").data(data)))
+        }
+        Err(BroadcastStreamRecvError::Lagged(n)) => {
+            tracing::warn!("notifications SSE lagged by {} messages", n);
+            None
+        }
+    });
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    (headers, Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/notifications/test", post(test_notification_h))
+    Router::new()
+        .route("/api/notifications/test", post(test_notification_h))
+        .route("/api/notifications", get(notifications_sse_h))
 }
 
 #[cfg(test)]

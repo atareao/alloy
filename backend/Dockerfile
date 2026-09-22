@@ -15,11 +15,11 @@ WORKDIR /build
 # Cache dependencies (avoid recompiling every time)
 RUN cargo init --bin --name alloy .
 
-COPY backend/Cargo.toml backend/Cargo.lock backend/build.rs ./
+COPY ./Cargo.toml ./Cargo.lock ./build.rs ./
 RUN cargo build --release && \
     rm -rf src
 
-COPY backend/src ./src
+COPY ./src ./src
 RUN touch src/main.rs && \
     cargo build --release && \
     strip target/release/alloy

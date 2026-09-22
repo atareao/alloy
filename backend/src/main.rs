@@ -158,6 +158,12 @@ async fn main() {
     // Broadcast channel for container state events
     let (tx, _) = broadcast::channel(128);
 
+    // Broadcast channel for notification events (Telegram/Matrix/Webhook)
+    let (notif_tx, _) = broadcast::channel(128);
+
+    // Broadcast channel for update progress events (SSE)
+    let (progress_tx, _) = broadcast::channel(128);
+
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
     let progress_cache: Arc<Mutex<HashMap<String, UpdateProgress>>> =
@@ -178,6 +184,8 @@ async fn main() {
         update_in_progress: Arc::new(Mutex::new(HashSet::new())),
         progress_cache: progress_cache.clone(),
         cancel_check: Arc::new(AtomicBool::new(false)),
+        notif_tx: notif_tx.clone(),
+        progress_tx: progress_tx.clone(),
     };
 
     // Spawn workers

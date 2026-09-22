@@ -144,6 +144,10 @@ pub struct AppState {
     /// Cancellation flag for batch check/update operations.
     /// Set to true when the user clicks Cancel; checked between iterations.
     pub cancel_check: Arc<AtomicBool>,
+    /// Broadcast channel for notification events (Telegram/Matrix/Webhook).
+    pub notif_tx: broadcast::Sender<NotifEvent>,
+    /// Broadcast channel for update progress events (SSE).
+    pub progress_tx: broadcast::Sender<UpdateProgress>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -222,6 +226,18 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<HashMap<String, UpdateProgre
 impl axum::extract::FromRef<AppState> for Arc<AtomicBool> {
     fn from_ref(state: &AppState) -> Self {
         state.cancel_check.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for broadcast::Sender<NotifEvent> {
+    fn from_ref(state: &AppState) -> Self {
+        state.notif_tx.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for broadcast::Sender<UpdateProgress> {
+    fn from_ref(state: &AppState) -> Self {
+        state.progress_tx.clone()
     }
 }
 

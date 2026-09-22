@@ -26,14 +26,19 @@ fmt:
 fmt-fix:
     cd backend && cargo fmt
 
+[working-directory('./backend')]
 build-backend:
-    @podman compose build backend
+    @podman build \
+        --tag={{registry}}/{{user}}/{{name}}-backend:{{version}} \
+        --tag={{registry}}/{{user}}/{{name}}-backend:latest .
 
+[working-directory('./frontend')]
 build-frontend:
-    @podman compose build frontend
+    @podman build \
+        --tag={{registry}}/{{user}}/{{name}}-frontend:{{version}} \
+        --tag={{registry}}/{{user}}/{{name}}-frontend:latest .
 
-build:
-    @podman compose build
+build: build-backend build-frontend
 
 up:
     @podman compose up -d
@@ -45,12 +50,12 @@ logs:
     @podman compose logs -f
 
 push-backend:
-    @podman image push {{registry}}/{{user}}/alloy-backend:{{version}}
-    @podman image push {{registry}}/{{user}}/alloy-backend:latest
+    @podman image push {{registry}}/{{user}}/{{name}}-backend:{{version}}
+    @podman image push {{registry}}/{{user}}/{{name}}-backend:latest
 
 push-frontend:
-    @podman image push {{registry}}/{{user}}/alloy-frontend:{{version}}
-    @podman image push {{registry}}/{{user}}/alloy-frontend:latest
+    @podman image push {{registry}}/{{user}}/{{name}}-frontend:{{version}}
+    @podman image push {{registry}}/{{user}}/{{name}}-frontend:latest
 
 push: push-backend push-frontend
 
