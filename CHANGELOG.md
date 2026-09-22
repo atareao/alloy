@@ -1,4 +1,9 @@
 # Changelog
+## [0.23.1] - 2026-09-22
+
+### Bug Fixes
+
+- Detect batch completion when progress resets to default (#65)
 ## [0.23.0] - 2026-09-22
 
 ### Bug Fixes
@@ -11,6 +16,10 @@
 - Replace SSE/WebSocket with GET /api/state long-polling endpoint
 - Implement long-polling redesign with BatchProgress and Notify pattern
 - Implement long-polling redesign with BatchProgress and Notify pattern
+
+### Miscellaneous Tasks
+
+- Release v0.23.0
 
 ### Other
 
