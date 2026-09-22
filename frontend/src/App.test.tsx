@@ -272,6 +272,94 @@ describe("App layout - topbar navigation", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides progress card when state poll returns default progress after batch completes", async () => {
+    // Simulate the race condition: backend resets progress_cache to default
+    // after sending "__batch__" marker. The frontend receives progress with
+    // total=0 and checking="" instead of checking="__batch__".
+    //
+    // RED: with current code, the card stays visible because the condition
+    // bp.checking === "__batch__" is never met.
+    // GREEN: after the fix, the card should disappear.
+    let stateCallCount = 0;
+    const MAX_STATE_CALLS = 5;
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/state") {
+        stateCallCount++;
+        if (stateCallCount <= MAX_STATE_CALLS) {
+          // Return default (reset) progress with delay to slow polling
+          return new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(
+                    JSON.stringify({
+                      containers: [],
+                      summary: {
+                        total: 0,
+                        running: 0,
+                        stopped: 0,
+                        paused: 0,
+                        with_updates: 0,
+                      },
+                      progress: {
+                        total: 0,
+                        checked: 0,
+                        updated: 0,
+                        errors: 0,
+                        checking: "",
+                      },
+                    }),
+                  ),
+                ),
+              100,
+            ),
+          );
+        }
+        // Subsequent calls hang to prevent infinite polling loop
+        return new Promise(() => {});
+      }
+      if (url === "/api/check-all") {
+        return Promise.resolve(new Response(JSON.stringify([])));
+      }
+      return mockAuthResponse(true)(url);
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    render(
+      <Wrapper>
+        <App colorScheme="dark" setColorScheme={() => {}} />
+      </Wrapper>,
+    );
+
+    // Wait for the component to render
+    await waitFor(() => {
+      expect(screen.getByText("Alloy")).toBeInTheDocument();
+    });
+
+    // Click "Check" to start batch
+    const checkBtn = screen.getByText("Check");
+    fireEvent.click(checkBtn);
+
+    // The progress card should appear (batchPhase becomes "active")
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Revisando y actualizando containers/),
+      ).toBeInTheDocument();
+    });
+
+    // Wait for state poll to process the default progress response
+    // With current code (RED), the card stays visible because the condition
+    // bp.checking === "__batch__" is never met.
+    // After the fix (GREEN), the card should disappear.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // RED: This assertion FAILS with current code (card stays visible)
+    // GREEN: This assertion PASSES after the fix
+    expect(
+      screen.queryByText(/Revisando y actualizando containers/),
+    ).not.toBeInTheDocument();
+  });
+
   it("does NOT show progress card when no active updates", async () => {
     // Mock fetch to return only completed progress
     const mockFetch = vi.fn().mockImplementation((url: string) => {
