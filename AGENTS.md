@@ -47,7 +47,7 @@ When the user requests a new feature, bug fix, or refactor:
    - If it fails, STOP. Create the change proposal first.
 
 1. **Create the Change Proposal:****
-   - Execute CLI command: `openspec change <feature-name>`
+   - Execute CLI command: `openspec new change <feature-name>`
 2. **Draft Specifications:**
    - Populate `openspec/changes/<feature-name>/proposal.md` with intent, scope, and impact.
    - Create spec deltas in `openspec/changes/<feature-name>/specs/<module>/spec.md`.

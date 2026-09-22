@@ -1,86 +1,60 @@
-# frontend Specification
+# Spec Delta: Frontend State Polling
 
-## Purpose
-TBD - created by archiving change fix-tsc-build-error. Update Purpose after archive.
+## ADDED
 
-## Requirements
-
-### Requirement: Logout test uses Object.defineProperty instead of delete
-
-**Given** el test "logs out when clicking Salir button" en `App.test.tsx`
-**When** se ejecuta `tsc -b`
-**Then** no hay errores de compilación TypeScript
-**And** `vitest run` pasa los 26 tests
-
-#### Scenario: Logout test compiles and passes
-**Given** el test "logs out when clicking Salir button"
-**When** se ejecuta `tsc -b`
-**Then** no hay errores TypeScript
-**And** `vitest run` pasa todos los tests
-
-#### Scenario: No regressions on other tests
-**Given** el fix solo modifica `App.test.tsx`
-**When** se ejecuta `vitest run`
-**Then** los 26 tests pasan (5 test files)
-
-### Requirement: Frontend SHALL recover batch progress on page reload
-
-On mount, the frontend SHALL call `GET /api/check-progress` **once**. If there are entries with `done === false`, it SHALL set `batchPhase = "active"` and populate the progress map so the `BatchProgress` card appears.
-
-**Contracts:**
+### New Hook: `useStatePoll`
 ```typescript
-// AÑADIDO: Recovery on page reload
-useEffect(() => {
-    if (!authenticated) return;
-    fetch("/api/check-progress", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: Record<string, UpdateProgress> | null) => {
-        if (!data) return;
-        const entries = Object.values(data);
-        const hasActive = entries.some((e) => !e.done);
-        if (!hasActive) return;
-        setProgress((prev) => {
-          const next = new Map(prev);
-          for (const entry of entries) next.set(entry.container, entry);
-          return next;
-        });
-        setBatchPhase("active");
-        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
-        if (best.total > 0) {
-          setBatchProgress({ current: best.checked, total: best.total });
-        }
-      })
-      .catch(() => {});
-  }, [authenticated]);
+function useStatePoll(
+  onContainers: (containers: ContainerInfo[]) => void,
+  onError?: () => void,
+): void
 ```
 
-#### Scenario: Recarga durante actualización activa
-- **Given** el usuario inició un "Check All" que está actualizando contenedores
-- **When** recarga la página (F5)
-- **Then** al montar, se llama `GET /api/check-progress` una vez
-- **And** si hay entries con `done === false`, se setea `batchPhase = "active"`
-- **And** se muestra el `BatchProgress` card con el progreso actual
-- **And** el SSE `/api/updates` reconecta y recibe eventos posteriores
+**Behavior**:
+1. Calls `GET /api/state` with `credentials: "include"`
+2. On success (200), parses JSON as `ContainerInfo[]` and calls `onContainers`
+3. Immediately makes another request (no delay between requests)
+4. On error (network failure, non-200 status), waits with exponential backoff (1s, 2s, 4s, ... up to 30s max) before retrying
+5. Resets backoff to 0 on successful response
+6. Cleans up on unmount (aborts in-flight request)
 
-#### Scenario: Recarga sin actualización en curso
-- **Given** no hay ninguna operación batch activa
-- **When** el usuario recarga la página
-- **Then** `GET /api/check-progress` devuelve `{}` vacío
-- **And** `batchPhase` permanece en `"idle"`
-- **And** no se muestra ningún progress card
+### New Progress Polling Effect in `App.tsx`
+- `useEffect` that polls `GET /api/check-progress` every 2 seconds when `batchPhase === "active"`
+- Handles `__batch__` done event to show summary and reset state
 
-#### Scenario: Actualización ya completada al recargar
-- **Given** el batch terminó pero la página se recarga antes de ver el resultado
-- **When** se monta la página
-- **Then** `GET /api/check-progress` devuelve entries con `done === true`
-- **And** `hasActive` es `false`
-- **And** no se activa el batchPhase
-- **And** el state worker (SSE `/api/events`) ya tiene los contenedores actualizados
+## REMOVED
 
-#### Scenario: Error de red al recuperar progreso
-- **Given** hay una actualización activa
-- **When** la página se recarga y `GET /api/check-progress` falla (red)
-- **Then** el `.catch()` ignora el error silenciosamente
-- **And** `batchPhase` permanece en `"idle"`
-- **And** el SSE `/api/updates` reconecta y recibe eventos posteriores
-- **And** el state worker refrescará los contenedores en ~30s
+### Removed Files
+- `frontend/src/useWS.ts` — WebSocket hook
+- `frontend/src/useWS.test.tsx` — WebSocket tests
+
+### Removed from `App.tsx`
+- `useWS("/api/ws", "containers", ...)` call
+- `useWS("/api/ws", "notification", ...)` call
+- `useWS("/api/ws", "update-progress", ...)` call
+
+## MODIFIED
+
+### `App.tsx`
+- Replaced `import { useWS } from "./useWS"` with `import { useStatePoll } from "./useStatePoll"`
+- Replaced three `useWS` calls with `useStatePoll` + progress polling `useEffect`
+
+## Scenarios
+
+### Happy Path: Continuous state updates
+**Given** the frontend calls `useStatePoll`
+**When** the first response arrives with container data
+**Then** `onContainers` is called with the parsed `ContainerInfo[]`
+**And** a new request is immediately initiated
+
+### Error: Network failure
+**Given** the frontend is polling via `useStatePoll`
+**When** a request fails (network error or non-200)
+**Then** the hook waits with exponential backoff (1s, 2s, 4s, ... up to 30s)
+**When** the backoff reaches max retries (10)
+**Then** `onError` is called
+
+### Cleanup: Unmount
+**Given** the component using `useStatePoll` unmounts
+**Then** the in-flight request is aborted
+**And** no further requests are made

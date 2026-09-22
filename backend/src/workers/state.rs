@@ -76,7 +76,6 @@ async fn refresh(
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
     tx: &broadcast::Sender<StateEvent>,
     cache: &CachedContainers,
-    notif_tx: &broadcast::Sender<NotifEvent>,
     previous_states: &mut HashMap<String, String>,
     db_pool: &DbPool,
     update_in_progress: &Arc<Mutex<HashSet<String>>>,
@@ -88,7 +87,6 @@ async fn refresh(
     });
 
     // Detect state changes and send notifications
-    let now = crate::timezone::now_time_formatted();
     let settings_arc = settings.clone();
     let policies = update_policies.lock().await;
     for c in &containers {
@@ -125,11 +123,6 @@ async fn refresh(
                     "removing" => "🗑️ eliminando",
                     _ => curr,
                 };
-                let _ = notif_tx.send(NotifEvent {
-                    container: c.name.clone(),
-                    status: status_msg.to_string(),
-                    timestamp: now.clone(),
-                });
                 notify_all(&settings_arc, &c.name, status_msg).await;
             }
         }
@@ -151,7 +144,6 @@ pub async fn state_worker(
     update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
     tx: broadcast::Sender<StateEvent>,
     cached_containers: CachedContainers,
-    notif_tx: broadcast::Sender<NotifEvent>,
     db_pool: DbPool,
     update_in_progress: Arc<Mutex<HashSet<String>>>,
 ) {
@@ -168,7 +160,6 @@ pub async fn state_worker(
         &update_policies,
         &tx,
         &cached_containers,
-        &notif_tx,
         &mut previous_states,
         &db_pool,
         &update_in_progress,
@@ -194,7 +185,7 @@ pub async fn state_worker(
                                 if let Some(ref action) = evt.action {
                                     if relevant_actions.contains(&action.as_str()) {
                                         tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
-                                        refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool, &update_in_progress).await;
+refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
                                     }
                                 }
                             }
@@ -210,7 +201,7 @@ pub async fn state_worker(
                     }
                 }
                 _ = fallback.tick() => {
-                    refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &notif_tx, &mut previous_states, &db_pool, &update_in_progress).await;
+                    refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
                 }
             }
         }

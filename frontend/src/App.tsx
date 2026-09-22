@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useMediaQuery } from "./useMediaQuery";
+import { useStatePoll } from "./useStatePoll";
 import { notification } from "antd";
 import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
@@ -11,7 +12,6 @@ import {
 import type {
   ContainerInfo,
   UpdateProgress,
-  NotifEvent,
   HistoryEntry,
   AppConfig,
   UpdateCheckConfig,
@@ -118,88 +118,19 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     });
   }, [authenticated, api]);
 
-  // Single SSE connection to /api/stream — merges containers, notifications, and update-progress
-  useEffect(() => {
-    if (!authenticated) return;
-    const evtSource = new EventSource("/api/stream");
-    evtSource.addEventListener("containers", (e) => {
-      const incoming: ContainerInfo[] = JSON.parse(e.data).containers;
+  // ── State polling (long-polling via GET /api/state) ────────────
+  useStatePoll(
+    useCallback((incoming: ContainerInfo[]) => {
+      console.log("[STATE] containers received, count:", incoming.length);
       setContainers(incoming);
       setContainersLoaded(true);
-    });
-    evtSource.addEventListener("notification", (e) => {
-      try {
-        const notif: NotifEvent = JSON.parse(e.data);
-        notification.info({
-          message: notif.container,
-          description: notif.status,
-          duration: 5,
-        });
-      } catch (err) {
-        console.error("SSE notification parse error:", err, "raw:", e.data);
-      }
-    });
-    evtSource.addEventListener("update-progress", (e) => {
-      try {
-        const data: UpdateProgress = JSON.parse(e.data);
-        console.log("SSE update-progress:", data);
-        setProgress((prev) => {
-          const next = new Map(prev);
-          next.set(data.container, data);
-          return next;
-        });
-        // Auto-show progress card when progress arrives and phase is idle
-        if (!data.done && batchPhaseRef.current === "idle") {
-          setBatchPhase("active");
-          setBatchProgress({ current: data.checked, total: data.total });
-        }
-        // Update batchProgress from backend counters
-        if (data.total > 0) {
-          setBatchProgress({ current: data.checked, total: data.total });
-        }
-        // Batch complete event (sent by backend after all containers processed)
-        if (data.container === "__batch__" && data.done) {
-          setBatchPhase("idle");
-          setShowSummary(true);
-          api("/api/history").then((d) => {
-            if (d) setHistory(d);
-          });
-          api("/api/config").then((d) => {
-            if (d) setConfig(d);
-          });
-          const notifMethod = data.errors > 0 ? "warning" : "success";
-          notification[notifMethod]({
-            message: "✅ Batch completado",
-            description: `${data.checked} containers · ${data.updated} ok · ${data.errors} errores`,
-            duration: 8,
-          });
-        }
-      } catch (err) {
-        console.error("SSE update-progress parse error:", err, "raw:", e.data);
-      }
-    });
-    evtSource.onerror = () => {
-      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
-      // The browser will auto-reconnect. Only redirect if we detect session expiry.
-      // Check by making a lightweight fetch to /api/auth/me
-      fetch("/api/auth/me", { credentials: "include" })
-        .then((res) => {
-          if (res.status === 401) {
-            window.location.href = "/api/auth/login";
-          }
-        })
-        .catch(() => {
-          // Network error — ignore, SSE will reconnect
-        });
-    };
-    return () => evtSource.close();
-  }, [authenticated, api]);
+    }, []),
+    useCallback(() => {
+      console.error("[STATE] polling failed after max retries");
+    }, []),
+  );
 
-  const clearProgress = useCallback(() => {
-    setProgress(new Map());
-  }, []);
-
-  // ── Batch check/update state (lives in App to survive tab switches) ──
+// ── Batch check/update state (lives in App to survive tab switches) ──
   type CheckAllPhase = "idle" | "active";
 
   interface CheckAllResults {
@@ -216,6 +147,55 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   useEffect(() => {
     batchPhaseRef.current = batchPhase;
   }, [batchPhase]);
+
+  // ── Progress polling during batch operations ──────────────────
+  useEffect(() => {
+    if (batchPhase !== "active") return;
+    let cancelled = false;
+    const pollProgress = async () => {
+      try {
+        const res = await fetch("/api/check-progress", { credentials: "include" });
+        if (!res.ok) return;
+        const data: Record<string, UpdateProgress> = await res.json();
+        if (cancelled) return;
+        const entries = Object.values(data);
+        if (entries.length === 0) return;
+        setProgress((prev) => {
+          const next = new Map(prev);
+          for (const entry of entries) next.set(entry.container, entry);
+          return next;
+        });
+        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
+        if (best.total > 0) {
+          setBatchProgress({ current: best.checked, total: best.total });
+        }
+        // Check for batch complete
+        const batchEntry = entries.find((e) => e.container === "__batch__" && e.done);
+        if (batchEntry) {
+          setBatchPhase("idle");
+          setShowSummary(true);
+          api("/api/history").then((d) => { if (d) setHistory(d); });
+          api("/api/config").then((d) => { if (d) setConfig(d); });
+          const notifMethod = batchEntry.errors > 0 ? "warning" : "success";
+          notification[notifMethod]({
+            message: "✅ Batch completado",
+            description: `${batchEntry.checked} containers · ${batchEntry.updated} ok · ${batchEntry.errors} errores`,
+            duration: 8,
+          });
+          return;
+        }
+      } catch {
+        // Ignore errors, retry on next interval
+      }
+      if (!cancelled) setTimeout(pollProgress, 2000);
+    };
+    pollProgress();
+    return () => { cancelled = true; };
+  }, [batchPhase, api]);
+
+  const clearProgress = useCallback(() => {
+    setProgress(new Map());
+  }, []);
 
   // ── Recovery on page reload: check for in-progress updates ──
   useEffect(() => {

@@ -26,6 +26,13 @@ function mockAuthResponse(authenticated = true) {
     if (url === "/api/containers") {
       return Promise.resolve(new Response(JSON.stringify([])));
     }
+    if (url === "/api/state") {
+      // Long-poll: never resolve (simulates server holding the connection)
+      return new Promise(() => {});
+    }
+    if (url === "/api/check-progress") {
+      return Promise.resolve(new Response(JSON.stringify({})));
+    }
     if (url === "/api/history") {
       return Promise.resolve(new Response(JSON.stringify([])));
     }

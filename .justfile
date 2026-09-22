@@ -28,6 +28,7 @@ fmt-fix:
 
 build:
     @podman build \
+        --no-cache \
         --tag={{registry}}/{{user}}/{{name}}:{{version}} \
         --tag={{registry}}/{{user}}/{{name}}:latest .
 

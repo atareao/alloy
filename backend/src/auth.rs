@@ -312,7 +312,8 @@ pub async fn auth_middleware(
     let path = req.uri().path();
 
     // Public endpoints: auth routes, login, health
-    if path.starts_with("/api/auth/") || path == "/api/health" {
+    // But /api/auth/sse-token requires auth (returns the session token)
+    if (path.starts_with("/api/auth/") && path != "/api/auth/sse-token") || path == "/api/health" {
         return Ok(next.run(req).await);
     }
     // Non-API routes (frontend assets) pass through
@@ -440,6 +441,7 @@ pub async fn auth_middleware(
     let claims = validate(&token).map_err(|e| *e)?;
 
     // Run the request
+    tracing::info!("🔒 auth_middleware: ejecutando handler para {}", path);
     let mut response = next.run(req).await;
 
     // SSE responses must not have their headers modified
@@ -452,7 +454,22 @@ pub async fn auth_middleware(
         .map(|v| v.starts_with("text/event-stream"))
         .unwrap_or(false);
 
+    tracing::info!(
+        "🔒 auth_middleware: is_sse={}, content-type={:?}",
+        is_sse,
+        response.headers().get(axum::http::header::CONTENT_TYPE)
+    );
+
     if is_sse {
+        tracing::info!("🔒 auth_middleware: SSE detectado, retornando sin modificar headers");
+        return Ok(response);
+    }
+
+    // WebSocket upgrade — no modificar headers (101 Switching Protocols)
+    if response.status() == StatusCode::SWITCHING_PROTOCOLS {
+        tracing::info!(
+            "🔒 auth_middleware: WebSocket upgrade detectado, retornando sin modificar headers"
+        );
         return Ok(response);
     }
 
@@ -543,12 +560,42 @@ fn url_encode(s: &str) -> String {
 
 // ── Routes ─────────────────────────────────────────────────
 
+/// Returns the current session token as JSON.
+/// This handler is protected by the auth middleware (unlike other auth routes).
+async fn sse_token_h(headers: HeaderMap) -> Response {
+    // Extract token from cookie or Authorization header
+    let token = 'token: {
+        if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
+            for part in cookie_str.split("; ") {
+                if let Some(value) = part.strip_prefix("session=") {
+                    break 'token value.to_string();
+                }
+            }
+        }
+        if let Some(token) = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+        {
+            break 'token token.to_string();
+        }
+        // If middleware ran, we should have a token, but just in case:
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "No session token found"})),
+        )
+            .into_response();
+    };
+    Json(json!({"token": token})).into_response()
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", get(auth_login))
         .route("/api/auth/callback", get(auth_callback))
         .route("/api/auth/me", get(auth_me))
         .route("/api/auth/logout", get(auth_logout))
+        .route("/api/auth/sse-token", get(sse_token_h))
 }
 
 #[cfg(test)]
@@ -1378,6 +1425,70 @@ mod tests {
         );
         assert_eq!(response.headers()["content-type"], "text/event-stream");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── WebSocket test: middleware must NOT add Set-Cookie ────
+
+    async fn websocket_upgrade_handler() -> Response {
+        Response::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+            .header("sec-websocket-accept", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_middleware_does_not_modify_websocket_response() {
+        let idle_timeout_minutes = 1u64;
+        let secret = "test_ws_secret_12345";
+        let config = crate::config::Config {
+            session_idle_timeout_minutes: Some(idle_timeout_minutes),
+            session_max_duration_hours: Some(24),
+            ..Default::default()
+        };
+
+        let (token, secret) = make_session_token_for_sliding(secret, idle_timeout_minutes);
+        let secret_clone = secret.clone();
+        let config_clone = config.clone();
+
+        let app = Router::new()
+            .route("/api/ws", axum::routing::get(websocket_upgrade_handler))
+            .layer(axum::middleware::from_fn(
+                move |headers: HeaderMap,
+                      mut req: axum::extract::Request,
+                      next: middleware::Next| {
+                    let s = secret_clone.clone();
+                    let c = config_clone.clone();
+                    async move {
+                        req.extensions_mut().insert(s);
+                        req.extensions_mut().insert(c);
+                        auth_middleware(headers, req, next).await
+                    }
+                },
+            ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/ws?token={}", token))
+                    .header("upgrade", "websocket")
+                    .header("connection", "upgrade")
+                    .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+                    .header("sec-websocket-version", "13")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // WebSocket upgrade responses MUST NOT have the Set-Cookie header
+        assert!(
+            !response.headers().contains_key(header::SET_COOKIE),
+            "WebSocket upgrade response should not contain Set-Cookie header, but it did"
+        );
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
     }
 
     // ── Non-SSE test: middleware MUST add Set-Cookie ─────────

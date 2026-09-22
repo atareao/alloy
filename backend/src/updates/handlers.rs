@@ -30,7 +30,6 @@ use bollard::models::ImagePruneResponse;
 /// progress even when EventSource / SSE is not working in the browser.
 #[allow(clippy::too_many_arguments)]
 async fn update_progress(
-    update_tx: &broadcast::Sender<UpdateProgress>,
     progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
     container: String,
     status: String,
@@ -52,7 +51,7 @@ async fn update_progress(
         errors,
     };
     tracing::info!(
-        "[update_progress] enviando: container={} done={} checked={} total={} updated={} errors={} status={}",
+        "[update_progress] cache: container={} done={} checked={} total={} updated={} errors={} status={}",
         progress.container,
         progress.done,
         progress.checked,
@@ -61,7 +60,6 @@ async fn update_progress(
         progress.errors,
         progress.status
     );
-    let _ = update_tx.send(progress.clone());
     let mut cache = progress_cache.lock().await;
     cache.insert(container, progress);
 }
@@ -188,8 +186,6 @@ struct PendingUpdate {
 pub async fn update_container_h(
     State(docker): State<Docker>,
     State(settings): State<Arc<Mutex<Settings>>>,
-    State(update_tx): State<broadcast::Sender<UpdateProgress>>,
-    State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
     Path(name): Path<String>,
@@ -231,16 +227,6 @@ pub async fn update_container_h(
         };
 
     if !needs_pull {
-        let _ = update_tx.send(UpdateProgress {
-            container: name.clone(),
-            status: "✅ ya actualizado".into(),
-            done: true,
-            error: None,
-            total: 0,
-            checked: 0,
-            updated: 0,
-            errors: 0,
-        });
         return Ok(Json(UpdateProgress {
             container: name,
             status: "already-up-to-date".into(),
@@ -253,16 +239,6 @@ pub async fn update_container_h(
         }));
     }
 
-    let _ = update_tx.send(UpdateProgress {
-        container: name.clone(),
-        status: format!("Pulling {}...", image),
-        done: false,
-        error: None,
-        total: 0,
-        checked: 0,
-        updated: 0,
-        errors: 0,
-    });
     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
     let start_time = std::time::Instant::now();
     tracing::info!(
@@ -271,16 +247,6 @@ pub async fn update_container_h(
         pull_timeout
     );
     if !pull_image(&docker, image, Some(&manifest_digest), pull_timeout).await {
-        let _ = update_tx.send(UpdateProgress {
-            container: name.clone(),
-            status: "Error".into(),
-            done: true,
-            error: Some("pull failed".into()),
-            total: 0,
-            checked: 0,
-            updated: 0,
-            errors: 0,
-        });
         let entry = UpdateHistoryEntry {
             container: name.clone(),
             image: image.to_string(),
@@ -300,35 +266,9 @@ pub async fn update_container_h(
         }
         return Err(AppError::Internal("pull failed".into()));
     }
-    let _ = update_tx.send(UpdateProgress {
-        container: name.clone(),
-        status: "Restarting...".into(),
-        done: false,
-        error: None,
-        total: 0,
-        checked: 0,
-        updated: 0,
-        errors: 0,
-    });
     match recreate_container(&docker, &name, cid, image, Some(&manifest_digest)).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
-            let _ = update_tx.send(UpdateProgress {
-                container: name.clone(),
-                status: "✅ Restarted".into(),
-                done: true,
-                error: None,
-                total: 0,
-                checked: 0,
-                updated: 0,
-                errors: 0,
-            });
-            let ts = crate::timezone::now_time_formatted();
-            let _ = notif_tx.send(NotifEvent {
-                container: name.clone(),
-                status: "updated ✅".into(),
-                timestamp: ts,
-            });
             notify_all(&settings, &name, "✅ actualizado y reiniciado").await;
             crate::containers::remove_old_image(&docker, &image_id).await;
             {
@@ -363,17 +303,7 @@ pub async fn update_container_h(
         }
         Err(e) => {
             tracing::error!("update_container_h: error al reiniciar '{}': {}", name, e);
-            let _ = update_tx.send(UpdateProgress {
-                container: name.clone(),
-                status: "Error".into(),
-                done: true,
-                error: Some(e.to_string()),
-                total: 0,
-                checked: 0,
-                updated: 0,
-                errors: 0,
-            });
-            let entry = UpdateHistoryEntry {
+                let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.to_string(),
                 old_digest: image_id.clone(),
@@ -394,7 +324,6 @@ pub async fn update_container_h(
 pub async fn update_all_h(
     State(docker): State<Docker>,
     State(settings): State<Arc<Mutex<Settings>>>,
-    State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
 ) -> Json<Vec<UpdateProgress>> {
@@ -485,13 +414,7 @@ pub async fn update_all_h(
         match recreate_container(&docker, &name, &cid, &image, Some(&manifest_digest)).await {
             Ok(_) => {
                 tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
-                let ts = crate::timezone::now_time_formatted();
-                let _ = notif_tx.send(NotifEvent {
-                    container: name.clone(),
-                    status: "updated ✅".into(),
-                    timestamp: ts,
-                });
-                notify_all(&settings, &name, "✅ actualizado").await;
+                        notify_all(&settings, &name, "✅ actualizado").await;
                 crate::containers::remove_old_image(&docker, &old_digest).await;
                 {
                     let conn = db_pool.get().await.unwrap();
@@ -626,11 +549,9 @@ async fn check_and_apply_all(
     docker: &Docker,
     db_pool: &DbPool,
     tx: &broadcast::Sender<StateEvent>,
-    update_tx: &broadcast::Sender<UpdateProgress>,
     progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
     cancel_check: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Settings>>,
-    notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
 ) -> Vec<ContainerInfo> {
@@ -714,7 +635,6 @@ async fn check_and_apply_all(
 
         // Send progress event so frontend shows live feedback
         update_progress(
-            update_tx,
             progress_cache,
             name.clone(),
             format!("🔍 Verificando {}...", image_full),
@@ -814,9 +734,7 @@ async fn check_and_apply_all(
                     apply_single_policy(
                         docker,
                         settings,
-                        update_tx,
                         progress_cache,
-                        notif_tx,
                         update_history,
                         db_pool,
                         tx,
@@ -840,7 +758,6 @@ async fn check_and_apply_all(
                         "⏹️ No aplicable (no running)"
                     };
                     update_progress(
-                        update_tx,
                         progress_cache,
                         name.clone(),
                         status.into(),
@@ -881,7 +798,6 @@ async fn check_and_apply_all(
                     );
                 }
                 update_progress(
-                    update_tx,
                     progress_cache,
                     name.clone(),
                     format!("❌ Error: {}", e),
@@ -909,7 +825,6 @@ async fn check_and_apply_all(
             );
             // Send cancellation progress event
             update_progress(
-                update_tx,
                 progress_cache,
                 "__batch__".into(),
                 "⏹️ Cancelado por el usuario".into(),
@@ -965,7 +880,6 @@ async fn check_and_apply_all(
 
     // Send final batch-complete progress event
     update_progress(
-        update_tx,
         progress_cache,
         "__batch__".into(),
         "✅ Batch completado".into(),
@@ -986,11 +900,9 @@ pub async fn check_all_h(
     State(docker): State<Docker>,
     State(db_pool): State<DbPool>,
     State(tx): State<broadcast::Sender<StateEvent>>,
-    State(update_tx): State<broadcast::Sender<UpdateProgress>>,
     State(progress_cache): State<Arc<Mutex<HashMap<String, UpdateProgress>>>>,
     State(cancel_check): State<Arc<AtomicBool>>,
     State(settings): State<Arc<Mutex<Settings>>>,
-    State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(update_policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
 ) -> Json<Vec<ContainerInfo>> {
@@ -1000,11 +912,9 @@ pub async fn check_all_h(
         &docker,
         &db_pool,
         &tx,
-        &update_tx,
         &progress_cache,
         &cancel_check,
         &settings,
-        &notif_tx,
         &update_history,
         &update_policies,
     )
@@ -1025,9 +935,7 @@ pub async fn cancel_check_all_h(State(cancel_check): State<Arc<AtomicBool>>) -> 
 async fn apply_single_policy(
     docker: &Docker,
     settings: &Arc<Mutex<Settings>>,
-    update_tx: &broadcast::Sender<UpdateProgress>,
     progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
-    notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: &DbPool,
     _tx: &broadcast::Sender<StateEvent>,
@@ -1045,7 +953,6 @@ async fn apply_single_policy(
             p.name
         );
         let _ = update_progress(
-            update_tx,
             progress_cache,
             p.name.clone(),
             "⏭️ política: no hacer nada".into(),
@@ -1069,7 +976,6 @@ async fn apply_single_policy(
     );
 
     let _ = update_progress(
-        update_tx,
         progress_cache,
         p.name.clone(),
         format!("🔄 actualizando {}...", p.name),
@@ -1106,7 +1012,6 @@ async fn apply_single_policy(
             {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
                 update_progress(
-                    update_tx,
                     progress_cache,
                     p.name.clone(),
                     "✅ pulled".into(),
@@ -1121,17 +1026,7 @@ async fn apply_single_policy(
                 success = true;
             } else {
                 tracing::error!("apply_single_policy: Pull FALLÓ '{}'", p.name);
-                let _ = update_tx.send(UpdateProgress {
-                    container: p.name.clone(),
-                    status: "❌ pull falló".into(),
-                    done: true,
-                    error: Some("pull_image returned false".into()),
-                    total,
-                    checked,
-                    updated,
-                    errors,
-                });
-                let entry = UpdateHistoryEntry {
+                        let entry = UpdateHistoryEntry {
                     container: p.name.clone(),
                     image: p.image_full.clone(),
                     old_digest: p.image_id.clone(),
@@ -1171,7 +1066,6 @@ async fn apply_single_policy(
                     p.cid
                 );
                 let _ = update_progress(
-                    update_tx,
                     progress_cache,
                     p.name.clone(),
                     "🔄 reiniciando contenedor...".into(),
@@ -1213,7 +1107,6 @@ async fn apply_single_policy(
                                 .await;
                             }
                             let _ = update_progress(
-                                update_tx,
                                 progress_cache,
                                 p.name.clone(),
                                 "❌ pull falló".into(),
@@ -1227,7 +1120,6 @@ async fn apply_single_policy(
                             .await;
                         } else {
                             let _ = update_progress(
-                                update_tx,
                                 progress_cache,
                                 p.name.clone(),
                                 "✅ actualizado + reiniciado".into(),
@@ -1249,7 +1141,6 @@ async fn apply_single_policy(
                             e
                         );
                         let _ = update_progress(
-                            update_tx,
                             progress_cache,
                             p.name.clone(),
                             "❌ error al reiniciar".into(),
@@ -1279,17 +1170,7 @@ async fn apply_single_policy(
                 }
             } else {
                 tracing::error!("apply_single_policy: Pull FALLÓ '{}'", p.name);
-                let _ = update_tx.send(UpdateProgress {
-                    container: p.name.clone(),
-                    status: "❌ pull falló".into(),
-                    done: true,
-                    error: Some("pull_image returned false".into()),
-                    total,
-                    checked,
-                    updated,
-                    errors,
-                });
-                let entry = UpdateHistoryEntry {
+                        let entry = UpdateHistoryEntry {
                     container: p.name.clone(),
                     image: p.image_full.clone(),
                     old_digest: p.image_id.clone(),
@@ -1314,7 +1195,6 @@ async fn apply_single_policy(
                         project
                     );
                     let _ = update_progress(
-                        update_tx,
                         progress_cache,
                         p.name.clone(),
                         format!("📥 Pulling stack '{}'...", project),
@@ -1341,7 +1221,6 @@ async fn apply_single_policy(
                                 .output()
                                 .await;
                             let _ = update_progress(
-                                update_tx,
                                 progress_cache,
                                 p.name.clone(),
                                 "❌ pull falló".into(),
@@ -1363,7 +1242,6 @@ async fn apply_single_policy(
                                 stderr
                             );
                             let _ = update_progress(
-                                update_tx,
                                 progress_cache,
                                 p.name.clone(),
                                 "❌ pull falló".into(),
@@ -1382,7 +1260,6 @@ async fn apply_single_policy(
                                 e
                             );
                             let _ = update_progress(
-                                update_tx,
                                 progress_cache,
                                 p.name.clone(),
                                 "❌ error".into(),
@@ -1402,7 +1279,6 @@ async fn apply_single_policy(
                         project
                     );
                     let _ = update_progress(
-                        update_tx,
                         progress_cache,
                         p.name.clone(),
                         "❌ compose file no encontrado".into(),
@@ -1417,7 +1293,6 @@ async fn apply_single_policy(
                 }
             } else {
                 let _ = update_progress(
-                    update_tx,
                     progress_cache,
                     p.name.clone(),
                     "⚠️ rollback aplicado".into(),
@@ -1433,7 +1308,6 @@ async fn apply_single_policy(
         }
         _ => {
             let _ = update_progress(
-                update_tx,
                 progress_cache,
                 p.name.clone(),
                 "❌ no es stack".into(),
@@ -1450,11 +1324,6 @@ async fn apply_single_policy(
 
     if success {
         tracing::info!("apply_single_policy: éxito '{}'", p.name);
-        let _ = notif_tx.send(NotifEvent {
-            container: p.name.clone(),
-            status: "updated ✅".into(),
-            timestamp: crate::timezone::now_time_formatted(),
-        });
         notify_all(settings, &p.name, "✅ actualizado y reiniciado").await;
         // Store remote digest to prevent re-detection on next cycle.
         // Use the digest already obtained in check_all_h if available,
@@ -1525,9 +1394,7 @@ async fn apply_policies_background(
     docker: &Docker,
     settings: &Arc<Mutex<Settings>>,
     tx: &broadcast::Sender<StateEvent>,
-    update_tx: &broadcast::Sender<UpdateProgress>,
     progress_cache: &Arc<Mutex<HashMap<String, UpdateProgress>>>,
-    notif_tx: &broadcast::Sender<NotifEvent>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
     db_pool: &DbPool,
@@ -1570,9 +1437,7 @@ async fn apply_policies_background(
         apply_single_policy(
             docker,
             settings,
-            update_tx,
             progress_cache,
-            notif_tx,
             update_history,
             db_pool,
             tx,

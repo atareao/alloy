@@ -125,8 +125,6 @@ pub struct AppState {
     pub docker: Docker,
     pub config: Config,
     pub tx: broadcast::Sender<StateEvent>,
-    pub update_tx: broadcast::Sender<UpdateProgress>,
-    pub notif_tx: broadcast::Sender<NotifEvent>,
     pub oidc_states: OidcStates,
     pub oidc_metadata: Option<OidcMetadata>,
     pub jwt_validator: JwtValidator,
@@ -164,18 +162,6 @@ impl axum::extract::FromRef<AppState> for Config {
 impl axum::extract::FromRef<AppState> for broadcast::Sender<StateEvent> {
     fn from_ref(state: &AppState) -> Self {
         state.tx.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for broadcast::Sender<UpdateProgress> {
-    fn from_ref(state: &AppState) -> Self {
-        state.update_tx.clone()
-    }
-}
-
-impl axum::extract::FromRef<AppState> for broadcast::Sender<NotifEvent> {
-    fn from_ref(state: &AppState) -> Self {
-        state.notif_tx.clone()
     }
 }
 

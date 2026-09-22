@@ -41,6 +41,7 @@ pub fn now_formatted() -> String {
 }
 
 /// Formats the current time as `HH:MM:SS` in the configured timezone.
+#[allow(dead_code)]
 pub fn now_time_formatted() -> String {
     now().format("%H:%M:%S").to_string()
 }

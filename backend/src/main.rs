@@ -17,7 +17,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
-use tower_http::cors::CorsLayer;
 
 use crate::auth::auth_middleware;
 use crate::config::Config;
@@ -26,6 +25,7 @@ use crate::models::*;
 use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
 use crate::workers::{cleanup_worker, state_worker, update_check_worker, CachedContainers};
 
+use axum::serve::ListenerExt;
 use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
 
@@ -154,10 +154,8 @@ async fn main() {
         bollard::Docker::connect_with_local_defaults().expect("Failed Docker")
     };
 
-    // Broadcast channels for SSE
+    // Broadcast channel for container state events
     let (tx, _) = broadcast::channel(128);
-    let (update_tx, _) = broadcast::channel(128);
-    let (notif_tx, _) = broadcast::channel(128);
 
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
@@ -168,8 +166,6 @@ async fn main() {
         docker: docker.clone(),
         config: config.clone(),
         tx: tx.clone(),
-        update_tx: update_tx.clone(),
-        notif_tx: notif_tx.clone(),
         oidc_states: Arc::new(Mutex::new(HashMap::new())),
         oidc_metadata,
         jwt_validator,
@@ -190,7 +186,6 @@ async fn main() {
         update_policies.clone(),
         tx.clone(),
         cached_containers,
-        notif_tx.clone(),
         db_pool.clone(),
         state.update_in_progress.clone(),
     ));
@@ -198,8 +193,6 @@ async fn main() {
         docker.clone(),
         settings.clone(),
         update_policies.clone(),
-        update_tx.clone(),
-        notif_tx.clone(),
         update_history.clone(),
         db_pool.clone(),
         state.update_in_progress.clone(),
@@ -222,7 +215,6 @@ async fn main() {
         .merge(updates::routes())
         .merge(notifications::routes())
         .merge(progress::routes())
-        .layer(CorsLayer::permissive())
         .layer(axum::middleware::from_fn(
             move |headers: axum::http::HeaderMap,
                   mut req: axum::extract::Request,
@@ -247,7 +239,30 @@ async fn main() {
     } else {
         format!("{}:{}", host, port)
     };
-    axum::serve(tokio::net::TcpListener::bind(addr).await.unwrap(), app)
+    let addr: std::net::SocketAddr = addr
+        .parse()
+        .unwrap_or_else(|_| format!("[::]:{}", port).parse().unwrap());
+    let socket = match addr {
+        std::net::SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6().unwrap(),
+        std::net::SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4().unwrap(),
+    };
+    // NOTE: TCP_NODELAY is intentionally NOT set on this listening `TcpSocket`.
+    // On Linux, socket options set on a listening socket do not propagate to
+    // the connections it accepts via accept(2). Setting it here would give a
+    // false sense of security while SSE streams (/api/events, /api/updates,
+    // /api/notifications, /api/stream) keep buffering under Nagle's algorithm.
+    // Instead, TCP_NODELAY is applied per accepted connection below via
+    // `axum::serve::ListenerExt::tap_io`.
+    socket.bind(addr).unwrap();
+    let listener = socket
+        .listen(1024)
+        .unwrap()
+        .tap_io(|tcp_stream: &mut tokio::net::TcpStream| {
+            if let Err(e) = tcp_stream.set_nodelay(true) {
+                tracing::trace!("failed to set TCP_NODELAY on incoming connection: {e}");
+            }
+        });
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
@@ -284,5 +299,62 @@ async fn oidc_states_cleanup(oidc_states: OidcStates) {
         if removed > 0 {
             tracing::info!("🧹 Cleaned {} expired OIDC CSRF states", removed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::serve::{Listener, ListenerExt};
+    use tokio::io::AsyncWriteExt;
+
+    /// RED->GREEN test for sse-nodelay-fix.
+    ///
+    /// Verifies that connections *accepted* through a `TcpListener` wrapped
+    /// with `.tap_io(...)` have `TCP_NODELAY` enabled, which is exactly the
+    /// pattern applied in `main()` to fix SSE buffering caused by Nagle's
+    /// algorithm on accepted sockets (nodelay on the listening `TcpSocket`
+    /// does NOT propagate to accepted connections on Linux).
+    #[tokio::test]
+    async fn accepted_connections_have_tcp_nodelay_via_tap_io() {
+        let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let local_addr = tcp_listener.local_addr().expect("local_addr");
+
+        let (nodelay_tx, nodelay_rx) = tokio::sync::oneshot::channel::<bool>();
+        let mut nodelay_tx = Some(nodelay_tx);
+
+        // Same pattern as production: wrap the listener with tap_io and set
+        // TCP_NODELAY on each accepted `TcpStream`.
+        let mut tapped_listener =
+            tcp_listener.tap_io(move |tcp_stream: &mut tokio::net::TcpStream| {
+                if let Err(e) = tcp_stream.set_nodelay(true) {
+                    tracing::trace!("failed to set TCP_NODELAY on incoming connection: {e}");
+                }
+                if let Some(tx) = nodelay_tx.take() {
+                    let _ = tx.send(tcp_stream.nodelay().unwrap_or(false));
+                }
+            });
+
+        let accept_task = tokio::spawn(async move {
+            let (_io, _addr) = tapped_listener.accept().await;
+        });
+
+        // Connect a client to trigger the accept() above.
+        let mut client = tokio::net::TcpStream::connect(local_addr)
+            .await
+            .expect("client connect");
+        client.write_all(b"ping").await.ok();
+
+        let nodelay_enabled = nodelay_rx
+            .await
+            .expect("tap_fn should report nodelay state");
+        accept_task.await.expect("accept task should finish");
+
+        assert!(
+            nodelay_enabled,
+            "TCP_NODELAY must be enabled on the accepted connection via tap_io, \
+             not only on the listening socket (which does not propagate it on Linux)"
+        );
     }
 }
