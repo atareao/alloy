@@ -1,86 +1,71 @@
-# frontend Specification
+# Spec Delta: Frontend State Endpoint Unificado
 
-## Purpose
-TBD - created by archiving change fix-tsc-build-error. Update Purpose after archive.
+## ADDED
 
-## Requirements
-
-### Requirement: Logout test uses Object.defineProperty instead of delete
-
-**Given** el test "logs out when clicking Salir button" en `App.test.tsx`
-**When** se ejecuta `tsc -b`
-**Then** no hay errores de compilación TypeScript
-**And** `vitest run` pasa los 26 tests
-
-#### Scenario: Logout test compiles and passes
-**Given** el test "logs out when clicking Salir button"
-**When** se ejecuta `tsc -b`
-**Then** no hay errores TypeScript
-**And** `vitest run` pasa todos los tests
-
-#### Scenario: No regressions on other tests
-**Given** el fix solo modifica `App.test.tsx`
-**When** se ejecuta `vitest run`
-**Then** los 26 tests pasan (5 test files)
-
-### Requirement: Frontend SHALL recover batch progress on page reload
-
-On mount, the frontend SHALL call `GET /api/check-progress` **once**. If there are entries with `done === false`, it SHALL set `batchPhase = "active"` and populate the progress map so the `BatchProgress` card appears.
-
-**Contracts:**
+### New Types
 ```typescript
-// AÑADIDO: Recovery on page reload
-useEffect(() => {
-    if (!authenticated) return;
-    fetch("/api/check-progress", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: Record<string, UpdateProgress> | null) => {
-        if (!data) return;
-        const entries = Object.values(data);
-        const hasActive = entries.some((e) => !e.done);
-        if (!hasActive) return;
-        setProgress((prev) => {
-          const next = new Map(prev);
-          for (const entry of entries) next.set(entry.container, entry);
-          return next;
-        });
-        setBatchPhase("active");
-        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
-        if (best.total > 0) {
-          setBatchProgress({ current: best.checked, total: best.total });
-        }
-      })
-      .catch(() => {});
-  }, [authenticated]);
+export interface ContainerSummary {
+  total: number;
+  running: number;
+  stopped: number;
+  paused: number;
+  with_updates: number;
+}
+
+export interface StateResponse {
+  containers: ContainerInfo[];
+  summary: ContainerSummary;
+  progress: Record<string, UpdateProgress>;
+}
 ```
 
-#### Scenario: Recarga durante actualización activa
-- **Given** el usuario inició un "Check All" que está actualizando contenedores
-- **When** recarga la página (F5)
-- **Then** al montar, se llama `GET /api/check-progress` una vez
-- **And** si hay entries con `done === false`, se setea `batchPhase = "active"`
-- **And** se muestra el `BatchProgress` card con el progreso actual
-- **And** el SSE `/api/updates` reconecta y recibe eventos posteriores
+## MODIFIED
 
-#### Scenario: Recarga sin actualización en curso
-- **Given** no hay ninguna operación batch activa
-- **When** el usuario recarga la página
-- **Then** `GET /api/check-progress` devuelve `{}` vacío
-- **And** `batchPhase` permanece en `"idle"`
-- **And** no se muestra ningún progress card
+### `useStatePoll.ts`
+- Changed signature from `onContainers: (ContainerInfo[]) => void` to `onState: (StateResponse) => void`
+- Parses response as `StateResponse` instead of `ContainerInfo[]`
 
-#### Scenario: Actualización ya completada al recargar
-- **Given** el batch terminó pero la página se recarga antes de ver el resultado
-- **When** se monta la página
-- **Then** `GET /api/check-progress` devuelve entries con `done === true`
-- **And** `hasActive` es `false`
-- **And** no se activa el batchPhase
-- **And** el state worker (SSE `/api/events`) ya tiene los contenedores actualizados
+### `App.tsx`
+- State callback now receives `StateResponse` and updates containers + summary + progress
+- Progress map updated from `state.progress` instead of polling
+- Batch completion detected via `__batch__` entry in `state.progress`
+- Removed progress polling `useEffect` (polls `/api/check-progress` every 2s)
+- Removed recovery `useEffect` (checks for in-progress updates on page load)
+- Removed `clearProgress` callback and `cancelBatchRef`
 
-#### Scenario: Error de red al recuperar progreso
-- **Given** hay una actualización activa
-- **When** la página se recarga y `GET /api/check-progress` falla (red)
-- **Then** el `.catch()` ignora el error silenciosamente
-- **And** `batchPhase` permanece en `"idle"`
-- **And** el SSE `/api/updates` reconecta y recibe eventos posteriores
-- **And** el state worker refrescará los contenedores en ~30s
+### `DashboardPage.tsx`
+- Added `summary: ContainerSummary` prop
+- Removed local computation: `statsRunning`, `statsStopped`, `statsUpdates`
+- Uses `summary.running`, `summary.stopped`, `summary.with_updates` directly
+
+## REMOVED
+
+### Removed from App.tsx
+- Progress polling `useEffect` (polls `/api/check-progress` every 2s)
+- Recovery `useEffect` (checks for in-progress updates on page load)
+- `clearProgress` callback
+- `cancelBatchRef` ref
+
+## Scenarios
+
+### Happy Path: State + progress in one response
+**Given** the frontend calls `useStatePoll`
+**When** the response arrives
+**Then** `onState` is called with `StateResponse` containing containers, summary, and progress
+**Then** containers are updated in state
+**Then** progress map is updated from `state.progress`
+**Then** a new request is immediately initiated
+
+### Happy Path: Batch complete detected via state
+**Given** the frontend receives a `StateResponse`
+**When** `state.progress` contains `__batch__` with `done: true`
+**Then** batch phase is set to "idle"
+**Then** summary dialog is shown
+**Then** history and config are refreshed
+
+### Error: Network failure
+**Given** the frontend is polling via `useStatePoll`
+**When** a request fails
+**Then** the hook waits with exponential backoff (1s, 2s, 4s, ... up to 30s)
+**When** the backoff reaches max retries (10)
+**Then** `onError` is called

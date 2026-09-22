@@ -8,11 +8,10 @@ use bollard::{
     container::{ListContainersOptions, LogsOptions},
     Docker,
 };
-use chrono::Local;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::Mutex;
 
 use crate::models::*;
 use crate::notifications::notify_all;
@@ -94,8 +93,6 @@ async fn list_stacks_h(State(docker): State<Docker>) -> Json<Vec<StackInfo>> {
 async fn update_stack_h(
     State(docker): State<Docker>,
     State(settings): State<Arc<Mutex<Settings>>>,
-    State(update_tx): State<broadcast::Sender<UpdateProgress>>,
-    State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     Path(project): Path<String>,
 ) -> Result<Json<StackUpdateResponse>, AppError> {
     let containers = docker
@@ -155,49 +152,15 @@ async fn update_stack_h(
             )));
         }
     };
-    let _ = update_tx.send(UpdateProgress {
-        container: project.clone(),
-        status: format!(
-            "🔄 Updating stack '{}' ({} services)...",
-            project,
-            services.len()
-        ),
-        done: false,
-        error: None,
-        total: 0,
-        checked: 0,
-        updated: 0,
-        errors: 0,
-    });
     let mut results = Vec::new();
     for service in &services {
         let start = std::time::Instant::now();
-        let _ = update_tx.send(UpdateProgress {
-            container: format!("{}/{}", project, service),
-            status: format!("📥 Pulling {}...", service),
-            done: false,
-            error: None,
-            total: 0,
-            checked: 0,
-            updated: 0,
-            errors: 0,
-        });
         let pull_result = tokio::process::Command::new("docker")
             .args(["compose", "-f", &compose_file, "pull", service])
             .output()
             .await;
         match pull_result {
             Ok(output) if output.status.success() => {
-                let _ = update_tx.send(UpdateProgress {
-                    container: format!("{}/{}", project, service),
-                    status: format!("🔄 Recreating {}...", service),
-                    done: false,
-                    error: None,
-                    total: 0,
-                    checked: 0,
-                    updated: 0,
-                    errors: 0,
-                });
                 let up_result = tokio::process::Command::new("docker")
                     .args([
                         "compose",
@@ -219,22 +182,6 @@ async fn update_stack_h(
                             duration_ms: duration,
                             error: None,
                         });
-                        let _ = update_tx.send(UpdateProgress {
-                            container: format!("{}/{}", project, service),
-                            status: format!("✅ {} updated", service),
-                            done: true,
-                            error: None,
-                            total: 0,
-                            checked: 0,
-                            updated: 0,
-                            errors: 0,
-                        });
-                        let ts = Local::now().format("%H:%M:%S").to_string();
-                        let _ = notif_tx.send(NotifEvent {
-                            container: format!("{}/{}", project, service),
-                            status: "updated ✅".into(),
-                            timestamp: ts,
-                        });
                         notify_all(
                             &settings,
                             &format!("{}/{}", project, service),
@@ -250,16 +197,6 @@ async fn update_stack_h(
                             duration_ms: start.elapsed().as_millis() as u64,
                             error: Some(stderr.clone()),
                         });
-                        let _ = update_tx.send(UpdateProgress {
-                            container: format!("{}/{}", project, service),
-                            status: format!("❌ {} error: {}", service, stderr),
-                            done: true,
-                            error: Some(stderr),
-                            total: 0,
-                            checked: 0,
-                            updated: 0,
-                            errors: 0,
-                        });
                     }
                     Err(e) => {
                         results.push(StackUpdateResult {
@@ -267,16 +204,6 @@ async fn update_stack_h(
                             status: "error".into(),
                             duration_ms: start.elapsed().as_millis() as u64,
                             error: Some(e.to_string()),
-                        });
-                        let _ = update_tx.send(UpdateProgress {
-                            container: format!("{}/{}", project, service),
-                            status: format!("❌ {} error: {}", service, e),
-                            done: true,
-                            error: Some(e.to_string()),
-                            total: 0,
-                            checked: 0,
-                            updated: 0,
-                            errors: 0,
                         });
                     }
                 }
@@ -289,16 +216,6 @@ async fn update_stack_h(
                     duration_ms: start.elapsed().as_millis() as u64,
                     error: Some(stderr.clone()),
                 });
-                let _ = update_tx.send(UpdateProgress {
-                    container: format!("{}/{}", project, service),
-                    status: format!("❌ {} pull error: {}", service, stderr),
-                    done: true,
-                    error: Some(stderr),
-                    total: 0,
-                    checked: 0,
-                    updated: 0,
-                    errors: 0,
-                });
             }
             Err(e) => {
                 results.push(StackUpdateResult {
@@ -307,29 +224,9 @@ async fn update_stack_h(
                     duration_ms: start.elapsed().as_millis() as u64,
                     error: Some(e.to_string()),
                 });
-                let _ = update_tx.send(UpdateProgress {
-                    container: format!("{}/{}", project, service),
-                    status: format!("❌ {} error: {}", service, e),
-                    done: true,
-                    error: Some(e.to_string()),
-                    total: 0,
-                    checked: 0,
-                    updated: 0,
-                    errors: 0,
-                });
             }
         }
     }
-    let _ = update_tx.send(UpdateProgress {
-        container: project.clone(),
-        status: format!("🏁 Stack '{}' update complete", project),
-        done: true,
-        error: None,
-        total: 0,
-        checked: 0,
-        updated: 0,
-        errors: 0,
-    });
     Ok(Json(StackUpdateResponse {
         project: project.to_string(),
         results,

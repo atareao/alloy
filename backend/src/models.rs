@@ -408,10 +408,77 @@ impl From<bollard::errors::Error> for AppError {
     }
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerSummary {
+    pub total: usize,
+    pub running: usize,
+    pub stopped: usize,
+    pub paused: usize,
+    pub with_updates: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct BatchProgress {
+    pub total: u32,
+    pub checked: u32,
+    pub updated: u32,
+    pub errors: u32,
+    pub checking: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StateResponse {
+    pub containers: Vec<ContainerInfo>,
+    pub summary: ContainerSummary,
+    #[serde(default)]
+    pub progress: BatchProgress,
+}
+
+pub fn compute_summary(containers: &[ContainerInfo]) -> ContainerSummary {
+    let total = containers.len();
+    let running = containers.iter().filter(|c| c.state == "running").count();
+    let stopped = containers
+        .iter()
+        .filter(|c| c.state != "running" && c.state != "paused")
+        .count();
+    let paused = containers.iter().filter(|c| c.state == "paused").count();
+    let with_updates = containers.iter().filter(|c| c.has_update).count();
+    ContainerSummary {
+        total,
+        running,
+        stopped,
+        paused,
+        with_updates,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::StatusCode;
+
+    // ── helpers ─────────────────────────────────────────────
+
+    fn make_container(name: &str, state: &str, has_update: bool) -> ContainerInfo {
+        ContainerInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            image: format!("{}:latest", name),
+            image_tag: "latest".into(),
+            size_mb: 10.0,
+            status: state.to_string(),
+            state: state.to_string(),
+            has_update,
+            compose_project: None,
+            ports: vec![],
+            traefik_url: None,
+            updating: false,
+            registry_url: String::new(),
+            last_check: None,
+            next_check: None,
+            last_remote_digest: String::new(),
+        }
+    }
 
     #[test]
     fn test_strip_name_with_slash() {
@@ -537,5 +604,112 @@ mod tests {
         );
         let parts: Vec<&str> = platform.split('/').collect();
         assert_eq!(parts.len(), 2, "Platform should have 2 parts: {}", platform);
+    }
+
+    // ── compute_summary / ContainerSummary / StateResponse ──
+    //
+    // NOTA: Estos tests NO compilarán hasta que se implementen:
+    //   - ContainerSummary struct
+    //   - StateResponse struct
+    //   - compute_summary() fn
+    // en models.rs. Eso es intencional (RED phase de TDD).
+
+    #[test]
+    fn test_compute_summary_all_running() {
+        let containers = vec![
+            make_container("web", "running", false),
+            make_container("db", "running", false),
+            make_container("cache", "running", false),
+        ];
+        let summary = compute_summary(&containers);
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.running, 3);
+        assert_eq!(summary.stopped, 0);
+        assert_eq!(summary.paused, 0);
+        assert_eq!(summary.with_updates, 0);
+    }
+
+    #[test]
+    fn test_compute_summary_mixed_states() {
+        let containers = vec![
+            make_container("web-1", "running", false),
+            make_container("web-2", "running", false),
+            make_container("web-3", "running", false),
+            make_container("web-4", "running", false),
+            make_container("db-1", "exited", false),
+            make_container("db-2", "exited", false),
+            make_container("worker", "paused", false),
+        ];
+        let summary = compute_summary(&containers);
+        assert_eq!(summary.total, 7);
+        assert_eq!(summary.running, 4);
+        assert_eq!(summary.stopped, 2);
+        assert_eq!(summary.paused, 1);
+        assert_eq!(summary.with_updates, 0);
+    }
+
+    #[test]
+    fn test_compute_summary_with_updates() {
+        let containers = vec![
+            make_container("nginx", "running", true),
+            make_container("redis", "running", true),
+            make_container("postgres", "running", false),
+            make_container("mysql", "exited", true),
+            make_container("mongo", "exited", false),
+        ];
+        let summary = compute_summary(&containers);
+        assert_eq!(summary.total, 5);
+        assert_eq!(summary.running, 3);
+        assert_eq!(summary.stopped, 2);
+        assert_eq!(summary.paused, 0);
+        assert_eq!(summary.with_updates, 3);
+    }
+
+    #[test]
+    fn test_compute_summary_empty() {
+        let containers: Vec<ContainerInfo> = vec![];
+        let summary = compute_summary(&containers);
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.running, 0);
+        assert_eq!(summary.stopped, 0);
+        assert_eq!(summary.paused, 0);
+        assert_eq!(summary.with_updates, 0);
+    }
+
+    #[test]
+    fn test_state_response_serialization() {
+        let containers = vec![make_container("web", "running", false)];
+        let summary = ContainerSummary {
+            total: 1,
+            running: 1,
+            stopped: 0,
+            paused: 0,
+            with_updates: 0,
+        };
+        let progress = BatchProgress {
+            total: 1,
+            checked: 0,
+            updated: 0,
+            errors: 0,
+            checking: "".into(),
+        };
+        let response = StateResponse {
+            containers,
+            summary,
+            progress,
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(
+            json.get("containers").is_some(),
+            "JSON must contain 'containers' field"
+        );
+        assert!(
+            json.get("summary").is_some(),
+            "JSON must contain 'summary' field"
+        );
+        assert!(
+            json.get("progress").is_some(),
+            "JSON must contain 'progress' field"
+        );
     }
 }

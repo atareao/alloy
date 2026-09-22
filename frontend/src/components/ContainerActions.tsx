@@ -7,14 +7,14 @@ import {
   FileTextOutlined,
   DeleteOutlined,
 } from "@ant-design/icons";
-import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
+import type { ContainerInfo, BatchProgress, UpdatePolicy } from "../types";
 import { apiFetch } from "../api";
 import PolicyActionButton from "./PolicyActionButton";
 
 interface ContainerActionsProps {
   container: ContainerInfo;
   isMobile: boolean;
-  progress: Map<string, UpdateProgress>;
+  progress: BatchProgress;
   batchPhase: string;
   loadingActions: Record<string, string>;
   containers: ContainerInfo[];
@@ -54,8 +54,8 @@ export default function ContainerActions({
   showToast,
 }: ContainerActionsProps) {
   const c = container;
-  const p = progress.get(c.name);
-  const busy = batchPhase !== "idle" || !!p;
+  const p = progress.checking === c.name;
+  const busy = batchPhase !== "idle" || p;
   const btnSize = isMobile ? "small" : "small";
   const policy = getPolicy(c.name);
   const policyAction = policy?.action || "pull-restart";
@@ -261,7 +261,7 @@ export default function ContainerActions({
         <Flex gap="small" align="center">
           <Spin size="small" />
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {p.status}
+            🔍 {progress.checking}
           </Typography.Text>
         </Flex>
       )}
