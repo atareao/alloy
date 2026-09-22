@@ -5,7 +5,7 @@ use bollard::{
 use chrono::Timelike;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::Mutex;
 
 use crate::containers::pull_image;
 use crate::db;
@@ -25,8 +25,6 @@ pub async fn update_check_worker(
     docker: Docker,
     settings: Arc<Mutex<Settings>>,
     update_policies: Arc<Mutex<Vec<UpdatePolicy>>>,
-    update_tx: broadcast::Sender<UpdateProgress>,
-    notif_tx: broadcast::Sender<NotifEvent>,
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: DbPool,
     update_in_progress: Arc<Mutex<HashSet<String>>>,
@@ -205,16 +203,6 @@ pub async fn update_check_worker(
                 },
             };
             if policy.action == UpdateAction::None {
-                let _ = update_tx.send(UpdateProgress {
-                    container: name.clone(),
-                    status: "⏭️ política: no hacer nada".into(),
-                    done: true,
-                    error: None,
-                    total: 0,
-                    checked: 0,
-                    updated: 0,
-                    errors: 0,
-                });
                 tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
                 continue;
             }
@@ -225,33 +213,12 @@ pub async fn update_check_worker(
                 name
             );
 
-            let _ = update_tx.send(UpdateProgress {
-                container: name.clone(),
-                status: format!("[update-check] 🔍 {}", policy.action),
-                done: false,
-                error: None,
-                total: 0,
-                checked: 0,
-                updated: 0,
-                errors: 0,
-            });
-
             let start = std::time::Instant::now();
             match policy.action {
                 UpdateAction::Pull => {
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
                     if pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout).await
                     {
-                        let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
-                            status: "✅ descargado (update-check)".into(),
-                            done: true,
-                            error: None,
-                            total: 0,
-                            checked: 0,
-                            updated: 0,
-                            errors: 0,
-                        });
                         _ = sqlite_append_update(
                             &db_pool,
                             &update_history,
@@ -268,17 +235,6 @@ pub async fn update_check_worker(
                             log_prune_result("scheduler-pull", &result);
                         }
                         updated_count += 1;
-                    } else {
-                        let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
-                            status: "❌ error al descargar (se reintentará)".into(),
-                            done: true,
-                            error: Some("pull failed, will retry".into()),
-                            total: 0,
-                            checked: 0,
-                            updated: 0,
-                            errors: 0,
-                        });
                     }
                 }
                 UpdateAction::PullRestart => {
@@ -315,22 +271,7 @@ pub async fn update_check_worker(
                                         )
                                         .await;
                                     }
-                                    let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
-                                        status: "⚠️ rollback aplicado (update-check)".into(),
-                                        done: true,
-                                        error: Some("container no healthy".into()),
-                                        total: 0,
-                                        checked: 0,
-                                        updated: 0,
-                                        errors: 0,
-                                    });
                                 } else {
-                                    let _ = notif_tx.send(NotifEvent {
-                                        container: name.clone(),
-                                        status: "🔄 actualizado (update-check)".into(),
-                                        timestamp: crate::timezone::now_time_formatted(),
-                                    });
                                     if notify {
                                         notify_all(
                                             &settings,
@@ -360,16 +301,6 @@ pub async fn update_check_worker(
                                         start.elapsed().as_millis() as u64,
                                     )
                                     .await;
-                                    let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
-                                        status: "✅ actualizado + reiniciado (update-check)".into(),
-                                        done: true,
-                                        error: None,
-                                        total: 0,
-                                        checked: 0,
-                                        updated: 0,
-                                        errors: 0,
-                                    });
                                     if policy.cleanup_old_image {
                                         let result = prune_dangling_images(&docker).await;
                                         log_prune_result("scheduler-restart", &result);
@@ -383,29 +314,8 @@ pub async fn update_check_worker(
                                     name,
                                     e
                                 );
-                                let _ = update_tx.send(UpdateProgress {
-                                    container: name.clone(),
-                                    status: "❌ error al recrear contenedor".into(),
-                                    done: true,
-                                    error: Some(e.to_string()),
-                                    total: 0,
-                                    checked: 0,
-                                    updated: 0,
-                                    errors: 0,
-                                });
                             }
                         }
-                    } else {
-                        let _ = update_tx.send(UpdateProgress {
-                            container: name.clone(),
-                            status: "❌ error al descargar (se reintentará)".into(),
-                            done: true,
-                            error: Some("pull failed, will retry".into()),
-                            total: 0,
-                            checked: 0,
-                            updated: 0,
-                            errors: 0,
-                        });
                     }
                 }
                 UpdateAction::PullRestartStack => {
@@ -424,16 +334,6 @@ pub async fn update_check_worker(
                     if let Some(ref project) = compose_project {
                         let compose_file = resolve_compose_file(&docker, project).await;
                         if let Some(ref file) = compose_file {
-                            let _ = update_tx.send(UpdateProgress {
-                                container: name.clone(),
-                                status: format!("📥 Pulling stack '{}'...", project),
-                                done: false,
-                                error: None,
-                                total: 0,
-                                checked: 0,
-                                updated: 0,
-                                errors: 0,
-                            });
                             let output = tokio::process::Command::new("docker")
                                 .args(["compose", "-f", file, "pull"])
                                 .output()
@@ -444,16 +344,6 @@ pub async fn update_check_worker(
                                         .args(["compose", "-f", file, "up", "-d"])
                                         .output()
                                         .await;
-                                    let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
-                                        status: "✅ stack actualizado (update-check)".into(),
-                                        done: true,
-                                        error: None,
-                                        total: 0,
-                                        checked: 0,
-                                        updated: 0,
-                                        errors: 0,
-                                    });
                                     if policy.cleanup_old_image {
                                         let result = prune_dangling_images(&docker).await;
                                         log_prune_result("scheduler-safety", &result);
@@ -466,16 +356,6 @@ pub async fn update_check_worker(
                                     }
                                 }
                                 _ => {
-                                    let _ = update_tx.send(UpdateProgress {
-                                        container: name.clone(),
-                                        status: "❌ error stack pull".into(),
-                                        done: true,
-                                        error: Some("docker compose pull failed".into()),
-                                        total: 0,
-                                        checked: 0,
-                                        updated: 0,
-                                        errors: 0,
-                                    });
                                     // Remove from suppression set on error too
                                     {
                                         let mut in_progress = update_in_progress.lock().await;
@@ -486,18 +366,7 @@ pub async fn update_check_worker(
                         }
                     }
                 }
-                _ => {
-                    let _ = update_tx.send(UpdateProgress {
-                        container: name.clone(),
-                        status: "⏭️ acción desconocida".into(),
-                        done: true,
-                        error: None,
-                        total: 0,
-                        checked: 0,
-                        updated: 0,
-                        errors: 0,
-                    });
-                }
+                _ => {}
             }
 
             // Sleep between containers

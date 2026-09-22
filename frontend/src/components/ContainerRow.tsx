@@ -9,7 +9,7 @@ import {
   message,
 } from "antd";
 import { LinkOutlined, UpOutlined, DownOutlined } from "@ant-design/icons";
-import type { ContainerInfo, UpdateProgress, UpdatePolicy } from "../types";
+import type { ContainerInfo, BatchProgress, UpdatePolicy } from "../types";
 import ContainerActions from "./ContainerActions";
 
 interface ContainerRowProps {
@@ -17,7 +17,7 @@ interface ContainerRowProps {
   isMobile: boolean;
   expanded: boolean;
   onToggleExpand: (name: string) => void;
-  progress: Map<string, UpdateProgress>;
+  progress: BatchProgress;
   getPolicy: (name: string) => UpdatePolicy | undefined;
   setPolicies: React.Dispatch<React.SetStateAction<UpdatePolicy[]>>;
   loadingActions: Record<string, string>;
@@ -58,25 +58,7 @@ export default function ContainerRow({
 }: ContainerRowProps) {
   const c = container;
   const hasUpdate = c.has_update;
-  const prog = progress.get(c.name);
-  const isUpdating = prog && !prog.done;
-  const isDone = prog && prog.done;
-
-  const progressColor = isUpdating
-    ? "yellow"
-    : isDone && prog?.error
-      ? "red"
-      : isDone
-        ? "green"
-        : undefined;
-
-  const progressLabel = prog
-    ? prog.done
-      ? prog.error
-        ? "❌"
-        : "✅"
-      : "🔄"
-    : undefined;
+  const isUpdating = progress.checking === c.name;
 
   const showToast = (msg: string, color: string) => {
     if (color === "green") message.success(msg, 3);
@@ -170,19 +152,15 @@ export default function ContainerRow({
                   : c.status
                 : c.status}
             </Typography.Text>
-            {prog && (
-              <Tooltip title={prog.status}>
-                <Tag color={progressColor} style={{ flexShrink: 0 }}>
-                  {isUpdating ? (
-                    <Flex gap={4} wrap="nowrap" align="center">
-                      <Spin size="small" />
-                      <Typography.Text style={{ fontSize: 12 }}>
-                        {prog.status.slice(0, 20)}
-                      </Typography.Text>
-                    </Flex>
-                  ) : (
-                    progressLabel
-                  )}
+            {isUpdating && (
+              <Tooltip title={`🔍 ${progress.checking}`}>
+                <Tag color="yellow" style={{ flexShrink: 0 }}>
+                  <Flex gap={4} wrap="nowrap" align="center">
+                    <Spin size="small" />
+                    <Typography.Text style={{ fontSize: 12 }}>
+                      {progress.checking.slice(0, 20)}
+                    </Typography.Text>
+                  </Flex>
                 </Tag>
               </Tooltip>
             )}
@@ -304,19 +282,15 @@ export default function ContainerRow({
                   : c.status
                 : c.status}
             </Typography.Text>
-            {prog && (
-              <Tooltip title={prog.status}>
-                <Tag color={progressColor} style={{ flexShrink: 0 }}>
-                  {isUpdating ? (
-                    <Flex gap={4} wrap="nowrap" align="center">
-                      <Spin size="small" />
-                      <Typography.Text style={{ fontSize: 12 }}>
-                        {prog.status.slice(0, 20)}
-                      </Typography.Text>
-                    </Flex>
-                  ) : (
-                    progressLabel
-                  )}
+            {isUpdating && (
+              <Tooltip title={`🔍 ${progress.checking}`}>
+                <Tag color="yellow" style={{ flexShrink: 0 }}>
+                  <Flex gap={4} wrap="nowrap" align="center">
+                    <Spin size="small" />
+                    <Typography.Text style={{ fontSize: 12 }}>
+                      {progress.checking.slice(0, 20)}
+                    </Typography.Text>
+                  </Flex>
                 </Tag>
               </Tooltip>
             )}

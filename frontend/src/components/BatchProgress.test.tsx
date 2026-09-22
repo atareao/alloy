@@ -15,25 +15,21 @@ beforeAll(() => {
 });
 
 import BatchProgress from "./BatchProgress";
-import type { UpdateProgress } from "../types";
+import type { BatchProgress as BatchProgressType } from "../types";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   return <ConfigProvider>{children}</ConfigProvider>;
 }
 
 function makeProgress(
-  name: string,
-  overrides: Partial<UpdateProgress> = {},
-): UpdateProgress {
+  overrides: Partial<BatchProgressType> = {},
+): BatchProgressType {
   return {
-    container: name,
-    status: "✅ Sin cambios",
-    done: true,
-    error: null,
     total: 0,
     checked: 0,
     updated: 0,
     errors: 0,
+    checking: "",
     ...overrides,
   };
 }
@@ -45,7 +41,7 @@ describe("BatchProgress", () => {
         <BatchProgress
           phase="idle"
           batchProgress={{ current: 0, total: 0 }}
-          progress={new Map()}
+          progress={makeProgress()}
           onCancel={vi.fn()}
         />
       </Wrapper>,
@@ -54,14 +50,11 @@ describe("BatchProgress", () => {
   });
 
   it("does NOT render a scrollable list of entries", () => {
-    const progress = new Map<string, UpdateProgress>();
-    progress.set(
-      "nginx",
-      makeProgress("nginx", {
-        status: "🔍 Verificando nginx:latest...",
-        done: false,
-      }),
-    );
+    const progress = makeProgress({
+      total: 10,
+      checked: 0,
+      checking: "nginx",
+    });
 
     const { container } = render(
       <Wrapper>
@@ -82,23 +75,12 @@ describe("BatchProgress", () => {
     expect(hasEntryList).toBe(false);
   });
 
-  it("shows current/total — status with the first non-done container", () => {
-    const progress = new Map<string, UpdateProgress>();
-    progress.set(
-      "nginx",
-      makeProgress("nginx", { status: "✅ Sin cambios", done: true }),
-    );
-    progress.set(
-      "crowdsec",
-      makeProgress("crowdsec", {
-        status: "🔍 Verificando crowdsec:latest...",
-        done: false,
-      }),
-    );
-    progress.set(
-      "zennotes",
-      makeProgress("zennotes", { status: "⏹️ No aplicable", done: true }),
-    );
+  it("shows current/total — status with the checking container", () => {
+    const progress = makeProgress({
+      total: 10,
+      checked: 2,
+      checking: "crowdsec",
+    });
 
     render(
       <Wrapper>
@@ -111,24 +93,17 @@ describe("BatchProgress", () => {
       </Wrapper>,
     );
 
-    // Should show "2 / 10 — 🔍 Verificando crowdsec:latest..."
+    // Should show "2 / 10 — 🔍 crowdsec"
     expect(screen.getByText(/2 \/ 10/)).toBeInTheDocument();
-    expect(screen.getByText(/Verificando crowdsec/)).toBeInTheDocument();
+    expect(screen.getByText(/crowdsec/)).toBeInTheDocument();
   });
 
-  it('shows "✅ Completado" when all containers are done', () => {
-    const progress = new Map<string, UpdateProgress>();
-    progress.set(
-      "nginx",
-      makeProgress("nginx", { status: "✅ Sin cambios", done: true }),
-    );
-    progress.set(
-      "crowdsec",
-      makeProgress("crowdsec", {
-        status: "✅ actualizado + reiniciado",
-        done: true,
-      }),
-    );
+  it('shows "✅ Completado" when checked >= total and checking is "__batch__"', () => {
+    const progress = makeProgress({
+      total: 2,
+      checked: 2,
+      checking: "__batch__",
+    });
 
     render(
       <Wrapper>
@@ -146,19 +121,13 @@ describe("BatchProgress", () => {
   });
 
   it("shows live summary with counters from backend", () => {
-    const progress = new Map<string, UpdateProgress>();
-    // Last entry has the authoritative counters from backend
-    progress.set(
-      "traefik",
-      makeProgress("traefik", {
-        status: "🔍 Verificando traefik:latest...",
-        done: false,
-        total: 4,
-        checked: 3,
-        updated: 1,
-        errors: 1,
-      }),
-    );
+    const progress = makeProgress({
+      total: 4,
+      checked: 3,
+      updated: 1,
+      errors: 1,
+      checking: "traefik",
+    });
 
     render(
       <Wrapper>
@@ -191,7 +160,7 @@ describe("BatchProgress", () => {
         <BatchProgress
           phase="active"
           batchProgress={{ current: 0, total: 10 }}
-          progress={new Map()}
+          progress={makeProgress({ total: 10 })}
           onCancel={onCancel}
         />
       </Wrapper>,
@@ -208,7 +177,7 @@ describe("BatchProgress", () => {
         <BatchProgress
           phase="active"
           batchProgress={{ current: 0, total: 10 }}
-          progress={new Map()}
+          progress={makeProgress({ total: 10 })}
           onCancel={vi.fn()}
         />
       </Wrapper>,
@@ -219,13 +188,13 @@ describe("BatchProgress", () => {
     ).toBeInTheDocument();
   });
 
-  it("does NOT show 'iniciando...' when no progress entries exist", () => {
+  it("does NOT show 'iniciando...' when no checking container", () => {
     render(
       <Wrapper>
         <BatchProgress
           phase="active"
           batchProgress={{ current: 0, total: 10 }}
-          progress={new Map()}
+          progress={makeProgress({ total: 10, checking: "" })}
           onCancel={vi.fn()}
         />
       </Wrapper>,
@@ -237,13 +206,13 @@ describe("BatchProgress", () => {
     expect(screen.getByText(/Verificando/)).toBeInTheDocument();
   });
 
-  it("shows '🔍 Verificando...' as fallback when no entries in active phase", () => {
+  it("shows '🔍 Verificando...' as fallback when checking is empty", () => {
     render(
       <Wrapper>
         <BatchProgress
           phase="active"
           batchProgress={{ current: 0, total: 10 }}
-          progress={new Map()}
+          progress={makeProgress({ total: 10, checking: "" })}
           onCancel={vi.fn()}
         />
       </Wrapper>,

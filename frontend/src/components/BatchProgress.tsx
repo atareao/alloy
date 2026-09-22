@@ -1,5 +1,5 @@
 import { Button, Card, Flex, Progress, Space, Typography } from "antd";
-import type { UpdateProgress } from "../types";
+import type { BatchProgress as BatchProgressType } from "../types";
 
 const { Text } = Typography;
 
@@ -15,7 +15,7 @@ export interface BatchResults {
 export interface BatchProgressProps {
   phase: "idle" | "active";
   batchProgress: { current: number; total: number };
-  progress: Map<string, UpdateProgress>;
+  progress: BatchProgressType;
   onCancel: () => void;
 }
 
@@ -31,28 +31,18 @@ export default function BatchProgress({
   const current = batchProgress.current;
   const pct = total > 0 ? (current / total) * 100 : 0;
 
-  // Determine if batch is complete based on counters, not per-container done flag
-  const isBatchComplete = total > 0 && current >= total;
-
-  // Find the first non-done entry for current status text
-  const entries = Array.from(progress.values());
-  const currentEntry = entries.find((p) => !p.done);
-
-  // Use latest entry for aggregate counters (checked, updated, errors)
-  const latestProgress =
-    entries.length > 0 ? entries[entries.length - 1] : null;
-  const checked =
-    latestProgress !== null && latestProgress !== undefined
-      ? latestProgress.checked
-      : current;
-  const updatedCount = latestProgress?.updated ?? 0;
-  const errorsCount = latestProgress?.errors ?? 0;
-  const pending = total > 0 ? total - checked : 0;
+  // Use BatchProgress counters directly
+  const isBatchComplete =
+    progress.total > 0 && progress.checked >= progress.total;
+  const checked = progress.checked;
+  const updatedCount = progress.updated;
+  const errorsCount = progress.errors;
+  const pending = progress.total > 0 ? progress.total - progress.checked : 0;
 
   const currentText = isBatchComplete
     ? "✅ Completado"
-    : currentEntry
-      ? currentEntry.status
+    : progress.checking && progress.checking !== "__batch__"
+      ? `🔍 ${progress.checking}`
       : "🔍 Verificando...";
 
   return (
@@ -77,14 +67,14 @@ export default function BatchProgress({
 
         <Flex justify="space-between" align="center">
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {batchProgress.current} / {total} — {currentText}
+            {progress.checked} / {progress.total} — {currentText}
           </Text>
         </Flex>
 
         {/* Live summary from backend counters */}
         <Flex justify="space-between" align="center" style={{ marginTop: 4 }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Total: {total} containers
+            Total: {progress.total} containers
           </Text>
           <Space size="small">
             <Text type="secondary" style={{ fontSize: 12 }}>

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useMediaQuery } from "./useMediaQuery";
+import { useStatePoll } from "./useStatePoll";
 import { notification } from "antd";
 import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
@@ -10,8 +11,8 @@ import {
 } from "@ant-design/icons";
 import type {
   ContainerInfo,
-  UpdateProgress,
-  NotifEvent,
+  ContainerSummary,
+  StateResponse,
   HistoryEntry,
   AppConfig,
   UpdateCheckConfig,
@@ -43,9 +44,26 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [containersLoaded, setContainersLoaded] = useState(false);
-  const [progress, setProgress] = useState<Map<string, UpdateProgress>>(
-    new Map(),
-  );
+  const [summary, setSummary] = useState<ContainerSummary>({
+    total: 0,
+    running: 0,
+    stopped: 0,
+    paused: 0,
+    with_updates: 0,
+  });
+  const [progress, setProgress] = useState<{
+    total: number;
+    checked: number;
+    updated: number;
+    errors: number;
+    checking: string;
+  }>({
+    total: 0,
+    checked: 0,
+    updated: 0,
+    errors: 0,
+    checking: "",
+  });
   const [checking, setChecking] = useState(true);
 
   // Check auth status on mount
@@ -118,47 +136,26 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     });
   }, [authenticated, api]);
 
-  // Single SSE connection to /api/stream — merges containers, notifications, and update-progress
-  useEffect(() => {
-    if (!authenticated) return;
-    const evtSource = new EventSource("/api/stream");
-    evtSource.addEventListener("containers", (e) => {
-      const incoming: ContainerInfo[] = JSON.parse(e.data).containers;
-      setContainers(incoming);
-      setContainersLoaded(true);
-    });
-    evtSource.addEventListener("notification", (e) => {
-      try {
-        const notif: NotifEvent = JSON.parse(e.data);
-        notification.info({
-          message: notif.container,
-          description: notif.status,
-          duration: 5,
-        });
-      } catch (err) {
-        console.error("SSE notification parse error:", err, "raw:", e.data);
-      }
-    });
-    evtSource.addEventListener("update-progress", (e) => {
-      try {
-        const data: UpdateProgress = JSON.parse(e.data);
-        console.log("SSE update-progress:", data);
-        setProgress((prev) => {
-          const next = new Map(prev);
-          next.set(data.container, data);
-          return next;
-        });
-        // Auto-show progress card when progress arrives and phase is idle
-        if (!data.done && batchPhaseRef.current === "idle") {
-          setBatchPhase("active");
-          setBatchProgress({ current: data.checked, total: data.total });
-        }
-        // Update batchProgress from backend counters
-        if (data.total > 0) {
-          setBatchProgress({ current: data.checked, total: data.total });
-        }
-        // Batch complete event (sent by backend after all containers processed)
-        if (data.container === "__batch__" && data.done) {
+  // ── State polling (long-polling via GET /api/state) ────────────
+  useStatePoll(
+    useCallback(
+      (state: StateResponse) => {
+        console.log(
+          "[STATE] containers received, count:",
+          state.containers.length,
+        );
+        setContainers(state.containers);
+        setContainersLoaded(true);
+        setSummary(state.summary);
+        // Update progress from state response
+        const bp = state.progress;
+        setProgress(bp);
+        // Check for batch complete: checking === "__batch__" and checked >= total
+        if (
+          bp.checking === "__batch__" &&
+          bp.total > 0 &&
+          bp.checked >= bp.total
+        ) {
           setBatchPhase("idle");
           setShowSummary(true);
           api("/api/history").then((d) => {
@@ -167,37 +164,20 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           api("/api/config").then((d) => {
             if (d) setConfig(d);
           });
-          const notifMethod = data.errors > 0 ? "warning" : "success";
+          const notifMethod = bp.errors > 0 ? "warning" : "success";
           notification[notifMethod]({
             message: "✅ Batch completado",
-            description: `${data.checked} containers · ${data.updated} ok · ${data.errors} errores`,
+            description: `${bp.checked} containers · ${bp.updated} ok · ${bp.errors} errores`,
             duration: 8,
           });
         }
-      } catch (err) {
-        console.error("SSE update-progress parse error:", err, "raw:", e.data);
-      }
-    });
-    evtSource.onerror = () => {
-      // SSE onerror fires for transient errors too (timeout, reconnect, etc.)
-      // The browser will auto-reconnect. Only redirect if we detect session expiry.
-      // Check by making a lightweight fetch to /api/auth/me
-      fetch("/api/auth/me", { credentials: "include" })
-        .then((res) => {
-          if (res.status === 401) {
-            window.location.href = "/api/auth/login";
-          }
-        })
-        .catch(() => {
-          // Network error — ignore, SSE will reconnect
-        });
-    };
-    return () => evtSource.close();
-  }, [authenticated, api]);
-
-  const clearProgress = useCallback(() => {
-    setProgress(new Map());
-  }, []);
+      },
+      [api],
+    ),
+    useCallback(() => {
+      console.error("[STATE] polling failed after max retries");
+    }, []),
+  );
 
   // ── Batch check/update state (lives in App to survive tab switches) ──
   type CheckAllPhase = "idle" | "active";
@@ -217,32 +197,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     batchPhaseRef.current = batchPhase;
   }, [batchPhase]);
 
-  // ── Recovery on page reload: check for in-progress updates ──
-  useEffect(() => {
-    if (!authenticated) return;
-    fetch("/api/check-progress", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: Record<string, UpdateProgress> | null) => {
-        if (!data) return;
-        const entries = Object.values(data);
-        const hasActive = entries.some((e) => !e.done);
-        if (!hasActive) return;
-        setProgress((prev) => {
-          const next = new Map(prev);
-          for (const entry of entries) next.set(entry.container, entry);
-          return next;
-        });
-        setBatchPhase("active");
-        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
-        if (best.total > 0) {
-          setBatchProgress({ current: best.checked, total: best.total });
-        }
-      })
-      .catch(() => {});
-  }, [authenticated]);
-
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-  const cancelBatchRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [checkResults, setCheckResults] = useState<CheckAllResults>({
     total: 0,
@@ -284,8 +239,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // checkAll: POST /api/check-all
   const checkAll = useCallback(async () => {
-    cancelBatchRef.current = false;
-    clearProgress();
     setBatchPhase("active");
     setCheckResults({
       total: 0,
@@ -325,11 +278,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     }
     fetchCheckConfig();
-  }, [containers, clearProgress, setContainers, fetchCheckConfig]);
+  }, [containers, setContainers, fetchCheckConfig]);
 
   // Cancel the batch operation
   const cancelBatch = useCallback(async () => {
-    cancelBatchRef.current = true;
     // Abort the in-flight fetch
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -343,9 +295,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     }
     // Reset state
     setBatchPhase("idle");
-    clearProgress();
     setBatchProgress({ current: 0, total: 0 });
-  }, [clearProgress]);
+  }, []);
 
   const logout = () => {
     window.location.href = "/api/auth/logout";
@@ -445,6 +396,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                 setShowSummary={setShowSummary}
                 checkConfig={checkConfig}
                 onCheckAll={checkAll}
+                summary={summary}
               />
             )}
             {view === "history" && (
