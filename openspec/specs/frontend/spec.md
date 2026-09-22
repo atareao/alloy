@@ -1,60 +1,71 @@
-# Spec Delta: Frontend State Polling
+# Spec Delta: Frontend State Endpoint Unificado
 
 ## ADDED
 
-### New Hook: `useStatePoll`
+### New Types
 ```typescript
-function useStatePoll(
-  onContainers: (containers: ContainerInfo[]) => void,
-  onError?: () => void,
-): void
+export interface ContainerSummary {
+  total: number;
+  running: number;
+  stopped: number;
+  paused: number;
+  with_updates: number;
+}
+
+export interface StateResponse {
+  containers: ContainerInfo[];
+  summary: ContainerSummary;
+  progress: Record<string, UpdateProgress>;
+}
 ```
-
-**Behavior**:
-1. Calls `GET /api/state` with `credentials: "include"`
-2. On success (200), parses JSON as `ContainerInfo[]` and calls `onContainers`
-3. Immediately makes another request (no delay between requests)
-4. On error (network failure, non-200 status), waits with exponential backoff (1s, 2s, 4s, ... up to 30s max) before retrying
-5. Resets backoff to 0 on successful response
-6. Cleans up on unmount (aborts in-flight request)
-
-### New Progress Polling Effect in `App.tsx`
-- `useEffect` that polls `GET /api/check-progress` every 2 seconds when `batchPhase === "active"`
-- Handles `__batch__` done event to show summary and reset state
-
-## REMOVED
-
-### Removed Files
-- `frontend/src/useWS.ts` — WebSocket hook
-- `frontend/src/useWS.test.tsx` — WebSocket tests
-
-### Removed from `App.tsx`
-- `useWS("/api/ws", "containers", ...)` call
-- `useWS("/api/ws", "notification", ...)` call
-- `useWS("/api/ws", "update-progress", ...)` call
 
 ## MODIFIED
 
+### `useStatePoll.ts`
+- Changed signature from `onContainers: (ContainerInfo[]) => void` to `onState: (StateResponse) => void`
+- Parses response as `StateResponse` instead of `ContainerInfo[]`
+
 ### `App.tsx`
-- Replaced `import { useWS } from "./useWS"` with `import { useStatePoll } from "./useStatePoll"`
-- Replaced three `useWS` calls with `useStatePoll` + progress polling `useEffect`
+- State callback now receives `StateResponse` and updates containers + summary + progress
+- Progress map updated from `state.progress` instead of polling
+- Batch completion detected via `__batch__` entry in `state.progress`
+- Removed progress polling `useEffect` (polls `/api/check-progress` every 2s)
+- Removed recovery `useEffect` (checks for in-progress updates on page load)
+- Removed `clearProgress` callback and `cancelBatchRef`
+
+### `DashboardPage.tsx`
+- Added `summary: ContainerSummary` prop
+- Removed local computation: `statsRunning`, `statsStopped`, `statsUpdates`
+- Uses `summary.running`, `summary.stopped`, `summary.with_updates` directly
+
+## REMOVED
+
+### Removed from App.tsx
+- Progress polling `useEffect` (polls `/api/check-progress` every 2s)
+- Recovery `useEffect` (checks for in-progress updates on page load)
+- `clearProgress` callback
+- `cancelBatchRef` ref
 
 ## Scenarios
 
-### Happy Path: Continuous state updates
+### Happy Path: State + progress in one response
 **Given** the frontend calls `useStatePoll`
-**When** the first response arrives with container data
-**Then** `onContainers` is called with the parsed `ContainerInfo[]`
-**And** a new request is immediately initiated
+**When** the response arrives
+**Then** `onState` is called with `StateResponse` containing containers, summary, and progress
+**Then** containers are updated in state
+**Then** progress map is updated from `state.progress`
+**Then** a new request is immediately initiated
+
+### Happy Path: Batch complete detected via state
+**Given** the frontend receives a `StateResponse`
+**When** `state.progress` contains `__batch__` with `done: true`
+**Then** batch phase is set to "idle"
+**Then** summary dialog is shown
+**Then** history and config are refreshed
 
 ### Error: Network failure
 **Given** the frontend is polling via `useStatePoll`
-**When** a request fails (network error or non-200)
+**When** a request fails
 **Then** the hook waits with exponential backoff (1s, 2s, 4s, ... up to 30s)
 **When** the backoff reaches max retries (10)
 **Then** `onError` is called
-
-### Cleanup: Unmount
-**Given** the component using `useStatePoll` unmounts
-**Then** the in-flight request is aborted
-**And** no further requests are made

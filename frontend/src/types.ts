@@ -128,3 +128,25 @@ export interface DefaultUpdatePolicy {
   cleanup_old_image: boolean;
   rollback_on_failure: boolean;
 }
+
+export interface ContainerSummary {
+  total: number;
+  running: number;
+  stopped: number;
+  paused: number;
+  with_updates: number;
+}
+
+export interface BatchProgress {
+  total: number;
+  checked: number;
+  updated: number;
+  errors: number;
+  checking: string;
+}
+
+export interface StateResponse {
+  containers: ContainerInfo[];
+  summary: ContainerSummary;
+  progress: BatchProgress;
+}

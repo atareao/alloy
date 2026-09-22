@@ -96,9 +96,8 @@ pub fn needs_update(local_digest: &str, remote_digest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::needs_update;
-    use crate::updates::digest::short_digest;
-
     /// Helper to build a full `sha256:<hex>` digest from a 12-char short value.
+    #[expect(dead_code)]
     fn full_digest(short: &str) -> String {
         format!("sha256:{:<064}", short)
     }

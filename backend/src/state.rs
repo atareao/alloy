@@ -2,7 +2,7 @@ use bollard::Docker;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
 use crate::config::Config;
 use crate::db::DbPool;
@@ -138,12 +138,16 @@ pub struct AppState {
     /// The state worker checks this set and skips notifications for these
     /// containers to avoid duplicate alerts during scheduled updates.
     pub update_in_progress: Arc<Mutex<HashSet<String>>>,
-    /// Progress cache for poll-based progress checking (SSE fallback).
-    /// Maps container names to their latest UpdateProgress.
-    pub progress_cache: Arc<Mutex<HashMap<String, UpdateProgress>>>,
+    /// Progress cache for batch check/update operations.
+    /// Stores the latest BatchProgress counters.
+    pub progress_cache: Arc<Mutex<BatchProgress>>,
     /// Cancellation flag for batch check/update operations.
     /// Set to true when the user clicks Cancel; checked between iterations.
     pub cancel_check: Arc<AtomicBool>,
+    /// Notify mechanism for long-polling state endpoint.
+    /// When state or progress changes, notify_waiters() wakes up
+    /// the GET /api/state handler so it returns immediately.
+    pub state_notify: Arc<Notify>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -213,7 +217,7 @@ impl axum::extract::FromRef<AppState> for DbPool {
     }
 }
 
-impl axum::extract::FromRef<AppState> for Arc<Mutex<HashMap<String, UpdateProgress>>> {
+impl axum::extract::FromRef<AppState> for Arc<Mutex<BatchProgress>> {
     fn from_ref(state: &AppState) -> Self {
         state.progress_cache.clone()
     }
@@ -222,6 +226,12 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<HashMap<String, UpdateProgre
 impl axum::extract::FromRef<AppState> for Arc<AtomicBool> {
     fn from_ref(state: &AppState) -> Self {
         state.cancel_check.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for Arc<Notify> {
+    fn from_ref(state: &AppState) -> Self {
+        state.state_notify.clone()
     }
 }
 

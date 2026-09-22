@@ -11,7 +11,8 @@ import {
 } from "@ant-design/icons";
 import type {
   ContainerInfo,
-  UpdateProgress,
+  ContainerSummary,
+  StateResponse,
   HistoryEntry,
   AppConfig,
   UpdateCheckConfig,
@@ -43,9 +44,26 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [containersLoaded, setContainersLoaded] = useState(false);
-  const [progress, setProgress] = useState<Map<string, UpdateProgress>>(
-    new Map(),
-  );
+  const [summary, setSummary] = useState<ContainerSummary>({
+    total: 0,
+    running: 0,
+    stopped: 0,
+    paused: 0,
+    with_updates: 0,
+  });
+  const [progress, setProgress] = useState<{
+    total: number;
+    checked: number;
+    updated: number;
+    errors: number;
+    checking: string;
+  }>({
+    total: 0,
+    checked: 0,
+    updated: 0,
+    errors: 0,
+    checking: "",
+  });
   const [checking, setChecking] = useState(true);
 
   // Check auth status on mount
@@ -120,17 +138,48 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // ── State polling (long-polling via GET /api/state) ────────────
   useStatePoll(
-    useCallback((incoming: ContainerInfo[]) => {
-      console.log("[STATE] containers received, count:", incoming.length);
-      setContainers(incoming);
-      setContainersLoaded(true);
-    }, []),
+    useCallback(
+      (state: StateResponse) => {
+        console.log(
+          "[STATE] containers received, count:",
+          state.containers.length,
+        );
+        setContainers(state.containers);
+        setContainersLoaded(true);
+        setSummary(state.summary);
+        // Update progress from state response
+        const bp = state.progress;
+        setProgress(bp);
+        // Check for batch complete: checking === "__batch__" and checked >= total
+        if (
+          bp.checking === "__batch__" &&
+          bp.total > 0 &&
+          bp.checked >= bp.total
+        ) {
+          setBatchPhase("idle");
+          setShowSummary(true);
+          api("/api/history").then((d) => {
+            if (d) setHistory(d);
+          });
+          api("/api/config").then((d) => {
+            if (d) setConfig(d);
+          });
+          const notifMethod = bp.errors > 0 ? "warning" : "success";
+          notification[notifMethod]({
+            message: "✅ Batch completado",
+            description: `${bp.checked} containers · ${bp.updated} ok · ${bp.errors} errores`,
+            duration: 8,
+          });
+        }
+      },
+      [api],
+    ),
     useCallback(() => {
       console.error("[STATE] polling failed after max retries");
     }, []),
   );
 
-// ── Batch check/update state (lives in App to survive tab switches) ──
+  // ── Batch check/update state (lives in App to survive tab switches) ──
   type CheckAllPhase = "idle" | "active";
 
   interface CheckAllResults {
@@ -148,81 +197,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     batchPhaseRef.current = batchPhase;
   }, [batchPhase]);
 
-  // ── Progress polling during batch operations ──────────────────
-  useEffect(() => {
-    if (batchPhase !== "active") return;
-    let cancelled = false;
-    const pollProgress = async () => {
-      try {
-        const res = await fetch("/api/check-progress", { credentials: "include" });
-        if (!res.ok) return;
-        const data: Record<string, UpdateProgress> = await res.json();
-        if (cancelled) return;
-        const entries = Object.values(data);
-        if (entries.length === 0) return;
-        setProgress((prev) => {
-          const next = new Map(prev);
-          for (const entry of entries) next.set(entry.container, entry);
-          return next;
-        });
-        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
-        if (best.total > 0) {
-          setBatchProgress({ current: best.checked, total: best.total });
-        }
-        // Check for batch complete
-        const batchEntry = entries.find((e) => e.container === "__batch__" && e.done);
-        if (batchEntry) {
-          setBatchPhase("idle");
-          setShowSummary(true);
-          api("/api/history").then((d) => { if (d) setHistory(d); });
-          api("/api/config").then((d) => { if (d) setConfig(d); });
-          const notifMethod = batchEntry.errors > 0 ? "warning" : "success";
-          notification[notifMethod]({
-            message: "✅ Batch completado",
-            description: `${batchEntry.checked} containers · ${batchEntry.updated} ok · ${batchEntry.errors} errores`,
-            duration: 8,
-          });
-          return;
-        }
-      } catch {
-        // Ignore errors, retry on next interval
-      }
-      if (!cancelled) setTimeout(pollProgress, 2000);
-    };
-    pollProgress();
-    return () => { cancelled = true; };
-  }, [batchPhase, api]);
-
-  const clearProgress = useCallback(() => {
-    setProgress(new Map());
-  }, []);
-
-  // ── Recovery on page reload: check for in-progress updates ──
-  useEffect(() => {
-    if (!authenticated) return;
-    fetch("/api/check-progress", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: Record<string, UpdateProgress> | null) => {
-        if (!data) return;
-        const entries = Object.values(data);
-        const hasActive = entries.some((e) => !e.done);
-        if (!hasActive) return;
-        setProgress((prev) => {
-          const next = new Map(prev);
-          for (const entry of entries) next.set(entry.container, entry);
-          return next;
-        });
-        setBatchPhase("active");
-        const best = entries.reduce((a, b) => (a.checked > b.checked ? a : b));
-        if (best.total > 0) {
-          setBatchProgress({ current: best.checked, total: best.total });
-        }
-      })
-      .catch(() => {});
-  }, [authenticated]);
-
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
-  const cancelBatchRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [checkResults, setCheckResults] = useState<CheckAllResults>({
     total: 0,
@@ -264,8 +239,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   // checkAll: POST /api/check-all
   const checkAll = useCallback(async () => {
-    cancelBatchRef.current = false;
-    clearProgress();
     setBatchPhase("active");
     setCheckResults({
       total: 0,
@@ -305,11 +278,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     }
     fetchCheckConfig();
-  }, [containers, clearProgress, setContainers, fetchCheckConfig]);
+  }, [containers, setContainers, fetchCheckConfig]);
 
   // Cancel the batch operation
   const cancelBatch = useCallback(async () => {
-    cancelBatchRef.current = true;
     // Abort the in-flight fetch
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -323,9 +295,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     }
     // Reset state
     setBatchPhase("idle");
-    clearProgress();
     setBatchProgress({ current: 0, total: 0 });
-  }, [clearProgress]);
+  }, []);
 
   const logout = () => {
     window.location.href = "/api/auth/logout";
@@ -425,6 +396,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                 setShowSummary={setShowSummary}
                 checkConfig={checkConfig}
                 onCheckAll={checkAll}
+                summary={summary}
               />
             )}
             {view === "history" && (

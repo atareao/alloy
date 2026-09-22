@@ -14,7 +14,8 @@ import {
 import { DeleteOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type {
   ContainerInfo,
-  UpdateProgress,
+  ContainerSummary,
+  BatchProgress,
   InspectData,
   UpdatePolicy,
   UpdateCheckConfig,
@@ -31,7 +32,7 @@ import type { BatchResults } from "./BatchProgress";
 interface DashboardPageProps {
   containers: ContainerInfo[];
   setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
-  progress: Map<string, UpdateProgress>;
+  progress: BatchProgress;
   containersLoaded: boolean;
   // Batch state (managed in App to survive tab switches)
   batchPhase: "idle" | "active";
@@ -41,6 +42,7 @@ interface DashboardPageProps {
   setShowSummary: (v: boolean) => void;
   checkConfig: UpdateCheckConfig | null;
   onCheckAll: () => void;
+  summary: ContainerSummary;
 }
 
 export default function DashboardPage({
@@ -53,6 +55,7 @@ export default function DashboardPage({
   setShowSummary,
   checkConfig,
   onCheckAll,
+  summary,
 }: DashboardPageProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
 
@@ -133,9 +136,9 @@ export default function DashboardPage({
     return { sortedGroups: sorted, noStack: ungrouped };
   }, [filteredContainers]);
 
-  const statsRunning = containers.filter((c) => c.state === "running").length;
-  const statsStopped = containers.filter((c) => c.state !== "running").length;
-  const statsUpdates = containers.filter((c) => c.has_update).length;
+  const statsRunning = summary.running;
+  const statsStopped = summary.stopped;
+  const statsUpdates = summary.with_updates;
 
   // ── Helpers ───────────────────────────────────────────────
   const getPolicy = (name: string): UpdatePolicy | undefined =>

@@ -2,105 +2,119 @@
 
 ## ADDED
 
+### New Structs
+
+```rust
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerSummary {
+    pub total: usize,
+    pub running: usize,
+    pub stopped: usize,
+    pub paused: usize,
+    pub with_updates: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct StateResponse {
+    pub containers: Vec<ContainerInfo>,
+    pub summary: ContainerSummary,
+    pub progress: std::collections::HashMap<String, UpdateProgress>,
+}
+
+pub fn compute_summary(containers: &[ContainerInfo]) -> ContainerSummary
+```
+
+### New AppState Field
+```rust
+pub state_notify: Arc<tokio::sync::Notify>,
+```
+
 ### New Route
 ```
-GET /api/state  → 200 JSON: Vec<ContainerInfo>
+GET /api/state  → 200 JSON: StateResponse
 ```
 
 ### New Handler: `state_h`
 ```rust
 async fn state_h(
-    State(tx): State<broadcast::Sender<StateEvent>>,
-    State(cached): State<CachedContainers>,
-) -> Json<Vec<ContainerInfo>>
+    State(cached_containers): State<CachedContainers>,
+    State(progress_cache): State<Arc<Mutex<HashMap<String, UpdateProgress>>>>,
+    State(state_notify): State<Arc<tokio::sync::Notify>>,
+) -> impl IntoResponse
 ```
 
 **Behavior**:
-1. Subscribe to `state_tx` broadcast channel
-2. Wait up to 30 seconds for the next `StateEvent` using `tokio::time::timeout`
-3. If event arrives before timeout, return `Json(evt.containers)` with the updated container list
-4. If timeout expires (or broadcast error), read from `cached_containers` and return `Json(cached.clone().unwrap_or_default())`
-5. Response headers: `Cache-Control: no-cache`
+1. Wait on `state_notify.notified()` with `tokio::time::timeout(Duration::from_secs(30))`
+2. When notified or timeout expires, read cache and progress
+3. Compute `ContainerSummary` from containers
+4. Return `Json(StateResponse { containers, summary, progress })` with `Cache-Control: no-cache`
+
+### Notify Calls
+- `workers/state.rs` → `refresh()` calls `state_notify.notify_waiters()` after cache update
+- `updates/handlers.rs` → `update_progress()` calls `state_notify.notify_waiters()` after cache insert
 
 ## REMOVED
 
-### Removed Routes
-- `GET /api/events` — SSE container events
-- `GET /api/updates` — SSE update progress
-- `GET /api/notifications` — SSE notifications
-- `GET /api/stream` — Multiplexed SSE
-- `GET /api/ws` — WebSocket
+### Removed Route
+- `GET /api/check-progress` — no longer needed
 
-### Removed Handlers
-- `sse_events_h`, `sse_updates_h`, `sse_notifications_h`, `sse_stream_h`
-- `ws_h`, `handle_ws`
-
-### Removed Broadcast Channels
-- `update_tx` (UpdateProgress) — no longer needed for real-time delivery
-- `notif_tx` (NotifEvent) — no longer needed for real-time delivery
-- Keep `tx` (StateEvent) — still used by state worker and state endpoint
+### Removed File
+- `backend/src/progress.rs` — entire file removed
 
 ## MODIFIED
 
 ### `events.rs`
-- Replaced all SSE/WebSocket handlers with single `state_h` handler
-- Updated `routes()` to return only `GET /api/state`
-- Updated tests: removed SSE/WS tests, added state endpoint tests
-
-### `main.rs`
-- Removed `update_tx` and `notif_tx` broadcast channel creation
-- Removed references to `update_tx`/`notif_tx` in `AppState` construction
-- Removed `notif_tx` parameter from `state_worker` spawn
-- Removed `update_tx` and `notif_tx` parameters from `update_check_worker` spawn
-
-### `state.rs`
-- Removed `update_tx` and `notif_tx` fields from `AppState`
-- Removed `FromRef` impls for `broadcast::Sender<UpdateProgress>` and `broadcast::Sender<NotifEvent>`
+- Replaced broadcast subscriber pattern with `state_notify` wait
+- Handler now returns `StateResponse` instead of `Vec<ContainerInfo>`
+- Updated tests
 
 ### `workers/state.rs`
-- Removed `notif_tx` parameter from `refresh()` and `state_worker()`
-- Removed `notif_tx.send(NotifEvent { ... })` call
-
-### `workers/scheduler.rs`
-- Removed `update_tx` and `notif_tx` parameters from `update_check_worker()`
-- Removed all `update_tx.send(...)` and `notif_tx.send(...)` calls
-
-### `stacks.rs`
-- Removed `update_tx` and `notif_tx` State extracts from `update_stack_h()`
-- Removed all `update_tx.send(...)` and `notif_tx.send(...)` calls
+- Added `state_notify` parameter to `refresh()` and `state_worker()`
+- Calls `state_notify.notify_waiters()` after cache update
 
 ### `updates/handlers.rs`
-- Removed `update_tx` parameter from `update_progress()`
-- Removed `update_tx`/`notif_tx` State extracts from handlers
-- Removed `update_tx`/`notif_tx` parameters from helper functions
-- Removed all `update_tx.send(...)` and `notif_tx.send(...)` calls
+- Added `state_notify` parameter to `update_progress()`
+- Calls `state_notify.notify_waiters()` after cache insert
+
+### `main.rs`
+- Added `state_notify: Arc::new(tokio::sync::Notify::new())` to AppState construction
+- Passed `state_notify` to state_worker spawn
+- Removed `progress::routes()` from router
+- Removed `mod progress;`
+
+### `state.rs`
+- Added `state_notify` field to `AppState`
+- Added `FromRef` impl for `Arc<tokio::sync::Notify>`
 
 ## Scenarios
 
-### Happy Path: State changes within timeout
-**Given** a client calls `GET /api/state`
-**When** a container state change occurs within 30 seconds
-**Then** the response returns HTTP 200 with the updated `Vec<ContainerInfo>`
+### Happy Path: Container stops, frontend reflects immediately
+**Given** a client is long-polling `GET /api/state`
+**When** a container stops (Docker event)
+**Then** the state worker updates cache and calls `state_notify.notify_waiters()`
+**Then** the waiting handler wakes up, reads updated cache, returns `StateResponse`
+**Then** the frontend receives the response and updates the UI
 
-### Happy Path: No state changes (timeout)
-**Given** a client calls `GET /api/state`
-**When** no container state change occurs within 30 seconds
-**Then** the response returns HTTP 200 with the current `Vec<ContainerInfo>` from cache
+### Happy Path: Batch update progress
+**Given** a client is long-polling `GET /api/state`
+**When** `update_progress()` is called during a batch operation
+**Then** it updates progress_cache and calls `state_notify.notify_waiters()`
+**Then** the waiting handler wakes up, returns `StateResponse` with updated progress
 
-### Happy Path: First call (cache empty)
+### Happy Path: No changes (timeout)
+**Given** a client is long-polling `GET /api/state`
+**When** no state or progress changes occur within 30 seconds
+**Then** the handler returns the current cache after timeout
+**Then** the frontend receives the response and immediately re-polls
+
+### Happy Path: Summary computation
+**Given** a list of containers with various states
+**When** `compute_summary()` is called
+**Then** it returns correct counts: total, running, stopped, paused, with_updates
+
+### Error: Cache empty on first call
 **Given** a client calls `GET /api/state`
 **When** `cached_containers` is `None` (not yet populated)
-**Then** the handler subscribes and waits for the first `StateEvent`
-**When** the state worker sends the first event
-**Then** the response returns HTTP 200 with the container list
-
-### Error: Broadcast channel closed
-**Given** a client calls `GET /api/state`
-**When** the `state_tx` broadcast channel is closed
-**Then** the handler returns HTTP 200 with the current cached containers (if any) or an empty array
-
-### Frontend: Continuous polling
-**Given** the frontend receives a response from `GET /api/state`
-**Then** it immediately makes another request to `GET /api/state`
-**When** the request fails (network error, non-200 status)
-**Then** it retries with exponential backoff (1s, 2s, 4s, ... up to 30s max)
+**Then** the handler waits for the first notify from state worker
+**When** the state worker sends its first refresh
+**Then** the handler returns the populated cache

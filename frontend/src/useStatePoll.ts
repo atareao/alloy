@@ -1,19 +1,19 @@
 import { useEffect, useRef } from "react";
-import type { ContainerInfo } from "./types";
+import type { StateResponse } from "./types";
 
 export function useStatePoll(
-  onContainers: (containers: ContainerInfo[]) => void,
+  onState: (state: StateResponse) => void,
   onError?: () => void,
 ) {
   const abortRef = useRef<AbortController | null>(null);
   const retriesRef = useRef(0);
   const maxRetries = 10;
-  const onContainersRef = useRef(onContainers);
+  const onStateRef = useRef(onState);
   const onErrorRef = useRef(onError);
 
   useEffect(() => {
-    onContainersRef.current = onContainers;
-  }, [onContainers]);
+    onStateRef.current = onState;
+  }, [onState]);
 
   useEffect(() => {
     onErrorRef.current = onError;
@@ -33,10 +33,10 @@ export function useStatePoll(
           signal: controller.signal,
         });
         if (!res.ok) throw new Error("Non-200 response");
-        const data: ContainerInfo[] = await res.json();
+        const data: StateResponse = await res.json();
         if (cancelled) return;
         retriesRef.current = 0;
-        onContainersRef.current(data);
+        onStateRef.current(data);
         // Immediately poll again (long-poll: server holds the request until data is available)
         if (!cancelled) poll();
       } catch (err: any) {

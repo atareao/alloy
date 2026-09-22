@@ -3,7 +3,7 @@ use futures::{pin_mut, StreamExt};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
 use crate::containers::fetch_containers;
 use crate::db::DbPool;
@@ -79,6 +79,7 @@ async fn refresh(
     previous_states: &mut HashMap<String, String>,
     db_pool: &DbPool,
     update_in_progress: &Arc<Mutex<HashSet<String>>>,
+    state_notify: &Arc<Notify>,
 ) {
     let containers = fetch_containers(docker, &None, db_pool).await;
     *cache.write().await = Some(containers.clone());
@@ -135,6 +136,9 @@ async fn refresh(
     // Remove stale entries (containers that no longer exist)
     let current_names: HashSet<String> = containers.iter().map(|c| c.name.clone()).collect();
     previous_states.retain(|k, _| current_names.contains(k));
+
+    // Notify long-polling state endpoint that state has changed
+    state_notify.notify_waiters();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -146,6 +150,7 @@ pub async fn state_worker(
     cached_containers: CachedContainers,
     db_pool: DbPool,
     update_in_progress: Arc<Mutex<HashSet<String>>>,
+    state_notify: Arc<Notify>,
 ) {
     let relevant_actions = [
         "start", "stop", "die", "kill", "pause", "unpause", "restart", "create", "destroy",
@@ -163,6 +168,7 @@ pub async fn state_worker(
         &mut previous_states,
         &db_pool,
         &update_in_progress,
+        &state_notify,
     )
     .await;
 
@@ -178,32 +184,32 @@ pub async fn state_worker(
 
         loop {
             tokio::select! {
-                event = stream.next() => {
-                    match event {
-                        Some(Ok(evt)) => {
-                            if evt.typ == Some(bollard::models::EventMessageTypeEnum::CONTAINER) {
-                                if let Some(ref action) = evt.action {
-                                    if relevant_actions.contains(&action.as_str()) {
-                                        tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
-refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
+                            event = stream.next() => {
+                                match event {
+                                    Some(Ok(evt)) => {
+                                        if evt.typ == Some(bollard::models::EventMessageTypeEnum::CONTAINER) {
+                                            if let Some(ref action) = evt.action {
+                                                if relevant_actions.contains(&action.as_str()) {
+                                                    tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
+            refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress, &state_notify).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(Err(e)) => {
+                                        tracing::warn!("Docker events stream error: {} — reconnecting", e);
+                                        break;
+                                    }
+                                    None => {
+                                        tracing::warn!("Docker events stream ended — reconnecting");
+                                        break;
                                     }
                                 }
                             }
+                            _ = fallback.tick() => {
+                                refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress, &state_notify).await;
+                            }
                         }
-                        Some(Err(e)) => {
-                            tracing::warn!("Docker events stream error: {} — reconnecting", e);
-                            break;
-                        }
-                        None => {
-                            tracing::warn!("Docker events stream ended — reconnecting");
-                            break;
-                        }
-                    }
-                }
-                _ = fallback.tick() => {
-                    refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
-                }
-            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

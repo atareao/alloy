@@ -6,7 +6,6 @@ mod db;
 mod events;
 mod models;
 mod notifications;
-mod progress;
 mod stacks;
 mod state;
 mod timezone;
@@ -16,7 +15,7 @@ mod workers;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 
 use crate::auth::auth_middleware;
 use crate::config::Config;
@@ -159,8 +158,9 @@ async fn main() {
 
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
-    let progress_cache: Arc<Mutex<HashMap<String, UpdateProgress>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    let progress_cache: Arc<Mutex<BatchProgress>> = Arc::new(Mutex::new(BatchProgress::default()));
+
+    let state_notify: Arc<Notify> = Arc::new(Notify::new());
 
     let state = AppState {
         docker: docker.clone(),
@@ -177,6 +177,7 @@ async fn main() {
         update_in_progress: Arc::new(Mutex::new(HashSet::new())),
         progress_cache: progress_cache.clone(),
         cancel_check: Arc::new(AtomicBool::new(false)),
+        state_notify: state_notify.clone(),
     };
 
     // Spawn workers
@@ -188,6 +189,7 @@ async fn main() {
         cached_containers,
         db_pool.clone(),
         state.update_in_progress.clone(),
+        state_notify,
     ));
     tokio::spawn(update_check_worker(
         docker.clone(),
@@ -214,7 +216,6 @@ async fn main() {
         .merge(stacks::routes())
         .merge(updates::routes())
         .merge(notifications::routes())
-        .merge(progress::routes())
         .layer(axum::middleware::from_fn(
             move |headers: axum::http::HeaderMap,
                   mut req: axum::extract::Request,
