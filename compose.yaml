@@ -1,0 +1,45 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: alloy-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3066:3066"
+    environment:
+      - PORT=3066
+      - HOST=0.0.0.0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - OIDC_ISSUER_URL=${OIDC_ISSUER_URL}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_REDIRECT_URL=http://localhost:3066/api/auth/callback
+      - RUST_LOG=${RUST_LOG:-info}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - alloy-data:/app/data
+    networks:
+      - alloy-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: alloy-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      - BACKEND_URL=http://backend:3066
+    depends_on:
+      - backend
+    networks:
+      - alloy-net
+
+volumes:
+  alloy-data:
+
+networks:
+  alloy-net:
+    driver: bridge

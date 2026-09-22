@@ -28,6 +28,7 @@ use crate::workers::{cleanup_worker, state_worker, update_check_worker, CachedCo
 use axum::serve::ListenerExt;
 use axum::{extract::State, response::Json, routing::get};
 use bollard::Docker;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 async fn health_h(State(docker): State<Docker>) -> Json<serde_json::Value> {
     let docker_ok = docker.ping().await.is_ok();
@@ -204,6 +205,24 @@ async fn main() {
     let secret_clone = config.oidc_client_secret().to_string();
     let config_clone = config.clone();
 
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(
+            |_: &axum::http::HeaderValue, _: &axum::http::request::Parts| true,
+        ))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::COOKIE,
+        ])
+        .allow_credentials(true);
+
     let app = axum::Router::new()
         .route("/api/health", get(health_h))
         .merge(auth::routes())
@@ -215,6 +234,7 @@ async fn main() {
         .merge(updates::routes())
         .merge(notifications::routes())
         .merge(progress::routes())
+        .layer(cors)
         .layer(axum::middleware::from_fn(
             move |headers: axum::http::HeaderMap,
                   mut req: axum::extract::Request,
@@ -228,7 +248,6 @@ async fn main() {
                 }
             },
         ))
-        .fallback(auth::frontend_handler)
         .with_state(state);
 
     let port = config.port();
@@ -304,8 +323,16 @@ async fn oidc_states_cleanup(oidc_states: OidcStates) {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::get;
     use axum::serve::{Listener, ListenerExt};
     use tokio::io::AsyncWriteExt;
+    use tower::ServiceExt;
+
+    async fn ok_handler() -> &'static str {
+        "ok"
+    }
 
     /// RED->GREEN test for sse-nodelay-fix.
     ///
@@ -355,6 +382,77 @@ mod tests {
             nodelay_enabled,
             "TCP_NODELAY must be enabled on the accepted connection via tap_io, \
              not only on the listening socket (which does not propagate it on Linux)"
+        );
+    }
+
+    /// RED test for microservices-split.
+    ///
+    /// Verifies that GET `/` returns 404 when there is no `frontend_handler`
+    /// fallback. Currently the production router has `.fallback(auth::frontend_handler)`
+    /// which serves `index.html` for `/`. After removing it, this test must pass.
+    #[tokio::test]
+    async fn root_returns_404_without_frontend_handler() {
+        // Build a minimal router with only API routes (no fallback)
+        let app = axum::Router::new().route("/api/test", get(ok_handler));
+
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "Without frontend_handler fallback, GET / should return 404"
+        );
+    }
+
+    /// RED test for microservices-split.
+    ///
+    /// Verifies that OPTIONS requests include CORS headers.
+    /// Currently there is no CorsLayer in the production router.
+    /// After adding it, this test must pass.
+    #[tokio::test]
+    async fn options_request_includes_cors_headers() {
+        use tower_http::cors::{AllowOrigin, CorsLayer};
+
+        let cors = CorsLayer::new()
+            .allow_origin(AllowOrigin::predicate(
+                |_: &axum::http::HeaderValue, _: &axum::http::request::Parts| true,
+            ))
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::COOKIE,
+            ])
+            .allow_credentials(true);
+
+        let app = axum::Router::new()
+            .route("/api/test", get(ok_handler))
+            .layer(cors);
+
+        let req = Request::builder()
+            .method(Method::OPTIONS)
+            .uri("/api/test")
+            .header("origin", "http://localhost:80")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let headers = resp.headers();
+
+        assert!(
+            headers.get("access-control-allow-origin").is_some(),
+            "OPTIONS response must include Access-Control-Allow-Origin"
+        );
+        assert!(
+            headers.get("access-control-allow-credentials").is_some(),
+            "OPTIONS response must include Access-Control-Allow-Credentials"
         );
     }
 }

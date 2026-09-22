@@ -178,32 +178,32 @@ pub async fn state_worker(
 
         loop {
             tokio::select! {
-                event = stream.next() => {
-                    match event {
-                        Some(Ok(evt)) => {
-                            if evt.typ == Some(bollard::models::EventMessageTypeEnum::CONTAINER) {
-                                if let Some(ref action) = evt.action {
-                                    if relevant_actions.contains(&action.as_str()) {
-                                        tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
-refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
+                            event = stream.next() => {
+                                match event {
+                                    Some(Ok(evt)) => {
+                                        if evt.typ == Some(bollard::models::EventMessageTypeEnum::CONTAINER) {
+                                            if let Some(ref action) = evt.action {
+                                                if relevant_actions.contains(&action.as_str()) {
+                                                    tracing::debug!("Docker event: {} on {:?}", action, evt.actor.as_ref().map(|a| &a.id));
+            refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(Err(e)) => {
+                                        tracing::warn!("Docker events stream error: {} — reconnecting", e);
+                                        break;
+                                    }
+                                    None => {
+                                        tracing::warn!("Docker events stream ended — reconnecting");
+                                        break;
                                     }
                                 }
                             }
+                            _ = fallback.tick() => {
+                                refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
+                            }
                         }
-                        Some(Err(e)) => {
-                            tracing::warn!("Docker events stream error: {} — reconnecting", e);
-                            break;
-                        }
-                        None => {
-                            tracing::warn!("Docker events stream ended — reconnecting");
-                            break;
-                        }
-                    }
-                }
-                _ = fallback.tick() => {
-                    refresh(&docker, &settings, &update_policies, &tx, &cached_containers, &mut previous_states, &db_pool, &update_in_progress).await;
-                }
-            }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }

@@ -303,7 +303,7 @@ pub async fn update_container_h(
         }
         Err(e) => {
             tracing::error!("update_container_h: error al reiniciar '{}': {}", name, e);
-                let entry = UpdateHistoryEntry {
+            let entry = UpdateHistoryEntry {
                 container: name.clone(),
                 image: image.to_string(),
                 old_digest: image_id.clone(),
@@ -414,7 +414,7 @@ pub async fn update_all_h(
         match recreate_container(&docker, &name, &cid, &image, Some(&manifest_digest)).await {
             Ok(_) => {
                 tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
-                        notify_all(&settings, &name, "✅ actualizado").await;
+                notify_all(&settings, &name, "✅ actualizado").await;
                 crate::containers::remove_old_image(&docker, &old_digest).await;
                 {
                     let conn = db_pool.get().await.unwrap();
@@ -1026,7 +1026,7 @@ async fn apply_single_policy(
                 success = true;
             } else {
                 tracing::error!("apply_single_policy: Pull FALLÓ '{}'", p.name);
-                        let entry = UpdateHistoryEntry {
+                let entry = UpdateHistoryEntry {
                     container: p.name.clone(),
                     image: p.image_full.clone(),
                     old_digest: p.image_id.clone(),
@@ -1170,7 +1170,7 @@ async fn apply_single_policy(
                 }
             } else {
                 tracing::error!("apply_single_policy: Pull FALLÓ '{}'", p.name);
-                        let entry = UpdateHistoryEntry {
+                let entry = UpdateHistoryEntry {
                     container: p.name.clone(),
                     image: p.image_full.clone(),
                     old_digest: p.image_id.clone(),

@@ -25,31 +25,15 @@ RUN touch src/main.rs && \
     strip target/release/alloy
 
 # ═══════════════════════════════════════════════════════════════
-# Stage 2: Frontend (pnpm)
-# ═══════════════════════════════════════════════════════════════
-FROM docker.io/library/node:23-alpine AS frontend-builder
-
-RUN npm install -g pnpm@11.21.0
-
-WORKDIR /build
-COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
-
-COPY frontend/ ./
-RUN pnpm run build
-
-# ═══════════════════════════════════════════════════════════════
-# Stage 3: Runtime
+# Stage 2: Runtime
 # ═══════════════════════════════════════════════════════════════
 FROM alpine:3.23
 
-RUN apk add --no-cache \
-    ca-certificates \
-    && adduser -D -h /app -u 1000 app
+RUN apk add --no-cache ca-certificates && \
+    adduser -D -h /app -u 1000 app
 
 WORKDIR /app
 COPY --from=backend-builder /build/target/release/alloy .
-COPY --from=frontend-builder /build/dist ./dist
 
 RUN mkdir -p /app/data && chown -R app:app /app
 

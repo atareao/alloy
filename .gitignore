@@ -20,9 +20,9 @@ Thumbs.db
 .codegraph/
 
 # Config local (no commitear tokens)
-backend/config.yaml
 *.log
 .env
 
 # Quadlet local (contiene credenciales reales)
 alloy.container
+node_modules/

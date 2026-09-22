@@ -26,15 +26,33 @@ fmt:
 fmt-fix:
     cd backend && cargo fmt
 
-build:
-    @podman build \
-        --no-cache \
-        --tag={{registry}}/{{user}}/{{name}}:{{version}} \
-        --tag={{registry}}/{{user}}/{{name}}:latest .
+build-backend:
+    @podman compose build backend
 
-push:
-    @podman image push {{registry}}/{{user}}/{{name}}:{{version}}
-    @podman image push {{registry}}/{{user}}/{{name}}:latest
+build-frontend:
+    @podman compose build frontend
+
+build:
+    @podman compose build
+
+up:
+    @podman compose up -d
+
+down:
+    @podman compose down
+
+logs:
+    @podman compose logs -f
+
+push-backend:
+    @podman image push {{registry}}/{{user}}/alloy-backend:{{version}}
+    @podman image push {{registry}}/{{user}}/alloy-backend:latest
+
+push-frontend:
+    @podman image push {{registry}}/{{user}}/alloy-frontend:{{version}}
+    @podman image push {{registry}}/{{user}}/alloy-frontend:latest
+
+push: push-backend push-frontend
 
 # ═══════════════════════════════════════════════════════════════
 # GitFlow recipes

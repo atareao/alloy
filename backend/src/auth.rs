@@ -506,49 +506,6 @@ pub async fn auth_middleware(
     Ok(response)
 }
 
-// ── Frontend static file handler ───────────────────────────
-
-pub async fn frontend_handler(req: axum::extract::Request) -> impl IntoResponse {
-    let path = req.uri().path().trim_start_matches('/');
-    let file_path = if path.is_empty() || path.starts_with("api/") {
-        "index.html"
-    } else {
-        path
-    };
-    let full_path = format!("dist/{}", file_path);
-    match tokio::fs::read(&full_path).await {
-        Ok(content) => {
-            let ext = file_path.rsplit('.').next().unwrap_or("");
-            let mime = match ext {
-                "html" => "text/html",
-                "css" => "text/css",
-                "js" => "application/javascript",
-                "json" => "application/json",
-                "png" => "image/png",
-                "svg" => "image/svg+xml",
-                "ico" => "image/x-icon",
-                "woff2" => "font/woff2",
-                "woff" => "font/woff",
-                "ttf" => "font/ttf",
-                _ => "application/octet-stream",
-            };
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", mime)
-                .body(axum::body::Body::from(content))
-                .unwrap()
-        }
-        Err(_) => match tokio::fs::read("dist/index.html").await {
-            Ok(html) => Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "text/html")
-                .body(axum::body::Body::from(html))
-                .unwrap(),
-            Err(_) => (StatusCode::NOT_FOUND, "Frontend not built").into_response(),
-        },
-    }
-}
-
 // ── Helpers ─────────────────────────────────────────────────
 
 fn url_encode(s: &str) -> String {

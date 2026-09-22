@@ -1,11 +1,4 @@
-use axum::{
-    extract::State,
-    http::HeaderValue,
-    response::IntoResponse,
-    routing::get,
-    Json,
-    Router,
-};
+use axum::{extract::State, http::HeaderValue, response::IntoResponse, routing::get, Json, Router};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
@@ -34,9 +27,10 @@ async fn state_h(
     };
 
     let mut response = Json(containers).into_response();
-    response
-        .headers_mut()
-        .insert(axum::http::header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    );
     response
 }
 
