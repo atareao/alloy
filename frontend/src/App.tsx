@@ -150,6 +150,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
         // Update progress from state response
         const bp = state.progress;
         setProgress(bp);
+        // Sync batchProgress so the progress bar reflects real progress
+        setBatchProgress({ current: bp.checked, total: bp.total });
         // Check for batch complete: checking === "__batch__" and checked >= total
         // OR progress reset to default while batch is active (race condition workaround)
         if (
