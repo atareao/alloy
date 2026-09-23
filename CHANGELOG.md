@@ -1,9 +1,23 @@
 # Changelog
+## [0.23.2] - 2026-09-23
+
+### Bug Fixes
+
+- Sync batchProgress with progress.checked in state polling callback
+- Sync batchProgress with progress.checked in state polling callback
+
+### Other
+
+- V0.23.1
 ## [0.23.1] - 2026-09-22
 
 ### Bug Fixes
 
 - Detect batch completion when progress resets to default (#65)
+
+### Miscellaneous Tasks
+
+- Release v0.23.1
 ## [0.23.0] - 2026-09-22
 
 ### Bug Fixes
