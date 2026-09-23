@@ -206,6 +206,54 @@ describe("BatchProgress", () => {
     expect(screen.getByText(/Verificando/)).toBeInTheDocument();
   });
 
+  it("shows progress bar at correct percentage based on batchProgress", () => {
+    const { container, rerender } = render(
+      <Wrapper>
+        <BatchProgress
+          phase="active"
+          batchProgress={{ current: 0, total: 10 }}
+          progress={makeProgress({ total: 10, checking: "nginx" })}
+          onCancel={vi.fn()}
+        />
+      </Wrapper>,
+    );
+
+    // At 0/10, progress bar should be at 0%
+    const bg = container.querySelector(".ant-progress-track") as HTMLElement;
+    expect(bg).toBeInTheDocument();
+    expect(bg.style.width).toBe("0%");
+
+    // Re-render with 5/10 → should be 50%
+    rerender(
+      <Wrapper>
+        <BatchProgress
+          phase="active"
+          batchProgress={{ current: 5, total: 10 }}
+          progress={makeProgress({ total: 10, checked: 5, checking: "nginx" })}
+          onCancel={vi.fn()}
+        />
+      </Wrapper>,
+    );
+    expect(bg.style.width).toBe("50%");
+
+    // Re-render with 10/10 → should be 100%
+    rerender(
+      <Wrapper>
+        <BatchProgress
+          phase="active"
+          batchProgress={{ current: 10, total: 10 }}
+          progress={makeProgress({
+            total: 10,
+            checked: 10,
+            checking: "__batch__",
+          })}
+          onCancel={vi.fn()}
+        />
+      </Wrapper>,
+    );
+    expect(bg.style.width).toBe("100%");
+  });
+
   it("shows '🔍 Verificando...' as fallback when checking is empty", () => {
     render(
       <Wrapper>
