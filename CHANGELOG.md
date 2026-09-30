@@ -1,4 +1,18 @@
 # Changelog
+## [0.23.7] - 2026-09-30
+
+### Bug Fixes
+
+- *(build)* Excluir frontend/node_modules del contexto Docker
+
+### Documentation
+
+- *(openspec)* Archivar change dockerignore-node-modules
+## [0.23.6] - 2026-09-30
+
+### Miscellaneous Tasks
+
+- Release v0.23.6
 ## [0.23.5] - 2026-09-30
 
 ### Miscellaneous Tasks
