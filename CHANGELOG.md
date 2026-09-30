@@ -1,4 +1,9 @@
 # Changelog
+## [0.23.5] - 2026-09-30
+
+### Other
+
+- *(deps)* Bump undici from 7.29.0 to 7.30.0 in /frontend
 ## [0.23.4] - 2026-09-30
 
 ### Documentation
@@ -8,6 +13,10 @@
 ### Features
 
 - *(updates)* Evitar pulls redundantes en política Pull
+
+### Miscellaneous Tasks
+
+- Release v0.23.4
 ## [0.23.3] - 2026-09-30
 
 ### Bug Fixes
