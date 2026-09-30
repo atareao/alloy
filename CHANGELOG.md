@@ -1,6 +1,10 @@
 # Changelog
 ## [0.23.5] - 2026-09-30
 
+### Miscellaneous Tasks
+
+- Release v0.23.5
+
 ### Other
 
 - *(deps)* Bump undici from 7.29.0 to 7.30.0 in /frontend
