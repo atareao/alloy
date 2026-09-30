@@ -54,14 +54,45 @@ async fn update_progress(
     state_notify.notify_waiters();
 }
 
+/// Image reference written to `Config.Image` when recreating a container.
+/// Always the clean `repo:tag` form, never a `repo:tag@sha256:...` pin.
+pub(crate) fn recreate_image_ref(image_full: &str) -> String {
+    crate::updates::digest::tag_ref(image_full).to_string()
+}
+
+/// Whether the initial `last_remote_digest` should be seeded for a container.
+/// Seed only when no digest is stored yet and there is no pending update, so
+/// the next cycle compares the running image against the remote.
+fn should_seed_last_remote_digest(has_stored: bool, has_update: bool) -> bool {
+    !has_stored && !has_update
+}
+
+/// Whether a successful policy action means the container was actually
+/// recreated (so the freshly pulled image is now in use). Only then may
+/// `has_update` be cleared and `last_remote_digest` advance.
+///
+/// `None` and `Pull` update the local image cache but leave the running
+/// container on its old image, so they MUST NOT advance the digest.
+pub(crate) fn should_advance_digest(action: &UpdateAction) -> bool {
+    matches!(
+        action,
+        UpdateAction::PullRestart | UpdateAction::PullRestartStack
+    )
+}
+
 /// Recreate a container by stopping, backing up, inspecting, creating with new image,
 /// starting, and cleaning up the backup. On failure, attempts rollback.
+///
+/// `_digest` is accepted for call-site symmetry but is no longer used to build
+/// `Config.Image`: the container is always recreated by the clean `repo:tag`
+/// reference (the pull-by-digest + retag step already points `repo:tag` at the
+/// freshly downloaded content).
 pub(crate) async fn recreate_container(
     docker: &Docker,
     name: &str,
     cid: &str,
     image_full: &str,
-    digest: Option<&str>,
+    _digest: Option<&str>,
 ) -> Result<(), String> {
     // 1. Stop the old container
     docker
@@ -91,13 +122,10 @@ pub(crate) async fn recreate_container(
         .await
         .map_err(|e| format!("inspect failed: {}", e))?;
 
-    // 4. Build new config from old one, modifying the image reference
+    // 4. Build new config from old one, modifying the image reference.
+    // Always use the clean `repo:tag` form — never persist the `@sha256` pin.
     let mut container_config = inspect.config.unwrap_or_default();
-    container_config.image = Some(if let Some(d) = digest {
-        format!("{}@{}", image_full, d)
-    } else {
-        image_full.to_string()
-    });
+    container_config.image = Some(recreate_image_ref(image_full));
 
     // Convert to bollard::container::Config and preserve host/networking config
     let mut config: Config<String> = container_config.into();
@@ -252,7 +280,8 @@ pub async fn update_container_h(
             let conn = db_pool.get().await.unwrap();
             let conn_lock = conn.lock().unwrap();
             let _ = db::append_update_history(&conn_lock, hist.last().unwrap());
-            let _ = db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest);
+            // NOTE: do NOT advance `last_remote_digest` here — the pull failed,
+            // so the running container is still on the old image.
         }
         return Err(AppError::Internal("pull failed".into()));
     }
@@ -406,9 +435,24 @@ pub async fn update_all_h(
                 tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
                 notify_all(&settings, &name, "✅ actualizado").await;
                 crate::containers::remove_old_image(&docker, &old_digest).await;
-                {
-                    let conn = db_pool.get().await.unwrap();
-                    let _ = db::update_container_has_update(&conn.lock().unwrap(), &name, false);
+                if let Ok(conn) = db_pool.get().await {
+                    match conn.lock() {
+                        Ok(conn_lock) => {
+                            let _ = db::update_container_has_update(&conn_lock, &name, false);
+                            // Recreate succeeded → the running image is now the remote
+                            // config digest; advance `last_remote_digest`.
+                            let _ = db::update_container_last_remote_digest(
+                                &conn_lock,
+                                &name,
+                                &remote_digest,
+                            );
+                        }
+                        Err(e) => tracing::error!(
+                            "update_all_h: mutex envenenado al persistir digest de '{}': {}",
+                            name,
+                            e
+                        ),
+                    }
                 }
                 results.push(UpdateProgress {
                     container: name.clone(),
@@ -667,14 +711,27 @@ async fn check_and_apply_all(
                             e
                         );
                     }
-                    if let Err(e) =
-                        db::update_container_last_remote_digest(&conn_lock, &name, &config_digest)
-                    {
-                        tracing::error!(
-                            "check_and_apply_all: error storing last_remote_digest for '{}': {}",
-                            name,
-                            e
-                        );
+                    // `last_remote_digest` represents the image the container is
+                    // actually running, so it MUST NOT advance merely because a
+                    // newer remote digest was observed. Seed it once (when there
+                    // was no stored value and no update pending) so subsequent
+                    // cycles have a baseline; the recreate paths persist it after
+                    // a successful recreate.
+                    if should_seed_last_remote_digest(
+                        last_remote_digest_map.contains_key(&name),
+                        has_update,
+                    ) {
+                        if let Err(e) = db::update_container_last_remote_digest(
+                            &conn_lock,
+                            &name,
+                            &config_digest,
+                        ) {
+                            tracing::error!(
+                                "check_and_apply_all: error seeding last_remote_digest for '{}': {}",
+                                name,
+                                e
+                            );
+                        }
                     }
                     drop(conn_lock);
                 }
@@ -1184,10 +1241,30 @@ async fn apply_single_policy(
                                 "apply_single_policy: Pull stack OK, recreando '{}'",
                                 project
                             );
-                            let _ = tokio::process::Command::new("docker")
+                            let up_ok = match tokio::process::Command::new("docker")
                                 .args(["compose", "-f", file, "up", "-d"])
                                 .output()
-                                .await;
+                                .await
+                            {
+                                Ok(o) if o.status.success() => true,
+                                Ok(o) => {
+                                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                                    tracing::error!(
+                                        "apply_single_policy: up stack FALLÓ '{}': {}",
+                                        project,
+                                        stderr
+                                    );
+                                    false
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "apply_single_policy: error ejecutando up stack '{}': {}",
+                                        project,
+                                        e
+                                    );
+                                    false
+                                }
+                            };
                             update_progress(
                                 progress_cache,
                                 state_notify,
@@ -1198,7 +1275,7 @@ async fn apply_single_policy(
                                 p.name.clone(),
                             )
                             .await;
-                            success = true;
+                            success = up_ok;
                         }
                         Ok(output) => {
                             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -1281,38 +1358,65 @@ async fn apply_single_policy(
     if success {
         tracing::info!("apply_single_policy: éxito '{}'", p.name);
         notify_all(settings, &p.name, "✅ actualizado y reiniciado").await;
-        // Store remote digest to prevent re-detection on next cycle.
-        // Use the digest already obtained in check_all_h if available,
-        // to avoid a redundant registry query that may hit rate limits.
-        let new_digest = if let Some(d) = &p.remote_digest {
+
+        // Digest of the image now in use (for history and, when the container
+        // was recreated, for persisting `last_remote_digest`).
+        // For stacks the recreate is done by `docker compose`, so prefer the
+        // locally inspected config digest of the redeployed service.
+        let new_digest = if policy.action == UpdateAction::PullRestartStack {
+            let local = resolve_container_image_digest(docker, &p.name).await;
+            if local.is_empty() {
+                p.remote_digest.clone().unwrap_or_default()
+            } else {
+                local
+            }
+        } else if let Some(d) = &p.remote_digest {
             d.clone()
         } else {
             check_remote_digest_on_image(&p.image_full, docker).await
         };
-        {
-            let conn = db_pool.get().await.unwrap();
-            if let Err(e) = db::update_container_has_update(&conn.lock().unwrap(), &p.name, false) {
-                tracing::error!(
-                    "apply_single_policy: error clearing has_update for '{}': {}",
-                    p.name,
-                    e
-                );
-            }
-            if !new_digest.is_empty() {
-                if let Err(e) = db::update_container_last_remote_digest(
-                    &conn.lock().unwrap(),
-                    &p.name,
-                    &new_digest,
-                ) {
-                    tracing::error!(
-                        "apply_single_policy: error storing last_remote_digest for '{}': {}",
-                        p.name,
-                        e
-                    );
+
+        // `last_remote_digest` represents the image the container is actually
+        // running, so it advances ONLY when the container was recreated.
+        // A Pull-only policy updates the local image cache but leaves the
+        // running container untouched → it MUST NOT clear `has_update` nor
+        // advance the digest.
+        let recreated = should_advance_digest(&policy.action);
+        if let Ok(conn) = db_pool.get().await {
+            if let Ok(guard) = conn.lock() {
+                if recreated {
+                    if let Err(e) = db::update_container_has_update(&guard, &p.name, false) {
+                        tracing::error!(
+                            "apply_single_policy: error clearing has_update for '{}': {}",
+                            p.name,
+                            e
+                        );
+                    }
+                }
+                if recreated && !new_digest.is_empty() {
+                    if let Err(e) =
+                        db::update_container_last_remote_digest(&guard, &p.name, &new_digest)
+                    {
+                        tracing::error!(
+                            "apply_single_policy: error storing last_remote_digest for '{}': {}",
+                            p.name,
+                            e
+                        );
+                    }
+                } else if recreated {
+                    tracing::warn!("apply_single_policy: no se pudo obtener digest remoto para '{}', last_remote_digest no actualizado", p.name);
                 }
             } else {
-                tracing::warn!("apply_single_policy: no se pudo obtener digest remoto para '{}', last_remote_digest no actualizado", p.name);
+                tracing::error!(
+                    "apply_single_policy: mutex de DB poisoned para '{}'",
+                    p.name
+                );
             }
+        } else {
+            tracing::error!(
+                "apply_single_policy: no se pudo obtener conexión DB para '{}'",
+                p.name
+            );
         }
         let entry = UpdateHistoryEntry {
             container: p.name.clone(),
@@ -1325,8 +1429,16 @@ async fn apply_single_policy(
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
-        let conn = db_pool.get().await.unwrap();
-        let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+        if let Ok(conn) = db_pool.get().await {
+            if let Ok(guard) = conn.lock() {
+                let _ = db::append_update_history(&guard, hist.last().unwrap());
+            } else {
+                tracing::error!(
+                    "apply_single_policy: mutex de DB poisoned al persistir historial para '{}'",
+                    p.name
+                );
+            }
+        }
 
         *any_success = true;
 
@@ -1547,6 +1659,26 @@ async fn check_remote_digest_on_image(image_full: &str, docker: &Docker) -> Stri
     }
 }
 
+/// Inspect a container and return the ID of the image it is running (the
+/// local config digest). Returns an empty string if the container cannot be
+/// inspected.
+async fn resolve_container_image_digest(docker: &Docker, name: &str) -> String {
+    match docker
+        .inspect_container(name, None::<InspectContainerOptions>)
+        .await
+    {
+        Ok(resp) => resp.image.unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(
+                "resolve_container_image_digest [{}]: inspect failed: {}",
+                name,
+                e
+            );
+            String::new()
+        }
+    }
+}
+
 // ── Test helpers (implemented in GREEN phase) ──────────────
 
 /// Reset the progress cache to default and notify waiting state handlers.
@@ -1595,5 +1727,46 @@ mod tests {
         assert_eq!(cache.updated, 0, "updated should be reset to 0");
         assert_eq!(cache.errors, 0, "errors should be reset to 0");
         assert!(cache.checking.is_empty(), "checking should be cleared");
+    }
+
+    // ── recreate_image_ref ───────────────────────────────────
+
+    /// `recreate_container` MUST write a clean `repo:tag` image reference to
+    /// `Config.Image`, never a `repo:tag@sha256:...` pin generated by Alloy.
+    #[test]
+    fn test_recreate_image_ref_strips_digest_pin() {
+        assert_eq!(
+            recreate_image_ref("gitea/gitea:1.27.3@sha256:87a6deadbeef"),
+            "gitea/gitea:1.27.3"
+        );
+    }
+
+    #[test]
+    fn test_recreate_image_ref_is_idempotent() {
+        assert_eq!(recreate_image_ref("nginx:alpine"), "nginx:alpine");
+        assert_eq!(recreate_image_ref("nginx"), "nginx");
+    }
+
+    // ── should_seed_last_remote_digest ───────────────────────
+
+    /// Seed only when there is no stored digest and no update pending.
+    #[test]
+    fn test_should_seed_only_when_missing_and_no_update() {
+        assert!(should_seed_last_remote_digest(false, false));
+        assert!(!should_seed_last_remote_digest(false, true));
+        assert!(!should_seed_last_remote_digest(true, false));
+        assert!(!should_seed_last_remote_digest(true, true));
+    }
+
+    // ── should_advance_digest (gating de `recreated`) ────────
+
+    /// Only recreate actions advance `last_remote_digest` (and clear
+    /// `has_update`); pull-only and none leave the running image untouched.
+    #[test]
+    fn test_should_advance_digest_only_on_recreate() {
+        assert!(should_advance_digest(&UpdateAction::PullRestart));
+        assert!(should_advance_digest(&UpdateAction::PullRestartStack));
+        assert!(!should_advance_digest(&UpdateAction::Pull));
+        assert!(!should_advance_digest(&UpdateAction::None));
     }
 }

@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use bollard::{
-    container::{ListContainersOptions, LogsOptions},
+    container::{InspectContainerOptions, ListContainersOptions, LogsOptions},
     Docker,
 };
 use futures::StreamExt;
@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::db::{self, DbPool};
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::state::AppState;
@@ -93,6 +94,7 @@ async fn list_stacks_h(State(docker): State<Docker>) -> Json<Vec<StackInfo>> {
 async fn update_stack_h(
     State(docker): State<Docker>,
     State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
     Path(project): Path<String>,
 ) -> Result<Json<StackUpdateResponse>, AppError> {
     let containers = docker
@@ -176,6 +178,47 @@ async fn update_stack_h(
                 match up_result {
                     Ok(up_output) if up_output.status.success() => {
                         let duration = start.elapsed().as_millis() as u64;
+                        // Persist the config digest of the freshly deployed
+                        // service so the next update check compares against the
+                        // image actually running.
+                        if let Some(container_name) = project_containers.iter().find_map(|c| {
+                            let svc = c.labels.as_ref().and_then(|l| l.get(LABEL_COMPOSE_SERVICE));
+                            if svc.map(|s| s == service).unwrap_or(false) {
+                                c.names
+                                    .as_ref()
+                                    .and_then(|n| n.first())
+                                    .map(|n| strip_name(n))
+                            } else {
+                                None
+                            }
+                        }) {
+                            if let Ok(inspect) = docker
+                                .inspect_container(&container_name, None::<InspectContainerOptions>)
+                                .await
+                            {
+                                if let Some(image_id) = inspect.image {
+                                    if let Ok(conn) = db_pool.get().await {
+                                        if let Ok(guard) = conn.lock() {
+                                            let _ = db::update_container_last_remote_digest(
+                                                &guard,
+                                                &container_name,
+                                                &image_id,
+                                            );
+                                        } else {
+                                            tracing::error!(
+                                                "update_stack_h: mutex de DB poisoned al persistir digest de '{}'",
+                                                container_name
+                                            );
+                                        }
+                                    } else {
+                                        tracing::error!(
+                                            "update_stack_h: no se pudo obtener conexión DB para '{}'",
+                                            container_name
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         results.push(StackUpdateResult {
                             service: service.clone(),
                             status: "ok".into(),
