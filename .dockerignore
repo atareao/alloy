@@ -8,6 +8,9 @@ backend/target/
 # Frontend build artifacts (local)
 frontend/dist/
 
+# Dependencias locales (pnpm las instala dentro de la imagen; evita pisar node_modules)
+frontend/node_modules/
+
 # npm lock (proyecto usa pnpm — se excluye para evitar contexto innecesario)
 frontend/package-lock.json
 
