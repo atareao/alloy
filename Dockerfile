@@ -32,6 +32,10 @@ FROM docker.io/library/node:23-alpine AS frontend-builder
 RUN npm install -g pnpm@11.21.0
 
 WORKDIR /build
+
+# pnpm no-interactivo: nunca espera confirmación por TTY
+ENV CI=true
+
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
