@@ -83,6 +83,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }
     }
 
@@ -114,6 +115,7 @@ mod tests {
                         last_check: None,
                         next_check: None,
                         last_remote_digest: String::new(),
+                        last_pulled_digest: String::new(),
                     }],
                 })
                 .unwrap();
@@ -148,6 +150,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }];
         let cached: CachedContainers = Arc::new(RwLock::new(Some(containers.clone())));
 

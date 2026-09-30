@@ -22,6 +22,10 @@ pub struct ContainerInfo {
     pub next_check: Option<String>,
     #[serde(default)]
     pub last_remote_digest: String, // stores last verified remote config digest
+    /// Config digest of the last image pulled into the local cache. Independent
+    /// from `last_remote_digest` (which is the image the container runs).
+    #[serde(default)]
+    pub last_pulled_digest: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -477,6 +481,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }
     }
 
