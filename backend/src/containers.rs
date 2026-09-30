@@ -163,6 +163,19 @@ pub async fn fetch_containers(
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // Step 2c-bis: Read persisted last_pulled_digest (local image cache) from DB
+    let last_pulled_digest_map: std::collections::HashMap<String, String> =
+        match db_pool.get().await {
+            Ok(conn) => match conn.lock() {
+                Ok(guard) => crate::db::load_last_pulled_digest_map(&guard),
+                Err(_) => std::collections::HashMap::new(),
+            },
+            Err(_) => {
+                tracing::warn!("fetch_containers: last_pulled_digest DB error");
+                std::collections::HashMap::new()
+            }
+        };
+
     // Step 3: Build ContainerInfo list (now all image names are resolved)
     containers
         .iter()
@@ -296,6 +309,10 @@ pub async fn fetch_containers(
                 last_check: check_times_map.get(&name).and_then(|(lc, _)| lc.clone()),
                 next_check: check_times_map.get(&name).and_then(|(_, nc)| nc.clone()),
                 last_remote_digest: last_remote_digest_map
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default(),
+                last_pulled_digest: last_pulled_digest_map
                     .get(&name)
                     .cloned()
                     .unwrap_or_default(),

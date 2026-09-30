@@ -80,6 +80,58 @@ pub(crate) fn should_advance_digest(action: &UpdateAction) -> bool {
     )
 }
 
+/// Whether a `Pull` action can skip the download because the remote config
+/// digest is already the one present in the local image cache.
+///
+/// Returns `true` only for `UpdateAction::Pull` when both digests are present,
+/// non-empty and equal. Recreate actions (`PullRestart`/`PullRestartStack`)
+/// always pull because they redeploy the container.
+pub(crate) fn should_skip_pull(
+    action: &UpdateAction,
+    remote: Option<&str>,
+    last_pulled: Option<&str>,
+) -> bool {
+    let (Some(remote), Some(last_pulled)) = (remote, last_pulled) else {
+        return false;
+    };
+    *action == UpdateAction::Pull && !remote.is_empty() && remote == last_pulled
+}
+
+/// Persist `last_pulled_digest` for a container after a successful pull.
+/// Does nothing when the digest is missing/empty, the DB is unavailable, or the
+/// value is already stored (avoids redundant writes).
+async fn persist_last_pulled_digest(db_pool: &DbPool, name: &str, digest: Option<&str>) {
+    let Some(digest) = digest.filter(|d| !d.is_empty()) else {
+        return;
+    };
+    if let Ok(conn) = db_pool.get().await {
+        match conn.lock() {
+            Ok(guard) => {
+                if db::get_container_last_pulled_digest(&guard, name).as_deref() == Some(digest) {
+                    return;
+                }
+                if let Err(e) = db::update_container_last_pulled_digest(&guard, name, digest) {
+                    tracing::error!(
+                        "persist_last_pulled_digest: error almacenando '{}': {}",
+                        name,
+                        e
+                    );
+                }
+            }
+            Err(e) => tracing::error!(
+                "persist_last_pulled_digest: mutex envenenado para '{}': {}",
+                name,
+                e
+            ),
+        }
+    } else {
+        tracing::error!(
+            "persist_last_pulled_digest: no se pudo obtener conexión DB para '{}'",
+            name
+        );
+    }
+}
+
 /// Recreate a container by stopping, backing up, inspecting, creating with new image,
 /// starting, and cleaning up the backup. On failure, attempts rollback.
 ///
@@ -198,6 +250,7 @@ struct PendingUpdate {
     image_id: String,
     remote_digest: Option<String>, // config digest (for comparison + DB storage)
     manifest_digest: Option<String>, // manifest digest (for pull + recreate)
+    last_pulled_digest: Option<String>, // cached config digest (skip redundant pulls)
     compose_project: Option<String>,
 }
 
@@ -285,6 +338,8 @@ pub async fn update_container_h(
         }
         return Err(AppError::Internal("pull failed".into()));
     }
+    // Record the digest of the image now present in the local cache.
+    persist_last_pulled_digest(&db_pool, &name, Some(&remote_digest)).await;
     match recreate_container(&docker, &name, cid, image, Some(&manifest_digest)).await {
         Ok(_) => {
             tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
@@ -430,6 +485,8 @@ pub async fn update_all_h(
             continue;
         }
         tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
+        // Record the digest of the image now present in the local cache.
+        persist_last_pulled_digest(&db_pool, &name, Some(&remote_digest)).await;
         match recreate_container(&docker, &name, &cid, &image, Some(&manifest_digest)).await {
             Ok(_) => {
                 tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
@@ -629,6 +686,15 @@ async fn check_and_apply_all(
         crate::db::load_last_remote_digest_map(&guard)
     };
 
+    // Load last_pulled_digest from DB (local image cache) to skip redundant pulls
+    let last_pulled_digest_map: HashMap<String, String> = match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => crate::db::load_last_pulled_digest_map(&guard),
+            Err(_) => HashMap::new(),
+        },
+        Err(_) => HashMap::new(),
+    };
+
     let mut any_success = false;
     let total = containers.len() as u32;
     let mut checked = 0u32;
@@ -751,6 +817,7 @@ async fn check_and_apply_all(
                         image_id,
                         remote_digest: Some(config_digest),
                         manifest_digest: Some(manifest_digest),
+                        last_pulled_digest: last_pulled_digest_map.get(&name).cloned(),
                         compose_project,
                     };
                     // Resolve policy for this single container
@@ -1039,7 +1106,32 @@ async fn apply_single_policy(
                 p.name,
                 p.image_full
             );
-            if pull_image(
+            if should_skip_pull(
+                &policy.action,
+                p.remote_digest.as_deref(),
+                p.last_pulled_digest.as_deref(),
+            ) {
+                tracing::info!(
+                    "apply_single_policy: Pull '{}' omitido, imagen ya en caché ({})",
+                    p.name,
+                    p.remote_digest.as_deref().unwrap_or("")
+                );
+                update_progress(
+                    progress_cache,
+                    state_notify,
+                    total,
+                    checked,
+                    updated,
+                    errors,
+                    p.name.clone(),
+                )
+                .await;
+                // D6: el skip es un no-op real. Salir antes del bloque
+                // `if success` para no notificar, ni registrar historial,
+                // ni ejecutar prune. La función devuelve `()` y no hay
+                // limpieza obligatoria para este caso.
+                return;
+            } else if pull_image(
                 docker,
                 &p.image_full,
                 p.manifest_digest.as_deref(),
@@ -1048,6 +1140,7 @@ async fn apply_single_policy(
             .await
             {
                 tracing::info!("apply_single_policy: Pull OK '{}'", p.name);
+                persist_last_pulled_digest(db_pool, &p.name, p.remote_digest.as_deref()).await;
                 update_progress(
                     progress_cache,
                     state_notify,
@@ -1358,6 +1451,12 @@ async fn apply_single_policy(
     if success {
         tracing::info!("apply_single_policy: éxito '{}'", p.name);
         notify_all(settings, &p.name, "✅ actualizado y reiniciado").await;
+
+        // Recreate actions also performed a successful pull, so record the
+        // resulting cache digest (the `Pull` branch persists it inline).
+        if should_advance_digest(&policy.action) {
+            persist_last_pulled_digest(db_pool, &p.name, p.remote_digest.as_deref()).await;
+        }
 
         // Digest of the image now in use (for history and, when the container
         // was recreated, for persisting `last_remote_digest`).
@@ -1768,5 +1867,140 @@ mod tests {
         assert!(should_advance_digest(&UpdateAction::PullRestartStack));
         assert!(!should_advance_digest(&UpdateAction::Pull));
         assert!(!should_advance_digest(&UpdateAction::None));
+    }
+
+    // ── should_skip_pull (pull-cache-digest) ─────────────────
+
+    /// Scenario: Imagen ya en caché — Pull + digests iguales → skip.
+    #[test]
+    fn test_should_skip_pull_when_remote_matches_cache() {
+        assert!(should_skip_pull(
+            &UpdateAction::Pull,
+            Some("sha256:bbb"),
+            Some("sha256:bbb")
+        ));
+    }
+
+    /// Scenario: Imagen nueva en el remoto — Pull + digests distintos → pull.
+    #[test]
+    fn test_should_skip_pull_false_when_remote_differs() {
+        assert!(!should_skip_pull(
+            &UpdateAction::Pull,
+            Some("sha256:bbb"),
+            Some("sha256:aaa")
+        ));
+    }
+
+    /// Only `Pull` may skip; recreate actions always pull.
+    #[test]
+    fn test_should_skip_pull_only_for_pull_action() {
+        assert!(!should_skip_pull(
+            &UpdateAction::PullRestart,
+            Some("sha256:bbb"),
+            Some("sha256:bbb")
+        ));
+        assert!(!should_skip_pull(
+            &UpdateAction::PullRestartStack,
+            Some("sha256:bbb"),
+            Some("sha256:bbb")
+        ));
+        assert!(!should_skip_pull(
+            &UpdateAction::None,
+            Some("sha256:bbb"),
+            Some("sha256:bbb")
+        ));
+    }
+
+    /// Both digests must be present.
+    #[test]
+    fn test_should_skip_pull_requires_both_digests() {
+        assert!(!should_skip_pull(
+            &UpdateAction::Pull,
+            None,
+            Some("sha256:bbb")
+        ));
+        assert!(!should_skip_pull(
+            &UpdateAction::Pull,
+            Some("sha256:bbb"),
+            None
+        ));
+        assert!(!should_skip_pull(&UpdateAction::Pull, None, None));
+    }
+
+    /// Empty digests must never match.
+    #[test]
+    fn test_should_skip_pull_false_on_empty_digests() {
+        assert!(!should_skip_pull(&UpdateAction::Pull, Some(""), Some("")));
+        assert!(!should_skip_pull(
+            &UpdateAction::Pull,
+            Some("sha256:bbb"),
+            Some("")
+        ));
+        assert!(!should_skip_pull(
+            &UpdateAction::Pull,
+            Some(""),
+            Some("sha256:bbb")
+        ));
+    }
+
+    /// Scenario: El skip es un no-op (D6). Un `Pull` cuyo digest remoto ya
+    /// coincide con el cacheado NO debe marcar éxito: sin notificación, sin
+    /// entrada de historial y sin prune (aunque `cleanup_old_image=true`).
+    /// Solo se registra log y se actualiza el progreso.
+    #[tokio::test]
+    async fn test_pull_skip_is_noop() {
+        // HTTP transport never touches the local socket, so the test runs
+        // without a Docker daemon; the skip path makes no Docker calls.
+        let docker = Docker::connect_with_http_defaults().expect("docker client");
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let state_notify = Arc::new(Notify::new());
+        let progress_cache: Arc<Mutex<BatchProgress>> =
+            Arc::new(Mutex::new(BatchProgress::default()));
+        let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let db_pool = db::test_pool();
+        let (tx, _rx) = broadcast::channel::<StateEvent>(8);
+
+        let p = PendingUpdate {
+            name: "web".into(),
+            image_full: "nginx:latest".into(),
+            cid: "cid123".into(),
+            image_id: "sha256:old".into(),
+            remote_digest: Some("sha256:bbb".into()),
+            manifest_digest: None,
+            last_pulled_digest: Some("sha256:bbb".into()),
+            compose_project: None,
+        };
+        let policy = UpdatePolicy {
+            container: "web".into(),
+            action: UpdateAction::Pull,
+            cleanup_old_image: true,
+            rollback_on_failure: false,
+            notify_events: true,
+        };
+        let mut any_success = false;
+
+        apply_single_policy(
+            &docker,
+            &settings,
+            &state_notify,
+            &progress_cache,
+            &update_history,
+            &db_pool,
+            &tx,
+            &p,
+            &policy,
+            &mut any_success,
+            1,
+            1,
+            0,
+            0,
+        )
+        .await;
+
+        assert!(!any_success, "el skip no debe marcar `any_success`");
+        assert!(
+            update_history.lock().await.is_empty(),
+            "el skip no debe añadir entrada al historial"
+        );
     }
 }
