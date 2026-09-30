@@ -84,6 +84,11 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
         "ALTER TABLE containers ADD COLUMN last_remote_digest TEXT NOT NULL DEFAULT '';",
     );
 
+    // Migración para last_pulled_digest (digest de la imagen ya en caché local)
+    let _ = conn.execute_batch(
+        "ALTER TABLE containers ADD COLUMN last_pulled_digest TEXT NOT NULL DEFAULT '';",
+    );
+
     Ok(pool)
 }
 
@@ -142,8 +147,8 @@ pub fn test_pool() -> DbPool {
 pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlResult<()> {
     conn.execute("DELETE FROM containers", [])?;
     let mut stmt = conn.prepare(
-        "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, last_remote_digest, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))",
+        "INSERT INTO containers (id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, last_remote_digest, last_pulled_digest, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'))",
     )?;
     for c in containers {
         stmt.execute(params![
@@ -162,6 +167,7 @@ pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlRe
             c.last_check,
             c.next_check,
             c.last_remote_digest,
+            c.last_pulled_digest,
         ])?;
     }
     Ok(())
@@ -170,12 +176,13 @@ pub fn save_containers(conn: &Connection, containers: &[ContainerInfo]) -> SqlRe
 #[allow(dead_code)]
 pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, last_remote_digest FROM containers ORDER BY name",
+        "SELECT id, name, image, image_tag, size_mb, state, status, ports, traefik_url, compose_project, has_update, registry_url, last_check, next_check, last_remote_digest, last_pulled_digest FROM containers ORDER BY name",
     )?;
     let rows = stmt.query_map([], |row| {
         let ports_str: String = row.get(7)?;
         let ports: Vec<String> = serde_json::from_str(&ports_str).unwrap_or_default();
         let lrd: String = row.get(14)?;
+        let lpd: String = row.get(15)?;
         Ok(ContainerInfo {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -193,6 +200,7 @@ pub fn load_containers(conn: &Connection) -> SqlResult<Vec<ContainerInfo>> {
             last_check: row.get(12)?,
             next_check: row.get(13)?,
             last_remote_digest: lrd,
+            last_pulled_digest: lpd,
         })
     })?;
     let mut result = Vec::new();
@@ -239,6 +247,48 @@ pub fn get_container_last_remote_digest(conn: &Connection, name: &str) -> Option
 pub fn load_last_remote_digest_map(conn: &Connection) -> HashMap<String, String> {
     let mut stmt = match conn
         .prepare("SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''")
+    {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = match stmt.query_map([], |row| {
+        let name: String = row.get(0)?;
+        let digest: String = row.get(1)?;
+        Ok((name, digest))
+    }) {
+        Ok(r) => r,
+        Err(_) => return HashMap::new(),
+    };
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+// ── last_pulled_digest (local image cache) ──────────────────
+
+pub fn update_container_last_pulled_digest(
+    conn: &Connection,
+    name: &str,
+    digest: &str,
+) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE containers SET last_pulled_digest = ?1, updated_at = datetime('now') WHERE name = ?2",
+        params![digest, name],
+    )?;
+    Ok(())
+}
+
+pub fn get_container_last_pulled_digest(conn: &Connection, name: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT last_pulled_digest FROM containers WHERE name = ?1",
+        params![name],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|d| !d.is_empty())
+}
+
+pub fn load_last_pulled_digest_map(conn: &Connection) -> HashMap<String, String> {
+    let mut stmt = match conn
+        .prepare("SELECT name, last_pulled_digest FROM containers WHERE last_pulled_digest != ''")
     {
         Ok(s) => s,
         Err(_) => return HashMap::new(),
@@ -537,6 +587,7 @@ mod tests {
                 ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
                 has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
                 last_check TEXT, next_check TEXT, last_remote_digest TEXT NOT NULL DEFAULT '',
+                last_pulled_digest TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS update_history (
@@ -582,6 +633,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }];
         save_containers(&conn, &containers).unwrap();
         let loaded = load_containers(&conn).unwrap();
@@ -609,6 +661,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }];
         save_containers(&conn, &c1).unwrap();
         let c2 = vec![ContainerInfo {
@@ -628,6 +681,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }];
         save_containers(&conn, &c2).unwrap();
         let loaded = load_containers(&conn).unwrap();
@@ -662,6 +716,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }];
         save_containers(&conn, &containers).unwrap();
         update_container_has_update(&conn, "test", true).unwrap();
@@ -824,6 +879,7 @@ mod tests {
             last_check: None,
             next_check: None,
             last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
         }];
         save_containers(&conn, &containers).unwrap();
 
@@ -839,5 +895,98 @@ mod tests {
             get_container_last_remote_digest(&conn, "test-container"),
             Some("sha256:abc123".into()),
         );
+    }
+
+    // ── last_pulled_digest (pull-cache-digest) ──────────────
+
+    fn make_container(name: &str) -> ContainerInfo {
+        ContainerInfo {
+            id: name.into(),
+            name: name.into(),
+            image: format!("{}:latest", name),
+            image_tag: "latest".into(),
+            size_mb: 0.0,
+            state: "running".into(),
+            status: "Up".into(),
+            ports: vec![],
+            traefik_url: None,
+            compose_project: None,
+            has_update: false,
+            registry_url: String::new(),
+            updating: false,
+            last_check: None,
+            next_check: None,
+            last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
+        }
+    }
+
+    /// Scenario: Migración sobre BD existente — init_db adds the column with
+    /// default '' and is idempotent (safe to run twice).
+    #[tokio::test]
+    async fn test_init_db_adds_last_pulled_digest_column() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("alloy-migration.db");
+        let path_str = path.to_str().expect("path str");
+
+        let pool = init_db(path_str).await.expect("first init_db");
+        // Second call must not fail (idempotent migration).
+        let pool2 = init_db(path_str).await.expect("second init_db");
+
+        let conn = pool2.get().await.expect("pool conn");
+        let guard = conn.lock().expect("lock");
+        let mut stmt = guard
+            .prepare("PRAGMA table_info(containers)")
+            .expect("pragma");
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query_map")
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            columns.contains(&"last_pulled_digest".to_string()),
+            "last_pulled_digest column missing; columns={:?}",
+            columns
+        );
+        drop(pool);
+    }
+
+    /// Scenario: Pull exitoso persiste el digest — update/get roundtrip.
+    #[test]
+    fn test_update_and_get_last_pulled_digest() {
+        let conn = test_conn();
+        save_containers(&conn, &[make_container("test-container")]).unwrap();
+
+        // Initially empty digest → None
+        assert_eq!(
+            get_container_last_pulled_digest(&conn, "test-container"),
+            None
+        );
+
+        // Set a digest → Some
+        update_container_last_pulled_digest(&conn, "test-container", "sha256:bbb").unwrap();
+        assert_eq!(
+            get_container_last_pulled_digest(&conn, "test-container"),
+            Some("sha256:bbb".into()),
+        );
+    }
+
+    #[test]
+    fn test_get_container_last_pulled_digest_nonexistent() {
+        let conn = test_conn();
+        assert_eq!(get_container_last_pulled_digest(&conn, "nonexistent"), None);
+    }
+
+    /// Scenario: load_last_pulled_digest_map omite valores vacíos.
+    #[test]
+    fn test_load_last_pulled_digest_map_omits_empty() {
+        let conn = test_conn();
+        save_containers(&conn, &[make_container("cached"), make_container("empty")]).unwrap();
+        update_container_last_pulled_digest(&conn, "cached", "sha256:bbb").unwrap();
+
+        let map = load_last_pulled_digest_map(&conn);
+        assert_eq!(map.len(), 1, "only non-empty digests must be included");
+        assert_eq!(map.get("cached"), Some(&"sha256:bbb".to_string()));
+        assert_eq!(map.get("empty"), None);
     }
 }
