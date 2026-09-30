@@ -340,15 +340,55 @@ pub async fn update_check_worker(
                                 .await;
                             match output {
                                 Ok(o) if o.status.success() => {
-                                    let _ = tokio::process::Command::new("docker")
-                                        .args(["compose", "-f", file, "up", "-d"])
-                                        .output()
-                                        .await;
-                                    if policy.cleanup_old_image {
-                                        let result = prune_dangling_images(&docker).await;
-                                        log_prune_result("scheduler-safety", &result);
+                                    let up_ok = matches!(
+                                        tokio::process::Command::new("docker")
+                                            .args(["compose", "-f", file, "up", "-d"])
+                                            .output()
+                                            .await,
+                                        Ok(up) if up.status.success()
+                                    );
+                                    if up_ok {
+                                        // Persist the config digest of the freshly
+                                        // redeployed service so the next check compares
+                                        // against the running image.
+                                        if let Ok(inspect) = docker
+                                            .inspect_container(
+                                                &name,
+                                                None::<InspectContainerOptions>,
+                                            )
+                                            .await
+                                        {
+                                            if let Some(image_id) = inspect.image {
+                                                if let Ok(conn) = db_pool.get().await {
+                                                    if let Ok(guard) = conn.lock() {
+                                                        let _ =
+                                                            db::update_container_last_remote_digest(
+                                                                &guard, &name, &image_id,
+                                                            );
+                                                    } else {
+                                                        tracing::error!(
+                                                            "update_check: mutex de DB poisoned al persistir digest de '{}'",
+                                                            name
+                                                        );
+                                                    }
+                                                } else {
+                                                    tracing::error!(
+                                                        "update_check: no se pudo obtener conexión DB para '{}'",
+                                                        name
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        // The stack service was recreated by `compose up`,
+                                        // so the pending update is now applied.
+                                        let _ =
+                                            sqlite_update_has_update(&db_pool, &name, false).await;
+                                        if policy.cleanup_old_image {
+                                            let result = prune_dangling_images(&docker).await;
+                                            log_prune_result("scheduler-safety", &result);
+                                        }
+                                        updated_count += 1;
                                     }
-                                    updated_count += 1;
                                     // Remove from suppression set
                                     {
                                         let mut in_progress = update_in_progress.lock().await;

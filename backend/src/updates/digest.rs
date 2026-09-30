@@ -22,11 +22,14 @@ fn token_cache() -> &'static Mutex<HashMap<String, CachedToken>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Parsed image reference with registry, repo, tag, and digest-only flag.
+/// Parsed image reference with registry, repo, tag, optional digest, and
+/// digest-only flag.
 pub struct ImageRef {
     pub registry: String,
     pub repo: String,
     pub tag: String,
+    /// Digest suffix when the reference is pinned (`repo:tag@sha256:...`).
+    pub digest: Option<String>,
     pub digest_only: bool,
 }
 
@@ -38,8 +41,9 @@ pub struct ImageRef {
 ///   (e.g. `ghcr.io`, `registry.example.com:5000`); otherwise the image is
 ///   assumed to come from Docker Hub (`docker.io`).
 /// - A leading `docker.io/` prefix on the remainder is stripped.
-/// - The tag is extracted after the last `:` (unless a digest `@sha256:...`
-///   is present, in which case the tag is `"digest"`).
+/// - The tag is extracted after the last `:` (unless it is part of a port).
+/// - A `@sha256:...` suffix is captured in `digest` and stripped from the
+///   name; the real tag is preserved (never replaced by the literal `"digest"`).
 /// - If there is no tag it defaults to `"latest"`.
 /// - For Docker Hub images with a single-component repo (no `/`), the repo is
 ///   prefixed with `library/` (e.g. `nginx:latest` → `library/nginx`).
@@ -49,7 +53,8 @@ pub struct ImageRef {
 /// - `ghcr.io/owner/repo:tag` → registry=`ghcr.io`, repo=`owner/repo`, tag=`tag`
 /// - `postgres:17-alpine` → registry=`docker.io`, repo=`library/postgres`, tag=`17-alpine`
 /// - `registry.example.com:5000/myimage:v2` → registry=`registry.example.com:5000`, repo=`myimage`, tag=`v2`
-/// - `docker.io/library/redis@sha256:...` → registry=`docker.io`, repo=`library/redis`, tag=`digest`
+/// - `docker.io/library/redis@sha256:...` → registry=`docker.io`, repo=`library/redis`, tag=`latest`, digest=`Some("sha256:...")`
+/// - `gitea/gitea:1.27.3@sha256:...` → registry=`docker.io`, repo=`gitea/gitea`, tag=`1.27.3`, digest=`Some("sha256:...")`
 /// - `sha256:abc123...` → digest_only=`true`
 pub fn parse_image_ref(image_full: &str) -> ImageRef {
     // Bare digest or empty reference → no repo/tag to resolve.
@@ -58,14 +63,16 @@ pub fn parse_image_ref(image_full: &str) -> ImageRef {
             registry: String::new(),
             repo: String::new(),
             tag: String::new(),
+            digest: None,
             digest_only: true,
         };
     }
 
-    // Split off a possible digest suffix (`repo@sha256:...`).
-    let (name_part, has_digest) = match image_full.rfind('@') {
-        Some(pos) => (&image_full[..pos], true),
-        None => (image_full, false),
+    // Split off a possible digest suffix (`repo:tag@sha256:...`), preserving
+    // the real tag that precedes the `@`.
+    let (name_part, digest) = match image_full.rfind('@') {
+        Some(pos) => (&image_full[..pos], Some(image_full[pos + 1..].to_string())),
+        None => (image_full, None),
     };
 
     // Determine the registry host from the first path segment, if any.
@@ -89,11 +96,6 @@ pub fn parse_image_ref(image_full: &str) -> ImageRef {
         Some(pos) if !rest[pos + 1..].contains('/') => (&rest[..pos], &rest[pos + 1..]),
         _ => (rest, "latest"),
     };
-    let tag = if has_digest {
-        "digest".to_string()
-    } else {
-        tag.to_string()
-    };
 
     // Docker Hub single-component names live under `library/`.
     let repo = if registry == "docker.io" && !repo.contains('/') {
@@ -105,8 +107,24 @@ pub fn parse_image_ref(image_full: &str) -> ImageRef {
     ImageRef {
         registry,
         repo,
-        tag,
+        tag: tag.to_string(),
+        digest,
         digest_only: false,
+    }
+}
+
+/// Return the tag-based reference of an image, stripping any `@sha256:...`
+/// digest suffix. Used to build clean `Config.Image` values and to retag
+/// after pulling by digest.
+///
+/// Examples:
+/// - `gitea/gitea:1.27.3@sha256:abc...` → `gitea/gitea:1.27.3`
+/// - `nginx:alpine` → `nginx:alpine`
+/// - `sha256:abc...` → `sha256:abc...` (no `@`)
+pub fn tag_ref(image_full: &str) -> &str {
+    match image_full.find('@') {
+        Some(pos) => &image_full[..pos],
+        None => image_full,
     }
 }
 
@@ -146,6 +164,15 @@ async fn check_remote_digest_impl(
     let parsed = parse_image_ref(image_full);
     if parsed.digest_only {
         return Err("image referenced only by digest, cannot check".to_string());
+    }
+    // A digest-pinned reference (`repo:tag@sha256:...`) is checked by its tag,
+    // never by the pin nor by the literal "digest".
+    if let Some(ref digest) = parsed.digest {
+        tracing::debug!(
+            "check_remote_digest: imagen pinneada por digest {} — se consulta por tag '{}'",
+            short_digest(digest),
+            parsed.tag
+        );
     }
     let registry_host = parsed.registry.clone();
     let repo = parsed.repo.clone();
@@ -198,7 +225,7 @@ async fn check_remote_digest_impl(
                     tag,
                     other
                 );
-                match d.inspect_registry_image(image_full, None).await {
+                match d.inspect_registry_image(tag_ref(image_full), None).await {
                     Ok(dist) => {
                         if let Some(manifest_digest) = dist.descriptor.digest {
                             tracing::info!(
@@ -720,6 +747,7 @@ mod tests {
         assert_eq!(parsed.registry, "docker.io");
         assert_eq!(parsed.repo, "library/nginx");
         assert_eq!(parsed.tag, "latest");
+        assert!(parsed.digest.is_none());
         assert!(!parsed.digest_only);
     }
 
@@ -739,7 +767,29 @@ mod tests {
         );
         assert_eq!(parsed.registry, "docker.io");
         assert_eq!(parsed.repo, "library/nginx");
-        assert_eq!(parsed.tag, "digest");
+        // No tag in the reference → defaults to `latest`, never the literal "digest".
+        assert_eq!(parsed.tag, "latest");
+        assert_eq!(
+            parsed.digest.as_deref(),
+            Some("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1")
+        );
+        assert!(!parsed.digest_only);
+    }
+
+    // ── Pinneado por Alloy: `repo:tag@sha256:...` ─────────────
+
+    #[test]
+    fn test_parse_image_tag_and_digest_preserves_tag() {
+        let parsed = parse_image_ref(
+            "gitea/gitea:1.27.3@sha256:87a6abc123def456abc123def456abc123def456abc123def456abc123def456ab",
+        );
+        assert_eq!(parsed.registry, "docker.io");
+        assert_eq!(parsed.repo, "gitea/gitea");
+        assert_eq!(parsed.tag, "1.27.3");
+        assert_eq!(
+            parsed.digest.as_deref(),
+            Some("sha256:87a6abc123def456abc123def456abc123def456abc123def456abc123def456ab")
+        );
         assert!(!parsed.digest_only);
     }
 
@@ -749,6 +799,21 @@ mod tests {
         assert_eq!(parsed.registry, "registry.example.com:5000");
         assert_eq!(parsed.repo, "myimage");
         assert_eq!(parsed.tag, "v2");
+        assert!(!parsed.digest_only);
+    }
+
+    #[test]
+    fn test_parse_image_registry_with_port_and_digest() {
+        let parsed = parse_image_ref(
+            "registry.example.com:5000/myimage:v2@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+        );
+        assert_eq!(parsed.registry, "registry.example.com:5000");
+        assert_eq!(parsed.repo, "myimage");
+        assert_eq!(parsed.tag, "v2");
+        assert_eq!(
+            parsed.digest.as_deref(),
+            Some("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1")
+        );
         assert!(!parsed.digest_only);
     }
 
@@ -777,7 +842,11 @@ mod tests {
         );
         assert_eq!(parsed.registry, "docker.io");
         assert_eq!(parsed.repo, "library/redis");
-        assert_eq!(parsed.tag, "digest");
+        assert_eq!(parsed.tag, "latest");
+        assert_eq!(
+            parsed.digest.as_deref(),
+            Some("sha256:fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321")
+        );
         assert!(!parsed.digest_only);
     }
 
@@ -807,6 +876,7 @@ mod tests {
             "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
         );
         assert!(parsed.digest_only);
+        assert!(parsed.digest.is_none());
         assert_eq!(parsed.registry, "");
         assert_eq!(parsed.repo, "");
         assert_eq!(parsed.tag, "");
@@ -847,6 +917,40 @@ mod tests {
         assert_eq!(parsed.repo, "library/nginx");
         assert_eq!(parsed.tag, "latest");
         assert!(!parsed.digest_only);
+    }
+
+    #[test]
+    fn test_parse_image_alpine_tag_no_digest() {
+        let parsed = parse_image_ref("nginx:alpine");
+        assert_eq!(parsed.tag, "alpine");
+        assert!(parsed.digest.is_none());
+        assert!(!parsed.digest_only);
+    }
+
+    // ── tag_ref: referencia sin el sufijo @digest ─────────────
+
+    #[test]
+    fn test_tag_ref_strips_digest() {
+        assert_eq!(
+            tag_ref("gitea/gitea:1.27.3@sha256:87a6deadbeef"),
+            "gitea/gitea:1.27.3"
+        );
+    }
+
+    #[test]
+    fn test_tag_ref_without_digest_unchanged() {
+        assert_eq!(tag_ref("repo:tag"), "repo:tag");
+        assert_eq!(tag_ref("nginx:alpine"), "nginx:alpine");
+    }
+
+    #[test]
+    fn test_tag_ref_no_tag_no_digest() {
+        assert_eq!(tag_ref("nginx"), "nginx");
+    }
+
+    #[test]
+    fn test_tag_ref_bare_digest_unchanged() {
+        assert_eq!(tag_ref("sha256:abc123"), "sha256:abc123");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use bollard::{
         RemoveContainerOptions, RestartContainerOptions, StartContainerOptions,
         StopContainerOptions,
     },
-    image::{CreateImageOptions, RemoveImageOptions},
+    image::{CreateImageOptions, RemoveImageOptions, TagImageOptions},
     Docker,
 };
 use futures::{pin_mut, StreamExt};
@@ -337,6 +337,23 @@ pub async fn remove_old_image(docker: &Docker, old_image_id: &str) {
     }
 }
 
+/// Build the `(from_image, tag)` pair used by [`pull_image`].
+///
+/// `tag_ref` strips any pre-existing `@sha256` pin (self-heals containers
+/// pinned by earlier versions) so we never build a double-`@` reference.
+/// When a digest is given we pull by digest (empty tag); otherwise we pull by
+/// the underlying tag.
+fn pull_ref(image: &str, digest: Option<&str>) -> (String, String) {
+    let base = crate::updates::digest::tag_ref(image);
+    match digest {
+        Some(d) => (format!("{}@{}", base, d), String::new()),
+        None => {
+            let (_, tag) = crate::models::parse_image_tag(base);
+            (base.to_string(), tag)
+        }
+    }
+}
+
 pub async fn pull_image(
     docker: &Docker,
     image: &str,
@@ -345,12 +362,7 @@ pub async fn pull_image(
 ) -> bool {
     // When digest is provided, pull using `image@digest` to bypass Docker tag caching.
     // When digest is None, fall back to tag-based pull.
-    let (from_image, tag) = if let Some(d) = digest {
-        (format!("{}@{}", image, d), String::new())
-    } else {
-        let (_, tag) = crate::models::parse_image_tag(image);
-        (image.to_string(), tag)
-    };
+    let (from_image, tag) = pull_ref(image, digest);
     let platform = crate::models::current_platform();
     tracing::info!(
         "pull_image: descargando '{}' (modo: {}, timeout: {}s)",
@@ -364,7 +376,7 @@ pub async fn pull_image(
     );
     let stream = docker.create_image(
         Some(CreateImageOptions {
-            from_image,
+            from_image: from_image.clone(),
             tag,
             platform,
             ..Default::default()
@@ -385,12 +397,33 @@ pub async fn pull_image(
     });
     match timed.await {
         Ok(result) => {
-            if result {
-                tracing::info!("pull_image: descarga completada para '{}'", image);
-            } else {
+            if !result {
                 tracing::error!("pull_image: error durante la descarga de '{}'", image);
+                return false;
             }
-            result
+            tracing::info!("pull_image: descarga completada para '{}'", image);
+            // After a digest pull, retag `repo:tag` so the subsequent recreate
+            // (which uses the clean tag reference) picks up the freshly
+            // downloaded content instead of a cached tag.
+            if let Some(d) = digest {
+                let clean = crate::updates::digest::tag_ref(image);
+                let (repo, tag) = crate::models::parse_image_tag(clean);
+                // Tag from a canonical, tag-less reference (`repo@sha256:<d>`)
+                // rather than from `repo:tag@sha256:<d>`, which is not a stable
+                // source across registries.
+                let source = format!("{}@{}", repo, d);
+                let opts = TagImageOptions { repo, tag };
+                if let Err(e) = docker.tag_image(source.as_str(), Some(opts)).await {
+                    tracing::error!(
+                        "pull_image: falló el retag de '{}' tras pull por digest: {}",
+                        clean,
+                        e
+                    );
+                    return false;
+                }
+                tracing::info!("pull_image: retag completado '{}'", clean);
+            }
+            true
         }
         Err(_) => {
             tracing::error!(
@@ -876,5 +909,55 @@ mod tests {
     #[test]
     fn test_strip_name_empty() {
         assert_eq!(strip_name(""), "");
+    }
+
+    // ── pull_ref (self-heal of pinned references) ────────────
+
+    #[test]
+    fn test_pull_ref_by_digest_strips_existing_pin() {
+        let (from_image, tag) = pull_ref("gitea/gitea:1.27.3@sha256:old", Some("sha256:new"));
+        assert_eq!(from_image, "gitea/gitea:1.27.3@sha256:new");
+        assert!(tag.is_empty());
+    }
+
+    #[test]
+    fn test_pull_ref_by_digest_plain_tag() {
+        let (from_image, tag) = pull_ref("nginx:alpine", Some("sha256:new"));
+        assert_eq!(from_image, "nginx:alpine@sha256:new");
+        assert!(tag.is_empty());
+    }
+
+    #[test]
+    fn test_pull_ref_by_tag_strips_existing_pin() {
+        let (from_image, tag) = pull_ref("gitea/gitea:1.27.3@sha256:old", None);
+        assert_eq!(from_image, "gitea/gitea:1.27.3");
+        assert_eq!(tag, "1.27.3");
+    }
+
+    #[test]
+    fn test_pull_ref_by_tag_defaults_latest() {
+        let (from_image, tag) = pull_ref("nginx", None);
+        assert_eq!(from_image, "nginx");
+        assert_eq!(tag, "latest");
+    }
+
+    #[test]
+    fn test_pull_ref_registry_with_port_and_digest() {
+        let (from_image, tag) = pull_ref(
+            "registry.example.com:5000/myimage:v2@sha256:abc123",
+            Some("sha256:new"),
+        );
+        assert_eq!(
+            from_image,
+            "registry.example.com:5000/myimage:v2@sha256:new"
+        );
+        assert!(tag.is_empty());
+    }
+
+    #[test]
+    fn test_pull_ref_registry_with_port_by_tag() {
+        let (from_image, tag) = pull_ref("registry.example.com:5000/myimage:v2", None);
+        assert_eq!(from_image, "registry.example.com:5000/myimage:v2");
+        assert_eq!(tag, "v2");
     }
 }
