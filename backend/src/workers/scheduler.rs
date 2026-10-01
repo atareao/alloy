@@ -239,6 +239,15 @@ pub async fn update_check_worker(
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
                     if pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout).await
                     {
+                        // Guard anti-bucle (mismo mecanismo que PullRestart):
+                        // NO se persiste `last_remote_digest` en `Pull`; la
+                        // semántica de no avanzar el digest se mantiene.
+                        record_degraded_applied(
+                            &mut degraded_applied,
+                            &name,
+                            degraded,
+                            &manifest_digest,
+                        );
                         _ = sqlite_append_update(
                             &db_pool,
                             &update_history,
@@ -320,12 +329,12 @@ pub async fn update_check_worker(
                                         &config_digest,
                                     )
                                     .await;
-                                    if degraded {
-                                        degraded_applied
-                                            .insert(name.clone(), manifest_digest.clone());
-                                    } else {
-                                        degraded_applied.remove(&name);
-                                    }
+                                    record_degraded_applied(
+                                        &mut degraded_applied,
+                                        &name,
+                                        degraded,
+                                        &manifest_digest,
+                                    );
                                     _ = sqlite_append_update(
                                         &db_pool,
                                         &update_history,
@@ -428,11 +437,12 @@ pub async fn update_check_worker(
                                     &config_digest,
                                 )
                                 .await;
-                                if degraded {
-                                    degraded_applied.insert(name.clone(), manifest_digest.clone());
-                                } else {
-                                    degraded_applied.remove(&name);
-                                }
+                                record_degraded_applied(
+                                    &mut degraded_applied,
+                                    &name,
+                                    degraded,
+                                    &manifest_digest,
+                                );
                                 _ = sqlite_append_update(
                                     &db_pool,
                                     &update_history,
@@ -488,22 +498,65 @@ pub async fn update_check_worker(
                 .map(|n| crate::models::strip_name(n))
                 .unwrap_or_default();
             if !name.is_empty() {
-                let obj = db_pool.get().await.unwrap();
-                let _ = db::update_container_check_times(
-                    &obj.lock().unwrap(),
-                    &name,
-                    &last_check,
-                    &next_check,
-                );
+                if let Ok(obj) = db_pool.get().await {
+                    match obj.lock() {
+                        Ok(conn) => {
+                            let _ = db::update_container_check_times(
+                                &conn,
+                                &name,
+                                &last_check,
+                                &next_check,
+                            );
+                        }
+                        Err(e) => tracing::error!(
+                            "update_check: mutex de DB envenenado al actualizar check times de '{}': {}",
+                            name,
+                            e
+                        ),
+                    }
+                } else {
+                    tracing::error!(
+                        "update_check: no se pudo obtener conexión DB para check times de '{}'",
+                        name
+                    );
+                }
             }
         }
+
+        // Poda del guard degradado: elimina entradas de contenedores que ya no
+        // existen (renombrado/recreación) para evitar crecimiento ilimitado.
+        let present_names: HashSet<String> = containers
+            .iter()
+            .filter_map(|c| {
+                c.names
+                    .as_ref()
+                    .and_then(|n| n.first())
+                    .map(|n| crate::models::strip_name(n))
+            })
+            .filter(|n| !n.is_empty())
+            .collect();
+        retain_present_containers(&mut degraded_applied, &present_names);
 
         // Persistir last_run_at en settings para que el endpoint API lo exponga
         {
             let mut s = settings.lock().await;
             s.update_check_last_run_at = Some(last_check.clone());
+            let snapshot = s.clone();
+            drop(s);
             if let Ok(conn) = db_pool.get().await {
-                let _ = db::save_settings(&conn.lock().unwrap(), &s);
+                match conn.lock() {
+                    Ok(guard) => {
+                        let _ = db::save_settings(&guard, &snapshot);
+                    }
+                    Err(e) => tracing::error!(
+                        "update_check: mutex de DB envenenado al guardar settings: {}",
+                        e
+                    ),
+                }
+            } else {
+                tracing::error!(
+                    "update_check: no se pudo obtener conexión DB para guardar settings"
+                );
             }
         }
 
@@ -556,6 +609,29 @@ fn degraded_update_suppressed(
     already_applied: Option<&str>,
 ) -> bool {
     degraded && already_applied == Some(manifest_digest)
+}
+
+/// Registra (inserta/limpia) el manifest degradado aplicado a un contenedor.
+/// Simétrico: resolución degradada → guarda el manifest; resolución fiable →
+/// limpia la entrada. Es la única escritura del guard anti-bucle degradado.
+fn record_degraded_applied(
+    map: &mut HashMap<String, String>,
+    name: &str,
+    degraded: bool,
+    manifest_digest: &str,
+) {
+    if degraded {
+        map.insert(name.to_string(), manifest_digest.to_string());
+    } else {
+        map.remove(name);
+    }
+}
+
+/// Poda del guard degradado: elimina las entradas de contenedores que ya no
+/// están presentes en el ciclo (renombrado/recreación con nombre nuevo), para
+/// evitar que el mapa crezca sin límite.
+fn retain_present_containers(map: &mut HashMap<String, String>, present: &HashSet<String>) {
+    map.retain(|name, _| present.contains(name));
 }
 
 /// Compute the update decision for a container from a resolved remote digest.
@@ -631,7 +707,7 @@ async fn persist_last_remote_digest_after_recreate(
     let digest = match digest_to_persist(degraded, config_digest) {
         PersistDigest::Config(cfg) => cfg.to_string(),
         PersistDigest::InspectRunning => {
-            tracing::warn!(
+            tracing::info!(
                 "update_check: resolución DEGRADED para '{}'; se inspecciona el contenedor para persistir el config digest real (no se persiste el manifest)",
                 name
             );
@@ -728,9 +804,23 @@ impl Drop for InProgressGuard {
 
 /// Persistir has_update en DB (helper)
 async fn sqlite_update_has_update(db_pool: &DbPool, name: &str, has_update: bool) {
-    let obj = db_pool.get().await.unwrap();
-    let _ = db::update_container_has_update(&obj.lock().unwrap(), name, has_update);
-    drop(obj);
+    match db_pool.get().await {
+        Ok(obj) => match obj.lock() {
+            Ok(conn) => {
+                let _ = db::update_container_has_update(&conn, name, has_update);
+            }
+            Err(e) => tracing::error!(
+                "update_check: mutex de DB envenenado al persistir has_update de '{}': {}",
+                name,
+                e
+            ),
+        },
+        Err(e) => tracing::error!(
+            "update_check: no se pudo obtener conexión DB para has_update de '{}': {}",
+            name,
+            e
+        ),
+    }
 }
 
 /// Append a update history (helper)
@@ -754,11 +844,29 @@ async fn sqlite_append_update(
         status: status.to_string(),
         duration_ms,
     };
-    let mut hist = update_history.lock().await;
-    hist.push(entry);
-    let obj = db_pool.get().await.unwrap();
-    let _ = db::append_update_history(&obj.lock().unwrap(), hist.last().unwrap());
-    drop(obj);
+    // Publicar en memoria y soltar el guard ANTES del await de DB, para no
+    // retener el mutex del historial durante la E/S.
+    {
+        let mut hist = update_history.lock().await;
+        hist.push(entry.clone());
+    }
+    match db_pool.get().await {
+        Ok(obj) => match obj.lock() {
+            Ok(conn) => {
+                let _ = db::append_update_history(&conn, &entry);
+            }
+            Err(e) => tracing::error!(
+                "update_check: mutex de DB envenenado al anexar historial de '{}': {}",
+                name,
+                e
+            ),
+        },
+        Err(e) => tracing::error!(
+            "update_check: no se pudo obtener conexión DB para historial de '{}': {}",
+            name,
+            e
+        ),
+    }
 }
 
 /// Carga el mapa de nombre → last_remote_digest desde la DB.
@@ -767,9 +875,24 @@ async fn sqlite_append_update(
 async fn load_last_remote_digest_map(db_pool: &DbPool) -> HashMap<String, String> {
     let conn = match db_pool.get().await {
         Ok(c) => c,
-        Err(_) => return HashMap::new(),
+        Err(e) => {
+            tracing::error!(
+                "update_check: no se pudo obtener conexión DB para cargar last_remote_digest: {}",
+                e
+            );
+            return HashMap::new();
+        }
     };
-    let guard = conn.lock().unwrap();
+    let guard = match conn.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!(
+                "update_check: mutex de DB envenenado al cargar last_remote_digest: {}",
+                e
+            );
+            return HashMap::new();
+        }
+    };
     let mut stmt = match guard
         .prepare("SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''")
     {
@@ -1060,5 +1183,116 @@ mod tests {
             Some("sha256:M")
         ));
         assert!(!degraded_update_suppressed(true, "sha256:M", None));
+    }
+
+    // ── Guard degradado: registro y poda (scheduler-reliability) ──
+
+    #[test]
+    fn test_record_degraded_applied_inserts_on_degraded() {
+        let mut map = HashMap::new();
+        record_degraded_applied(&mut map, "app", true, "sha256:M");
+        assert_eq!(map.get("app").map(|s| s.as_str()), Some("sha256:M"));
+    }
+
+    #[test]
+    fn test_record_degraded_applied_removes_on_reliable() {
+        let mut map = HashMap::new();
+        record_degraded_applied(&mut map, "app", true, "sha256:M");
+        record_degraded_applied(&mut map, "app", false, "sha256:M");
+        assert!(
+            !map.contains_key("app"),
+            "una resolución fiable limpia la entrada"
+        );
+    }
+
+    #[test]
+    fn test_record_degraded_applied_is_idempotent() {
+        let mut map = HashMap::new();
+        record_degraded_applied(&mut map, "app", true, "sha256:M");
+        record_degraded_applied(&mut map, "app", true, "sha256:M");
+        assert_eq!(map.len(), 1, "no debe duplicar entradas");
+        assert_eq!(map.get("app").map(|s| s.as_str()), Some("sha256:M"));
+    }
+
+    #[test]
+    fn test_record_degraded_applied_scoped_per_container() {
+        let mut map = HashMap::new();
+        record_degraded_applied(&mut map, "a", true, "sha256:A");
+        record_degraded_applied(&mut map, "b", true, "sha256:B");
+        record_degraded_applied(&mut map, "a", false, "sha256:A");
+        assert!(!map.contains_key("a"));
+        assert_eq!(map.get("b").map(|s| s.as_str()), Some("sha256:B"));
+    }
+
+    /// Valor real: tras registrar un pull degradado, la siguiente decisión
+    /// (`compute_update_decision`) suprime el mismo manifest; un manifest nuevo
+    /// no se suprime.
+    #[test]
+    fn test_recorded_degraded_manifest_suppresses_next_decision() {
+        let mut map = HashMap::new();
+        record_degraded_applied(&mut map, "app", true, "sha256:M");
+        let same: Result<RemoteDigest, String> = Ok(remote("sha256:M", "sha256:M", "latest", true));
+        let d = compute_update_decision(
+            &same,
+            Some("sha256:C"),
+            "sha256:img",
+            map.get("app").map(|s| s.as_str()),
+        )
+        .unwrap();
+        assert!(
+            !d.has_update,
+            "el manifest degradado ya aplicado no vuelve a actualizar"
+        );
+        let new: Result<RemoteDigest, String> =
+            Ok(remote("sha256:M2", "sha256:M2", "latest", true));
+        let d2 = compute_update_decision(
+            &new,
+            Some("sha256:C"),
+            "sha256:img",
+            map.get("app").map(|s| s.as_str()),
+        )
+        .unwrap();
+        assert!(d2.has_update, "un manifest degradado nuevo no se suprime");
+    }
+
+    // ── Poda del guard degradado (scheduler-reliability) ──
+
+    #[test]
+    fn test_retain_present_containers_removes_stale() {
+        let mut map = HashMap::new();
+        map.insert("keep".to_string(), "sha256:A".to_string());
+        map.insert("stale".to_string(), "sha256:B".to_string());
+        let present: HashSet<String> = std::iter::once("keep".to_string()).collect();
+        retain_present_containers(&mut map, &present);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("keep").map(|s| s.as_str()), Some("sha256:A"));
+        assert!(!map.contains_key("stale"));
+    }
+
+    #[test]
+    fn test_retain_present_containers_keeps_all_present() {
+        let mut map = HashMap::new();
+        map.insert("a".to_string(), "sha256:A".to_string());
+        let present: HashSet<String> = std::iter::once("a".to_string()).collect();
+        retain_present_containers(&mut map, &present);
+        assert_eq!(map.len(), 1);
+    }
+
+    /// Test de forma: la fuente del worker no debe paniquear sobre el pool ni
+    /// sobre los locks de conexión. Los patrones se componen en runtime para
+    /// que el literal prohibido no aparezca en el propio archivo.
+    #[test]
+    fn test_no_unwrap_on_pool_or_lock_in_scheduler() {
+        let src = include_str!("scheduler.rs");
+        let pool_unwrap = concat!("db_pool.get().await.", "unwrap()");
+        let lock_unwrap = concat!("lock().", "unwrap()");
+        assert!(
+            !src.contains(pool_unwrap),
+            "scheduler.rs no debe paniquear al obtener una conexión del pool"
+        );
+        assert!(
+            !src.contains(lock_unwrap),
+            "scheduler.rs no debe paniquear sobre el mutex de conexión"
+        );
     }
 }
