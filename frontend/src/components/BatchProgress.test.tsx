@@ -98,11 +98,11 @@ describe("BatchProgress", () => {
     expect(screen.getByText(/crowdsec/)).toBeInTheDocument();
   });
 
-  it('shows "✅ Completado" when checked >= total and checking is "__batch__"', () => {
+  it('shows "✅ Completado" when checked >= total', () => {
     const progress = makeProgress({
       total: 2,
       checked: 2,
-      checking: "__batch__",
+      checking: "nginx",
     });
 
     render(
@@ -245,7 +245,7 @@ describe("BatchProgress", () => {
           progress={makeProgress({
             total: 10,
             checked: 10,
-            checking: "__batch__",
+            checking: "nginx",
           })}
           onCancel={vi.fn()}
         />

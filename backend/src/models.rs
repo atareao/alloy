@@ -56,6 +56,18 @@ pub struct NotifEvent {
     pub timestamp: String,
 }
 
+/// Incremental container state-change payload for the `container-event` SSE
+/// message of `GET /api/stream`.
+#[derive(Clone, Debug, Serialize)]
+pub struct ContainerEvent {
+    pub name: String,
+    /// Normalized Docker action inferred from the state transition
+    /// (`start|stop|die|pause|unpause|restart|create|destroy|update`).
+    pub action: String,
+    pub state: String,
+    pub timestamp: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct PublicConfig {
     pub oidc_configured: bool,
@@ -332,8 +344,6 @@ pub const ALL_CONTAINERS: &str = "*";
 
 pub const LABEL_COMPOSE_PROJECT: &str = "com.docker.compose.project";
 pub const LABEL_COMPOSE_SERVICE: &str = "com.docker.compose.service";
-pub const LABEL_COMPOSE_CONFIG_FILES: &str = "com.docker.compose.project.config_files";
-pub const LABEL_COMPOSE_WORKING_DIR: &str = "com.docker.compose.project.working_dir";
 
 pub fn strip_name(name: &str) -> String {
     name.trim_start_matches('/').to_string()
@@ -716,5 +726,46 @@ mod tests {
             json.get("progress").is_some(),
             "JSON must contain 'progress' field"
         );
+    }
+
+    // ── ContainerEvent (sse-first) ───────────────────────────
+
+    /// `ContainerEvent` is the payload of the `container-event` SSE message:
+    /// it MUST serialize with the four contract fields (task 1.1).
+    #[test]
+    fn test_container_event_serialization() {
+        let evt = ContainerEvent {
+            name: "nginx".into(),
+            action: "start".into(),
+            state: "running".into(),
+            timestamp: "2026-10-12T00:00:00+00:00".into(),
+        };
+        let json = serde_json::to_value(&evt).unwrap();
+        assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("nginx"));
+        assert_eq!(json.get("action").and_then(|v| v.as_str()), Some("start"));
+        assert_eq!(json.get("state").and_then(|v| v.as_str()), Some("running"));
+        assert_eq!(
+            json.get("timestamp").and_then(|v| v.as_str()),
+            Some("2026-10-12T00:00:00+00:00")
+        );
+        assert_eq!(
+            json.as_object().map(|o| o.len()),
+            Some(4),
+            "ContainerEvent must serialize exactly the four contract fields"
+        );
+    }
+
+    #[test]
+    fn test_container_event_is_clone_and_debug() {
+        let evt = ContainerEvent {
+            name: "redis".into(),
+            action: "die".into(),
+            state: "exited".into(),
+            timestamp: "t".into(),
+        };
+        let cloned = evt.clone();
+        assert_eq!(cloned.name, "redis");
+        assert_eq!(cloned.action, "die");
+        assert!(format!("{:?}", evt).contains("redis"));
     }
 }

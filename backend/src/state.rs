@@ -148,6 +148,13 @@ pub struct AppState {
     /// When state or progress changes, notify_waiters() wakes up
     /// the GET /api/state handler so it returns immediately.
     pub state_notify: Arc<Notify>,
+    /// Broadcast channel for batch update progress (`update-progress` SSE event).
+    pub progress_tx: broadcast::Sender<UpdateProgress>,
+    /// Broadcast channel for UI notifications (`notification` SSE event).
+    pub notif_tx: broadcast::Sender<NotifEvent>,
+    /// Broadcast channel for incremental container state changes
+    /// (`container-event` SSE event).
+    pub container_event_tx: broadcast::Sender<ContainerEvent>,
 }
 
 // FromRef implementations so handlers can extract individual types via State extractor
@@ -166,6 +173,24 @@ impl axum::extract::FromRef<AppState> for Config {
 impl axum::extract::FromRef<AppState> for broadcast::Sender<StateEvent> {
     fn from_ref(state: &AppState) -> Self {
         state.tx.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for broadcast::Sender<UpdateProgress> {
+    fn from_ref(state: &AppState) -> Self {
+        state.progress_tx.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for broadcast::Sender<NotifEvent> {
+    fn from_ref(state: &AppState) -> Self {
+        state.notif_tx.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for broadcast::Sender<ContainerEvent> {
+    fn from_ref(state: &AppState) -> Self {
+        state.container_event_tx.clone()
     }
 }
 

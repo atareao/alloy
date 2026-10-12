@@ -155,6 +155,10 @@ async fn main() {
 
     // Broadcast channel for container state events
     let (tx, _) = broadcast::channel(128);
+    // Broadcast channels for the single SSE multiplexed stream (GET /api/stream)
+    let (progress_tx, _) = broadcast::channel::<UpdateProgress>(128);
+    let (notif_tx, _) = broadcast::channel::<NotifEvent>(128);
+    let (container_event_tx, _) = broadcast::channel::<ContainerEvent>(128);
 
     let cached_containers: CachedContainers = Arc::new(RwLock::new(None));
 
@@ -178,6 +182,9 @@ async fn main() {
         progress_cache: progress_cache.clone(),
         cancel_check: Arc::new(AtomicBool::new(false)),
         state_notify: state_notify.clone(),
+        progress_tx: progress_tx.clone(),
+        notif_tx: notif_tx.clone(),
+        container_event_tx: container_event_tx.clone(),
     };
 
     // Spawn workers
@@ -190,6 +197,8 @@ async fn main() {
         db_pool.clone(),
         state.update_in_progress.clone(),
         state_notify,
+        notif_tx.clone(),
+        container_event_tx.clone(),
     ));
     tokio::spawn(update_check_worker(
         docker.clone(),
@@ -250,8 +259,8 @@ async fn main() {
     // NOTE: TCP_NODELAY is intentionally NOT set on this listening `TcpSocket`.
     // On Linux, socket options set on a listening socket do not propagate to
     // the connections it accepts via accept(2). Setting it here would give a
-    // false sense of security while SSE streams (/api/events, /api/updates,
-    // /api/notifications, /api/stream) keep buffering under Nagle's algorithm.
+    // false sense of security while SSE streams (/api/stream and the container
+    // log endpoints) keep buffering under Nagle's algorithm.
     // Instead, TCP_NODELAY is applied per accepted connection below via
     // `axum::serve::ListenerExt::tap_io`.
     socket.bind(addr).unwrap();

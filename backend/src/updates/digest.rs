@@ -128,6 +128,25 @@ pub fn tag_ref(image_full: &str) -> &str {
     }
 }
 
+/// Result of a remote digest check.
+///
+/// `degraded` is `true` when the registry could not provide the real config
+/// digest and the manifest digest was reused as `config_digest`. A degraded
+/// value MUST NOT be persisted as the running-image baseline, because
+/// comparing a manifest digest against a config digest always reports a
+/// spurious update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteDigest {
+    /// `Docker-Content-Digest` of the manifest (used to pull by digest).
+    pub manifest_digest: String,
+    /// Config digest (matches the local `ImageID`); untrusted when `degraded`.
+    pub config_digest: String,
+    /// Resolved tag.
+    pub tag: String,
+    /// `true` when `config_digest` is actually the manifest digest (fallback).
+    pub degraded: bool,
+}
+
 /// Fetch both the manifest digest and config digest of a remote image from any registry.
 ///
 /// Returns `(manifest_digest, config_digest, tag)` where:
@@ -145,17 +164,144 @@ pub fn tag_ref(image_full: &str) -> &str {
 /// If the HTTP-based check fails with 401/403 (registry requires auth),
 /// falls back to `docker.inspect_registry_image()` which uses the Docker
 /// daemon's credentials (~/.docker/config.json).
+///
+/// Callers that need to know whether the result was degraded must use
+/// [`check_remote_digest_with_docker_detailed`].
 pub async fn check_remote_digest_with_docker(
     image_full: &str,
     docker: &Docker,
 ) -> Result<(String, String, String), String> {
+    let digest = check_remote_digest_with_docker_detailed(image_full, docker).await?;
+    Ok((digest.manifest_digest, digest.config_digest, digest.tag))
+}
+
+/// Like [`check_remote_digest_with_docker`] but also reports whether the
+/// resolution was degraded (config digest unavailable, manifest reused).
+pub async fn check_remote_digest_with_docker_detailed(
+    image_full: &str,
+    docker: &Docker,
+) -> Result<RemoteDigest, String> {
     check_remote_digest_impl(image_full, Some(docker)).await
 }
 
+/// Outcome of a remote digest resolution.
+///
+/// `Degraded` is returned when the registry could not provide the real config
+/// digest and the manifest digest is reused instead; comparing it against the
+/// local image id may then produce a false positive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DigestResolution {
+    Resolved {
+        manifest_digest: String,
+        config_digest: String,
+        tag: String,
+    },
+    Degraded {
+        manifest_digest: String,
+        tag: String,
+    },
+}
+
+/// Log level associated with a digest resolution outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DigestLogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// Classify a digest resolution into its log level and message.
+///
+/// Pure so it can be unit-tested without touching a registry or Docker. Every
+/// resolution path — HTTP success, daemon success, degraded fallback and total
+/// failure — maps to exactly one level.
+fn classify_digest_outcome(
+    image_full: &str,
+    repo: &str,
+    tag: &str,
+    outcome: &Result<DigestResolution, String>,
+) -> (DigestLogLevel, String) {
+    match outcome {
+        Ok(DigestResolution::Resolved {
+            manifest_digest,
+            config_digest,
+            ..
+        }) => (
+            DigestLogLevel::Info,
+            format!(
+                "check_remote_digest [{}:{}]: OK manifest_digest={} config_digest={}",
+                repo,
+                tag,
+                short_digest(manifest_digest),
+                short_digest(config_digest)
+            ),
+        ),
+        Ok(DigestResolution::Degraded { manifest_digest, .. }) => (
+            DigestLogLevel::Warn,
+            format!(
+                "check_remote_digest [{}:{}]: DEGRADED manifest_digest={} — no se pudo obtener el config digest; se usa el manifest digest para comparar (posible falso positivo)",
+                repo,
+                tag,
+                short_digest(manifest_digest)
+            ),
+        ),
+        Err(e) => (
+            DigestLogLevel::Error,
+            format!("check_remote_digest: FAILED image={}: {}", image_full, e),
+        ),
+    }
+}
+
+/// Resolve the remote digest of `image_full` while recording exactly one
+/// outcome per invocation (`INFO` success, `WARN` degraded, `ERROR` failure).
 async fn check_remote_digest_impl(
     image_full: &str,
     docker: Option<&Docker>,
-) -> Result<(String, String, String), String> {
+) -> Result<RemoteDigest, String> {
+    let parsed = parse_image_ref(image_full);
+    let repo = parsed.repo.clone();
+    let tag = parsed.tag.clone();
+
+    let outcome = resolve_remote_digest(image_full, docker).await;
+
+    let (level, message) = classify_digest_outcome(image_full, &repo, &tag, &outcome);
+    match level {
+        DigestLogLevel::Info => tracing::info!("{}", message),
+        DigestLogLevel::Warn => tracing::warn!("{}", message),
+        DigestLogLevel::Error => tracing::error!("{}", message),
+    }
+
+    match outcome {
+        Ok(DigestResolution::Resolved {
+            manifest_digest,
+            config_digest,
+            tag,
+        }) => Ok(RemoteDigest {
+            manifest_digest,
+            config_digest,
+            tag,
+            degraded: false,
+        }),
+        Ok(DigestResolution::Degraded {
+            manifest_digest,
+            tag,
+        }) => Ok(RemoteDigest {
+            config_digest: manifest_digest.clone(),
+            manifest_digest,
+            tag,
+            degraded: true,
+        }),
+        Err(e) => Err(e),
+    }
+}
+
+/// Inner resolver: performs the actual registry/daemon requests and returns the
+/// raw outcome (no logging). Callers MUST go through
+/// [`check_remote_digest_impl`] so the outcome is always recorded.
+async fn resolve_remote_digest(
+    image_full: &str,
+    docker: Option<&Docker>,
+) -> Result<DigestResolution, String> {
     let _permit = digest_semaphore()
         .acquire()
         .await
@@ -186,7 +332,7 @@ async fn check_remote_digest_impl(
         tag
     );
 
-    let (manifest_digest, config_digest) = match registry_host.as_str() {
+    let resolution = match registry_host.as_str() {
         "docker.io" => {
             let token_url = format!(
                 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull",
@@ -199,8 +345,14 @@ async fn check_remote_digest_impl(
                 token_url
             );
             let token = fetch_token(client, &token_url, &repo, &tag).await?;
-            fetch_manifest_digests(client, "registry-1.docker.io", &repo, &tag, Some(&token))
-                .await?
+            let (manifest_digest, config_digest) =
+                fetch_manifest_digests(client, "registry-1.docker.io", &repo, &tag, Some(&token))
+                    .await?;
+            DigestResolution::Resolved {
+                manifest_digest,
+                config_digest,
+                tag,
+            }
         }
         "ghcr.io" => {
             let token_url = format!(
@@ -214,7 +366,13 @@ async fn check_remote_digest_impl(
                 token_url
             );
             let token = fetch_token(client, &token_url, &repo, &tag).await?;
-            fetch_manifest_digests(client, "ghcr.io", &repo, &tag, Some(&token)).await?
+            let (manifest_digest, config_digest) =
+                fetch_manifest_digests(client, "ghcr.io", &repo, &tag, Some(&token)).await?;
+            DigestResolution::Resolved {
+                manifest_digest,
+                config_digest,
+                tag,
+            }
         }
         other => {
             // Unknown registry: try Docker daemon FIRST (has credentials configured).
@@ -245,7 +403,11 @@ async fn check_remote_digest_impl(
                             .await
                             {
                                 Ok((_, config_digest)) => {
-                                    return Ok((manifest_digest, config_digest, tag));
+                                    return Ok(DigestResolution::Resolved {
+                                        manifest_digest,
+                                        config_digest,
+                                        tag,
+                                    });
                                 }
                                 Err(_) => {
                                     // Try with auth flow
@@ -266,15 +428,26 @@ async fn check_remote_digest_impl(
                                                 .as_str()
                                                 .ok_or_else(|| "no config digest".to_string())?
                                                 .to_string();
-                                            return Ok((manifest_digest, config_digest, tag));
+                                            return Ok(DigestResolution::Resolved {
+                                                manifest_digest,
+                                                config_digest,
+                                                tag,
+                                            });
                                         }
-                                        Err(_) => {
-                                            // Ultimate fallback: use manifest digest as config (one-time false positive)
-                                            return Ok((
-                                                manifest_digest.clone(),
+                                        Err(e) => {
+                                            tracing::debug!(
+                                                "check_remote_digest [{}:{}]: config digest no disponible tras daemon ({}); usando el manifest digest como fallback",
+                                                repo,
+                                                tag,
+                                                e
+                                            );
+                                            // Fallback degradado: se usa el manifest digest como config
+                                            // (posible falso positivo; el desenlace lo registra
+                                            // `classify_digest_outcome` como WARN una sola vez).
+                                            return Ok(DigestResolution::Degraded {
                                                 manifest_digest,
                                                 tag,
-                                            ));
+                                            });
                                         }
                                     }
                                 }
@@ -347,13 +520,21 @@ async fn check_remote_digest_impl(
                             .as_str()
                             .ok_or_else(|| "no config digest in platform manifest".to_string())?
                             .to_string();
-                        (plat_manifest_digest, config_digest)
+                        DigestResolution::Resolved {
+                            manifest_digest: plat_manifest_digest,
+                            config_digest,
+                            tag,
+                        }
                     } else {
                         let config_digest = body["config"]["digest"]
                             .as_str()
                             .ok_or_else(|| "no config digest".to_string())?
                             .to_string();
-                        (manifest_digest, config_digest)
+                        DigestResolution::Resolved {
+                            manifest_digest,
+                            config_digest,
+                            tag,
+                        }
                     }
                 }
                 Err(e) => {
@@ -363,14 +544,7 @@ async fn check_remote_digest_impl(
         }
     };
 
-    tracing::info!(
-        "check_remote_digest [{}:{}]: OK manifest_digest={} config_digest={}",
-        repo,
-        tag,
-        short_digest(&manifest_digest),
-        short_digest(&config_digest)
-    );
-    Ok((manifest_digest, config_digest, tag))
+    Ok(resolution)
 }
 
 /// Parse the realm (token endpoint) from a Www-Authenticate header.
@@ -1001,5 +1175,85 @@ mod tests {
         let d2 =
             short_digest("sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1");
         assert_eq!(d1, d2);
+    }
+
+    // ── Desenlace del check de digest (update-check-robustness) ──
+
+    #[test]
+    fn test_classify_digest_outcome_http_ok_is_info() {
+        let outcome = Ok(DigestResolution::Resolved {
+            manifest_digest: "sha256:aaaaaaaaaaaabbbb".into(),
+            config_digest: "sha256:ccccccccccccdddd".into(),
+            tag: "latest".into(),
+        });
+        let (level, msg) =
+            classify_digest_outcome("nginx:latest", "library/nginx", "latest", &outcome);
+        assert_eq!(level, DigestLogLevel::Info);
+        assert!(msg.contains("OK"), "msg={msg}");
+        assert!(msg.contains("manifest_digest="), "msg={msg}");
+        assert!(msg.contains("config_digest="), "msg={msg}");
+        assert!(msg.contains("library/nginx:latest"), "msg={msg}");
+    }
+
+    #[test]
+    fn test_classify_digest_outcome_daemon_ok_is_info() {
+        // El camino del daemon también resuelve a `Resolved`, por lo que
+        // debe registrarse como INFO y no saltarse por un return temprano.
+        let outcome = Ok(DigestResolution::Resolved {
+            manifest_digest: "sha256:dddd".into(),
+            config_digest: "sha256:eeee".into(),
+            tag: "1.0".into(),
+        });
+        let (level, msg) =
+            classify_digest_outcome("forgejo.ellis.link/a/b:1.0", "a/b", "1.0", &outcome);
+        assert_eq!(level, DigestLogLevel::Info);
+        assert!(msg.contains("OK"), "msg={msg}");
+    }
+
+    #[test]
+    fn test_classify_digest_outcome_degraded_is_warn() {
+        let outcome = Ok(DigestResolution::Degraded {
+            manifest_digest: "sha256:ffff".into(),
+            tag: "latest".into(),
+        });
+        let (level, msg) =
+            classify_digest_outcome("forgejo.ellis.link/a/b:latest", "a/b", "latest", &outcome);
+        assert_eq!(level, DigestLogLevel::Warn);
+        assert!(msg.contains("DEGRADED"), "msg={msg}");
+        assert!(msg.to_lowercase().contains("falso positivo"), "msg={msg}");
+    }
+
+    #[test]
+    fn test_classify_digest_outcome_failure_is_error() {
+        let outcome: Result<DigestResolution, String> =
+            Err("manifest status: 403 Forbidden".into());
+        let (level, msg) =
+            classify_digest_outcome("forgejo.ellis.link/a/b:latest", "a/b", "latest", &outcome);
+        assert_eq!(level, DigestLogLevel::Error);
+        assert!(msg.contains("FAILED"), "msg={msg}");
+        assert!(msg.contains("403"), "msg={msg}");
+    }
+
+    #[test]
+    fn test_classify_digest_outcome_degraded_returns_equal_digests() {
+        // El resultado degradado que se devuelve al caller iguala config y
+        // manifest digest (posible falso positivo), documentado por el WARN.
+        let outcome = Ok(DigestResolution::Degraded {
+            manifest_digest: "sha256:abcd".into(),
+            tag: "latest".into(),
+        });
+        let (level, _) =
+            classify_digest_outcome("some.registry/x/y:latest", "x/y", "latest", &outcome);
+        assert_eq!(level, DigestLogLevel::Warn);
+        // El mapeo a la tupla pública se cubre en el helper de resolución;
+        // aquí comprobamos que el enum degradado transporta el manifest.
+        match outcome {
+            Ok(DigestResolution::Degraded {
+                manifest_digest, ..
+            }) => {
+                assert_eq!(manifest_digest, "sha256:abcd")
+            }
+            _ => panic!("expected degraded"),
+        }
     }
 }

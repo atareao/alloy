@@ -22,7 +22,6 @@ use crate::db::DbPool;
 use crate::models::*;
 use crate::notifications::notify_all;
 use crate::updates::digest::check_remote_digest_with_docker;
-use crate::workers::resolve_compose_file;
 use bollard::models::ImagePruneResponse;
 
 /// Cache progress for the long-polling state endpoint.
@@ -31,6 +30,7 @@ use bollard::models::ImagePruneResponse;
 async fn update_progress(
     progress_cache: &Arc<Mutex<BatchProgress>>,
     state_notify: &Arc<Notify>,
+    progress_tx: &broadcast::Sender<UpdateProgress>,
     total: u32,
     checked: u32,
     updated: u32,
@@ -43,6 +43,7 @@ async fn update_progress(
     cache.updated = updated;
     cache.errors = errors;
     cache.checking = checking;
+    let checking = cache.checking.clone();
     tracing::info!(
         "[update_progress] total={} checked={} updated={} errors={} checking={}",
         cache.total,
@@ -51,7 +52,19 @@ async fn update_progress(
         cache.errors,
         cache.checking
     );
+    drop(cache);
     state_notify.notify_waiters();
+    // Expose progress on the SSE stream (`update-progress` event).
+    let _ = progress_tx.send(UpdateProgress {
+        container: checking,
+        status: "checking".into(),
+        done: false,
+        error: None,
+        total,
+        checked,
+        updated,
+        errors,
+    });
 }
 
 /// Image reference written to `Config.Image` when recreating a container.
@@ -241,6 +254,27 @@ pub(crate) async fn recreate_container(
         .await;
 
     Ok(())
+}
+
+/// Shared API-only update path used by the stack update handler and the
+/// `PullRestartStack` policy branch: pull the image (by manifest digest when
+/// available) and recreate the container via the Docker API. No CLI.
+///
+/// Returns the failure cause so callers can surface it.
+pub(crate) async fn pull_and_recreate(
+    docker: &Docker,
+    name: &str,
+    cid: &str,
+    image_full: &str,
+    manifest_digest: Option<&str>,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    if !pull_image(docker, image_full, manifest_digest, timeout_secs).await {
+        return Err(format!("pull de la imagen '{}' falló", image_full));
+    }
+    recreate_container(docker, name, cid, image_full, manifest_digest)
+        .await
+        .map_err(|e| format!("recreate de '{}' falló: {}", name, e))
 }
 
 struct PendingUpdate {
@@ -642,6 +676,7 @@ async fn check_and_apply_all(
     tx: &broadcast::Sender<StateEvent>,
     state_notify: &Arc<Notify>,
     progress_cache: &Arc<Mutex<BatchProgress>>,
+    progress_tx: &broadcast::Sender<UpdateProgress>,
     cancel_check: &Arc<AtomicBool>,
     settings: &Arc<Mutex<Settings>>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
@@ -738,6 +773,7 @@ async fn check_and_apply_all(
         update_progress(
             progress_cache,
             state_notify,
+            progress_tx,
             total,
             checked,
             updated,
@@ -849,6 +885,7 @@ async fn check_and_apply_all(
                         settings,
                         state_notify,
                         progress_cache,
+                        progress_tx,
                         update_history,
                         db_pool,
                         tx,
@@ -869,6 +906,7 @@ async fn check_and_apply_all(
                     update_progress(
                         progress_cache,
                         state_notify,
+                        progress_tx,
                         total,
                         checked,
                         updated,
@@ -907,6 +945,7 @@ async fn check_and_apply_all(
                 update_progress(
                     progress_cache,
                     state_notify,
+                    progress_tx,
                     total,
                     checked,
                     updated,
@@ -932,11 +971,12 @@ async fn check_and_apply_all(
             update_progress(
                 progress_cache,
                 state_notify,
+                progress_tx,
                 total,
                 checked,
                 updated,
                 num_errors,
-                "__batch__".into(),
+                String::new(),
             )
             .await;
             break;
@@ -985,17 +1025,18 @@ async fn check_and_apply_all(
     update_progress(
         progress_cache,
         state_notify,
+        progress_tx,
         total,
         total,
         updated,
         num_errors,
-        "__batch__".into(),
+        String::new(),
     )
     .await;
 
     // Reset progress cache after batch completes so the next state poll
-    // returns default (idle) progress rather than stale "__batch__" data.
-    reset_progress_cache(progress_cache, state_notify).await;
+    // returns default (idle) progress rather than stale batch data.
+    reset_progress_cache(progress_cache, state_notify, progress_tx).await;
 
     containers
 }
@@ -1006,6 +1047,7 @@ pub async fn check_all_h(
     State(db_pool): State<DbPool>,
     State(tx): State<broadcast::Sender<StateEvent>>,
     State(progress_cache): State<Arc<Mutex<BatchProgress>>>,
+    State(progress_tx): State<broadcast::Sender<UpdateProgress>>,
     State(cancel_check): State<Arc<AtomicBool>>,
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
@@ -1020,6 +1062,7 @@ pub async fn check_all_h(
         &tx,
         &state_notify,
         &progress_cache,
+        &progress_tx,
         &cancel_check,
         &settings,
         &update_history,
@@ -1044,6 +1087,7 @@ async fn apply_single_policy(
     settings: &Arc<Mutex<Settings>>,
     state_notify: &Arc<Notify>,
     progress_cache: &Arc<Mutex<BatchProgress>>,
+    progress_tx: &broadcast::Sender<UpdateProgress>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: &DbPool,
     _tx: &broadcast::Sender<StateEvent>,
@@ -1063,6 +1107,7 @@ async fn apply_single_policy(
         let _ = update_progress(
             progress_cache,
             state_notify,
+            progress_tx,
             total,
             checked,
             updated,
@@ -1084,6 +1129,7 @@ async fn apply_single_policy(
     let _ = update_progress(
         progress_cache,
         state_notify,
+        progress_tx,
         total,
         checked,
         updated,
@@ -1119,6 +1165,7 @@ async fn apply_single_policy(
                 update_progress(
                     progress_cache,
                     state_notify,
+                    progress_tx,
                     total,
                     checked,
                     updated,
@@ -1144,6 +1191,7 @@ async fn apply_single_policy(
                 update_progress(
                     progress_cache,
                     state_notify,
+                    progress_tx,
                     total,
                     checked,
                     updated,
@@ -1196,6 +1244,7 @@ async fn apply_single_policy(
                 update_progress(
                     progress_cache,
                     state_notify,
+                    progress_tx,
                     total,
                     checked,
                     updated,
@@ -1235,6 +1284,7 @@ async fn apply_single_policy(
                             update_progress(
                                 progress_cache,
                                 state_notify,
+                                progress_tx,
                                 total,
                                 checked,
                                 updated,
@@ -1246,6 +1296,7 @@ async fn apply_single_policy(
                             update_progress(
                                 progress_cache,
                                 state_notify,
+                                progress_tx,
                                 total,
                                 checked,
                                 updated,
@@ -1265,6 +1316,7 @@ async fn apply_single_policy(
                         update_progress(
                             progress_cache,
                             state_notify,
+                            progress_tx,
                             total,
                             checked,
                             updated,
@@ -1306,17 +1358,38 @@ async fn apply_single_policy(
             }
         }
         UpdateAction::PullRestartStack => {
-            if let Some(ref project) = p.compose_project {
-                let compose_file = resolve_compose_file(docker, project).await;
-                if let Some(ref file) = compose_file {
+            // API-only path (no `docker compose` CLI): pull + recreate the
+            // service container via Bollard, same semantics as the scheduler.
+            match p.compose_project {
+                Some(ref project) => tracing::info!(
+                    "apply_single_policy: PullRestartStack '{}' (proyecto: {})",
+                    p.name,
+                    project
+                ),
+                None => tracing::info!(
+                    "apply_single_policy: PullRestartStack '{}' (sin proyecto)",
+                    p.name
+                ),
+            }
+            match pull_and_recreate(
+                docker,
+                &p.name,
+                &p.cid,
+                &p.image_full,
+                p.manifest_digest.as_deref(),
+                pull_timeout,
+            )
+            .await
+            {
+                Ok(()) => {
                     tracing::info!(
-                        "apply_single_policy: PullRestartStack '{}' (proyecto: {})",
-                        p.name,
-                        project
+                        "apply_single_policy: PullRestartStack '{}' recreado vía API",
+                        p.name
                     );
                     update_progress(
                         progress_cache,
                         state_notify,
+                        progress_tx,
                         total,
                         checked,
                         updated,
@@ -1324,95 +1397,18 @@ async fn apply_single_policy(
                         p.name.clone(),
                     )
                     .await;
-                    let pull = tokio::process::Command::new("docker")
-                        .args(["compose", "-f", file, "pull"])
-                        .output()
-                        .await;
-                    match pull {
-                        Ok(output) if output.status.success() => {
-                            tracing::info!(
-                                "apply_single_policy: Pull stack OK, recreando '{}'",
-                                project
-                            );
-                            let up_ok = match tokio::process::Command::new("docker")
-                                .args(["compose", "-f", file, "up", "-d"])
-                                .output()
-                                .await
-                            {
-                                Ok(o) if o.status.success() => true,
-                                Ok(o) => {
-                                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                                    tracing::error!(
-                                        "apply_single_policy: up stack FALLÓ '{}': {}",
-                                        project,
-                                        stderr
-                                    );
-                                    false
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "apply_single_policy: error ejecutando up stack '{}': {}",
-                                        project,
-                                        e
-                                    );
-                                    false
-                                }
-                            };
-                            update_progress(
-                                progress_cache,
-                                state_notify,
-                                total,
-                                checked,
-                                updated,
-                                errors,
-                                p.name.clone(),
-                            )
-                            .await;
-                            success = up_ok;
-                        }
-                        Ok(output) => {
-                            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                            tracing::error!(
-                                "apply_single_policy: Pull stack FALLÓ '{}': {}",
-                                project,
-                                stderr
-                            );
-                            update_progress(
-                                progress_cache,
-                                state_notify,
-                                total,
-                                checked,
-                                updated,
-                                errors,
-                                p.name.clone(),
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "apply_single_policy: error al ejecutar docker compose: {}",
-                                e
-                            );
-                            update_progress(
-                                progress_cache,
-                                state_notify,
-                                total,
-                                checked,
-                                updated,
-                                errors,
-                                p.name.clone(),
-                            )
-                            .await;
-                        }
-                    }
-                } else {
+                    success = true;
+                }
+                Err(e) => {
                     tracing::error!(
-                        "apply_single_policy: compose file no encontrado para '{}'",
-                        project
+                        "apply_single_policy: PullRestartStack '{}' falló: {}",
+                        p.name,
+                        e
                     );
                     update_progress(
                         progress_cache,
                         state_notify,
+                        progress_tx,
                         total,
                         checked,
                         updated,
@@ -1421,23 +1417,13 @@ async fn apply_single_policy(
                     )
                     .await;
                 }
-            } else {
-                update_progress(
-                    progress_cache,
-                    state_notify,
-                    total,
-                    checked,
-                    updated,
-                    errors,
-                    p.name.clone(),
-                )
-                .await;
             }
         }
         _ => {
             update_progress(
                 progress_cache,
                 state_notify,
+                progress_tx,
                 total,
                 checked,
                 updated,
@@ -1460,8 +1446,8 @@ async fn apply_single_policy(
 
         // Digest of the image now in use (for history and, when the container
         // was recreated, for persisting `last_remote_digest`).
-        // For stacks the recreate is done by `docker compose`, so prefer the
-        // locally inspected config digest of the redeployed service.
+        // For stacks the recreate is API-driven, so prefer the locally
+        // inspected config digest of the redeployed service.
         let new_digest = if policy.action == UpdateAction::PullRestartStack {
             let local = resolve_container_image_digest(docker, &p.name).await;
             if local.is_empty() {
@@ -1563,6 +1549,7 @@ async fn apply_policies_background(
     state_notify: &Arc<Notify>,
     tx: &broadcast::Sender<StateEvent>,
     progress_cache: &Arc<Mutex<BatchProgress>>,
+    progress_tx: &broadcast::Sender<UpdateProgress>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
     db_pool: &DbPool,
@@ -1607,6 +1594,7 @@ async fn apply_policies_background(
             settings,
             state_notify,
             progress_cache,
+            progress_tx,
             update_history,
             db_pool,
             tx,
@@ -1786,11 +1774,23 @@ async fn resolve_container_image_digest(docker: &Docker, name: &str) -> String {
 pub(crate) async fn reset_progress_cache(
     progress_cache: &Arc<Mutex<BatchProgress>>,
     state_notify: &Arc<Notify>,
+    progress_tx: &broadcast::Sender<UpdateProgress>,
 ) {
     let mut cache = progress_cache.lock().await;
     *cache = BatchProgress::default();
     drop(cache);
     state_notify.notify_waiters();
+    // Signal end-of-batch on the SSE stream: `done = true`.
+    let _ = progress_tx.send(UpdateProgress {
+        container: String::new(),
+        status: "idle".into(),
+        done: true,
+        error: None,
+        total: 0,
+        checked: 0,
+        updated: 0,
+        errors: 0,
+    });
 }
 
 #[cfg(test)]
@@ -1803,7 +1803,7 @@ mod tests {
     ///
     /// **Bug**: `check_and_apply_all` sends a final `update_progress` with total/checked/updated/errors
     /// values but never resets the `progress_cache` to `BatchProgress::default()`. This leaves stale
-    /// "checking: __batch__" on the frontend until the next batch cycle.
+    /// batch progress on the frontend until the next batch cycle.
     ///
     /// **Expected behavior**: After `check_and_apply_all` completes, `reset_progress_cache` is called
     /// to zero out all fields and clear the "checking" marker.
@@ -1814,11 +1814,12 @@ mod tests {
             checked: 5,
             updated: 2,
             errors: 0,
-            checking: "__batch__".into(),
+            checking: "nginx".into(),
         }));
         let state_notify = Arc::new(Notify::new());
+        let (progress_tx, _rx) = broadcast::channel::<UpdateProgress>(8);
 
-        reset_progress_cache(&progress_cache, &state_notify).await;
+        reset_progress_cache(&progress_cache, &state_notify, &progress_tx).await;
 
         let cache = progress_cache.lock().await;
         assert_eq!(cache.total, 0, "total should be reset to 0");
@@ -1959,6 +1960,7 @@ mod tests {
         let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
         let db_pool = db::test_pool();
         let (tx, _rx) = broadcast::channel::<StateEvent>(8);
+        let (progress_tx, _progress_rx) = broadcast::channel::<UpdateProgress>(8);
 
         let p = PendingUpdate {
             name: "web".into(),
@@ -1984,6 +1986,7 @@ mod tests {
             &settings,
             &state_notify,
             &progress_cache,
+            &progress_tx,
             &update_history,
             &db_pool,
             &tx,
@@ -2002,5 +2005,61 @@ mod tests {
             update_history.lock().await.is_empty(),
             "el skip no debe añadir entrada al historial"
         );
+    }
+
+    // ── progress emission on the SSE channel (sse-first, task 1.4) ──
+
+    /// `update_progress` MUST emit an `update-progress` event carrying the real
+    /// counters, in addition to waking the long-poll handler.
+    #[tokio::test]
+    async fn test_update_progress_emits_update_progress_event() {
+        let progress_cache: Arc<Mutex<BatchProgress>> =
+            Arc::new(Mutex::new(BatchProgress::default()));
+        let state_notify = Arc::new(Notify::new());
+        let (progress_tx, mut rx) = broadcast::channel::<UpdateProgress>(8);
+
+        update_progress(
+            &progress_cache,
+            &state_notify,
+            &progress_tx,
+            5,
+            3,
+            1,
+            0,
+            "nginx".into(),
+        )
+        .await;
+
+        let evt = rx
+            .try_recv()
+            .expect("update-progress event must be emitted");
+        assert_eq!(evt.total, 5);
+        assert_eq!(evt.checked, 3);
+        assert_eq!(evt.updated, 1);
+        assert_eq!(evt.errors, 0);
+        assert_eq!(evt.container, "nginx");
+        assert!(!evt.done, "in-flight progress is not the end of a batch");
+    }
+
+    /// `reset_progress_cache` MUST emit an `update-progress` event signalling
+    /// the end of the batch (`done = true`) so the frontend needs no heuristics.
+    #[tokio::test]
+    async fn test_reset_progress_cache_emits_done_event() {
+        let progress_cache: Arc<Mutex<BatchProgress>> = Arc::new(Mutex::new(BatchProgress {
+            total: 5,
+            checked: 5,
+            updated: 2,
+            errors: 0,
+            checking: "nginx".into(),
+        }));
+        let state_notify = Arc::new(Notify::new());
+        let (progress_tx, mut rx) = broadcast::channel::<UpdateProgress>(8);
+
+        reset_progress_cache(&progress_cache, &state_notify, &progress_tx).await;
+
+        let evt = rx.try_recv().expect("reset must emit update-progress");
+        assert!(evt.done, "reset event must signal end of batch");
+        assert_eq!(evt.total, 0);
+        assert_eq!(evt.checked, 0);
     }
 }
