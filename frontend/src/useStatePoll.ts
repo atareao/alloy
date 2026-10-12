@@ -4,7 +4,9 @@ import type { StateResponse } from "./types";
 export function useStatePoll(
   onState: (state: StateResponse) => void,
   onError?: () => void,
+  options?: { enabled?: boolean },
 ) {
+  const enabled = options?.enabled ?? true;
   const abortRef = useRef<AbortController | null>(null);
   const retriesRef = useRef(0);
   const maxRetries = 10;
@@ -20,6 +22,7 @@ export function useStatePoll(
   }, [onError]);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -59,5 +62,5 @@ export function useStatePoll(
       if (timer) clearTimeout(timer);
       if (abortRef.current) abortRef.current.abort();
     };
-  }, []);
+  }, [enabled]);
 }

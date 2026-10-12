@@ -41,7 +41,7 @@ export default function BatchProgress({
 
   const currentText = isBatchComplete
     ? "✅ Completado"
-    : progress.checking && progress.checking !== "__batch__"
+    : progress.checking
       ? `🔍 ${progress.checking}`
       : "🔍 Verificando...";
 

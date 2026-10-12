@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
 import { ConfigProvider } from "antd";
 import App from "./App";
+import { EventSourceMock } from "./test-setup";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   return <ConfigProvider>{children}</ConfigProvider>;
@@ -73,6 +80,7 @@ function mockAuthResponse(authenticated = true) {
 describe("App layout - topbar navigation", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    EventSourceMock.reset();
     vi.stubGlobal("fetch", mockAuthResponse(true));
   });
 
@@ -218,42 +226,7 @@ describe("App layout - topbar navigation", () => {
     });
   });
 
-  it("processes progress data from state response on page load", async () => {
-    // Mock fetch to return active progress from /api/state (first call only)
-    let stateCallCount = 0;
-    const mockFetch = vi.fn().mockImplementation((url: string) => {
-      if (url === "/api/state") {
-        stateCallCount++;
-        if (stateCallCount === 1) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                containers: [],
-                summary: {
-                  total: 0,
-                  running: 0,
-                  stopped: 0,
-                  paused: 0,
-                  with_updates: 0,
-                },
-                progress: {
-                  total: 5,
-                  checked: 2,
-                  updated: 1,
-                  errors: 0,
-                  checking: "nginx",
-                },
-              }),
-            ),
-          );
-        }
-        // Subsequent calls hang to prevent infinite polling loop
-        return new Promise(() => {});
-      }
-      return mockAuthResponse(true)(url);
-    });
-    vi.stubGlobal("fetch", mockFetch);
-
+  it("processes a snapshot event from the stream on page load", async () => {
     render(
       <Wrapper>
         <App colorScheme="dark" setColorScheme={() => {}} />
@@ -265,59 +238,38 @@ describe("App layout - topbar navigation", () => {
       expect(screen.getByText("Alloy")).toBeInTheDocument();
     });
 
+    // The stream delivers a full snapshot on connect
+    act(() => {
+      EventSourceMock.emit("snapshot", {
+        containers: [],
+        summary: {
+          total: 0,
+          running: 0,
+          stopped: 0,
+          paused: 0,
+          with_updates: 0,
+        },
+        progress: {
+          total: 5,
+          checked: 2,
+          updated: 1,
+          errors: 0,
+          checking: "nginx",
+        },
+      });
+    });
+
     // The progress card should NOT be visible because batchPhase is "idle"
-    // (the state callback only processes progress, it doesn't set batchPhase to "active")
+    // (a snapshot only updates progress, it does not start a batch)
     expect(
       screen.queryByText(/Revisando y actualizando containers/),
     ).not.toBeInTheDocument();
   });
 
-  it("hides progress card when state poll returns default progress after batch completes", async () => {
-    // Simulate the race condition: backend resets progress_cache to default
-    // after sending "__batch__" marker. The frontend receives progress with
-    // total=0 and checking="" instead of checking="__batch__".
-    //
-    // RED: with current code, the card stays visible because the condition
-    // bp.checking === "__batch__" is never met.
-    // GREEN: after the fix, the card should disappear.
-    let stateCallCount = 0;
-    const MAX_STATE_CALLS = 5;
+  it("hides progress card when update-progress signals batch completion", async () => {
+    // The batch end is now driven by the `update-progress` SSE event
+    // (payload.done === true), not by polling heuristics.
     const mockFetch = vi.fn().mockImplementation((url: string) => {
-      if (url === "/api/state") {
-        stateCallCount++;
-        if (stateCallCount <= MAX_STATE_CALLS) {
-          // Return default (reset) progress with delay to slow polling
-          return new Promise((resolve) =>
-            setTimeout(
-              () =>
-                resolve(
-                  new Response(
-                    JSON.stringify({
-                      containers: [],
-                      summary: {
-                        total: 0,
-                        running: 0,
-                        stopped: 0,
-                        paused: 0,
-                        with_updates: 0,
-                      },
-                      progress: {
-                        total: 0,
-                        checked: 0,
-                        updated: 0,
-                        errors: 0,
-                        checking: "",
-                      },
-                    }),
-                  ),
-                ),
-              100,
-            ),
-          );
-        }
-        // Subsequent calls hang to prevent infinite polling loop
-        return new Promise(() => {});
-      }
       if (url === "/api/check-all") {
         return Promise.resolve(new Response(JSON.stringify([])));
       }
@@ -347,17 +299,26 @@ describe("App layout - topbar navigation", () => {
       ).toBeInTheDocument();
     });
 
-    // Wait for state poll to process the default progress response
-    // With current code (RED), the card stays visible because the condition
-    // bp.checking === "__batch__" is never met.
-    // After the fix (GREEN), the card should disappear.
-    await new Promise((r) => setTimeout(r, 1500));
+    // Backend signals batch completion via a single stream event
+    act(() => {
+      EventSourceMock.emit("update-progress", {
+        container: "nginx",
+        status: "done",
+        done: true,
+        error: null,
+        total: 2,
+        checked: 2,
+        updated: 1,
+        errors: 0,
+      });
+    });
 
-    // RED: This assertion FAILS with current code (card stays visible)
-    // GREEN: This assertion PASSES after the fix
-    expect(
-      screen.queryByText(/Revisando y actualizando containers/),
-    ).not.toBeInTheDocument();
+    // The card should disappear once the final event is processed
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Revisando y actualizando containers/),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("does NOT show progress card when no active updates", async () => {
@@ -388,6 +349,7 @@ describe("App layout - topbar navigation", () => {
 describe("App layout - mobile topbar", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    EventSourceMock.reset();
     vi.stubGlobal("fetch", mockAuthResponse(true));
 
     // Mock matchMedia for mobile (width <= 768px)
