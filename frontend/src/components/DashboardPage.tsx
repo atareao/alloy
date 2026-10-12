@@ -43,7 +43,26 @@ interface DashboardPageProps {
   checkConfig: UpdateCheckConfig | null;
   onCheckAll: () => void;
   summary: ContainerSummary;
+  /** Names of containers to briefly highlight after a realtime state change. */
+  highlights?: Record<string, boolean>;
 }
+
+/** Keyframes for the transient container highlight (desktop + mobile). */
+const HIGHLIGHT_CSS = `
+@keyframes alloy-highlight {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--ant-color-primary);
+    background-color: var(--ant-color-primary-bg);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px transparent;
+    background-color: transparent;
+  }
+}
+.alloy-highlight {
+  animation: alloy-highlight 2s ease-out;
+}
+`;
 
 export default function DashboardPage({
   containers,
@@ -56,6 +75,7 @@ export default function DashboardPage({
   checkConfig,
   onCheckAll,
   summary,
+  highlights,
 }: DashboardPageProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
 
@@ -316,6 +336,7 @@ export default function DashboardPage({
       }
       onRemove={(name) => setConfirmDelete(name)}
       onStackAction={handleStackAction}
+      highlighted={!!highlights?.[c.name]}
     />
   );
 
@@ -390,6 +411,7 @@ export default function DashboardPage({
                   }
                   onRemove={(name) => setConfirmDelete(name)}
                   onStackAction={handleStackAction}
+                  highlighted={!!highlights?.[c.name]}
                 />
               ))}
             </div>
@@ -429,6 +451,7 @@ export default function DashboardPage({
   // ── Main render ───────────────────────────────────────────
   return (
     <>
+      <style>{HIGHLIGHT_CSS}</style>
       {/* Stats bar */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col span={6}>

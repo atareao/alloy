@@ -1,8 +1,20 @@
-use axum::{extract::State, http::HeaderValue, response::IntoResponse, routing::get, Json, Router};
+use axum::{
+    extract::State,
+    http::HeaderValue,
+    response::{
+        sse::{Event, Sse},
+        IntoResponse,
+    },
+    routing::get,
+    Json, Router,
+};
+use futures::stream::{self, Stream, StreamExt};
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{broadcast, Mutex, Notify};
 use tokio::time::timeout;
+use tokio_stream::wrappers::{BroadcastStream, IntervalStream};
 
 use crate::models::*;
 use crate::state::AppState;
@@ -52,8 +64,135 @@ pub(crate) async fn state_wait_on_notify(
     let _ = timeout(Duration::from_secs(30), state_notify.notified()).await;
 }
 
+/// Serialize `payload` as the JSON `data` of a named SSE event.
+///
+/// Falls back to an empty JSON object if serialization ever fails, so a single
+/// malformed payload can never tear down the stream.
+fn json_event<T: serde::Serialize>(name: &str, payload: &T) -> Event {
+    Event::default()
+        .event(name)
+        .json_data(payload)
+        .unwrap_or_else(|_| Event::default().event(name).data("{}"))
+}
+
+/// Build the merged SSE stream served by `GET /api/stream`.
+///
+/// Emits an initial `snapshot` event (a [`StateResponse`] built from
+/// `cached_containers` + `compute_summary` + `progress_cache`) **before** any
+/// incremental event, then chains the four merged sources:
+///
+/// - `StateEvent`  → `snapshot` (full state after each worker refresh)
+/// - `ContainerEvent` → `container-event`
+/// - `UpdateProgress` → `update-progress`
+/// - `NotifEvent` → `notification`
+///
+/// plus a `: keepalive` comment emitted every 5 seconds. The heartbeat is
+/// produced by merging a `tokio::time::interval` stream — deliberately **not**
+/// via `Sse::keep_alive()` — so real events are never delayed.
+pub(crate) async fn build_event_stream(
+    cached_containers: CachedContainers,
+    progress_cache: Arc<Mutex<BatchProgress>>,
+    tx: broadcast::Sender<StateEvent>,
+    progress_tx: broadcast::Sender<UpdateProgress>,
+    notif_tx: broadcast::Sender<NotifEvent>,
+    container_event_tx: broadcast::Sender<ContainerEvent>,
+) -> impl Stream<Item = Result<Event, Infallible>> {
+    // ── Initial snapshot (delivered before any incremental event) ──
+    let containers = cached_containers.read().await.clone().unwrap_or_default();
+    let progress = progress_cache.lock().await.clone();
+    let summary = compute_summary(&containers);
+    let snapshot = StateResponse {
+        containers,
+        summary,
+        progress,
+    };
+    let initial = stream::once(async move {
+        Ok(Event::default()
+            .event("snapshot")
+            .json_data(&snapshot)
+            .unwrap_or_else(|_| Event::default().event("snapshot").data("{}")))
+    });
+
+    // ── State refreshes are full snapshots (StateEvent carries the full list).
+    // Enrich with summary + current progress so the payload matches StateResponse.
+    let progress_for_state = progress_cache.clone();
+    let state_stream = BroadcastStream::new(tx.subscribe()).filter_map(move |res| {
+        let progress_cache = progress_for_state.clone();
+        async move {
+            let evt = res.ok()?;
+            let summary = compute_summary(&evt.containers);
+            let progress = progress_cache.lock().await.clone();
+            let resp = StateResponse {
+                containers: evt.containers,
+                summary,
+                progress,
+            };
+            Some(Ok(json_event("snapshot", &resp)))
+        }
+    });
+
+    let container_event_stream =
+        BroadcastStream::new(container_event_tx.subscribe()).filter_map(|res| async move {
+            let evt = res.ok()?;
+            Some(Ok(json_event("container-event", &evt)))
+        });
+
+    let progress_stream =
+        BroadcastStream::new(progress_tx.subscribe()).filter_map(|res| async move {
+            let evt = res.ok()?;
+            Some(Ok(json_event("update-progress", &evt)))
+        });
+
+    let notif_stream = BroadcastStream::new(notif_tx.subscribe()).filter_map(|res| async move {
+        let evt = res.ok()?;
+        Some(Ok(json_event("notification", &evt)))
+    });
+
+    // ── Heartbeat via stream fusion (NOT Sse::keep_alive) ──
+    let heartbeat = IntervalStream::new(tokio::time::interval(Duration::from_secs(5)))
+        .map(|_| Ok(Event::default().comment("keepalive")));
+
+    let merged = stream::select_all(vec![
+        state_stream.boxed(),
+        container_event_stream.boxed(),
+        progress_stream.boxed(),
+        notif_stream.boxed(),
+        heartbeat.boxed(),
+    ]);
+
+    initial.chain(merged)
+}
+
+/// Single multiplexed SSE stream: `GET /api/stream`.
+///
+/// Authentication is enforced by the shared auth middleware (session cookie);
+/// the middleware leaves `text/event-stream` responses untouched. The
+/// long-poll `GET /api/state` endpoint is left intact as the fallback transport.
+async fn stream_h(
+    State(cached_containers): State<CachedContainers>,
+    State(progress_cache): State<Arc<Mutex<BatchProgress>>>,
+    State(tx): State<broadcast::Sender<StateEvent>>,
+    State(progress_tx): State<broadcast::Sender<UpdateProgress>>,
+    State(notif_tx): State<broadcast::Sender<NotifEvent>>,
+    State(container_event_tx): State<broadcast::Sender<ContainerEvent>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    Sse::new(
+        build_event_stream(
+            cached_containers,
+            progress_cache,
+            tx,
+            progress_tx,
+            notif_tx,
+            container_event_tx,
+        )
+        .await,
+    )
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/api/state", get(state_h))
+    Router::new()
+        .route("/api/state", get(state_h))
+        .route("/api/stream", get(stream_h))
 }
 
 #[cfg(test)]
@@ -319,6 +458,59 @@ mod tests {
             "Expected to wait >=95ms via state_wait_on_notify, but waited only {:?} — \
              hint: the current handler skips waiting when cache is populated",
             elapsed
+        );
+    }
+
+    // ── /api/stream: merged SSE stream (sse-first, task 1.2) ────
+
+    /// The first item produced by `/api/stream` MUST be a `snapshot` event
+    /// carrying a `StateResponse` (containers + summary + progress), emitted
+    /// before any incremental event.
+    #[tokio::test]
+    async fn test_stream_first_event_is_snapshot_state_response() {
+        use crate::models::{
+            BatchProgress, ContainerEvent, NotifEvent, StateEvent, UpdateProgress,
+        };
+        use futures::StreamExt;
+
+        let containers = vec![
+            make_container("web", "running", false),
+            make_container("db", "exited", true),
+        ];
+        let cached: CachedContainers = Arc::new(RwLock::new(Some(containers)));
+        let progress_cache: Arc<Mutex<BatchProgress>> =
+            Arc::new(Mutex::new(BatchProgress::default()));
+        let (tx, _) = broadcast::channel::<StateEvent>(8);
+        let (progress_tx, _) = broadcast::channel::<UpdateProgress>(8);
+        let (notif_tx, _) = broadcast::channel::<NotifEvent>(8);
+        let (container_event_tx, _) = broadcast::channel::<ContainerEvent>(8);
+
+        let mut stream = Box::pin(
+            build_event_stream(
+                cached,
+                progress_cache,
+                tx,
+                progress_tx,
+                notif_tx,
+                container_event_tx,
+            )
+            .await,
+        );
+
+        let first = timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("first event within timeout")
+            .expect("stream yields an item");
+        let first = first.expect("event is Ok");
+        let dbg = format!("{:?}", first);
+
+        assert!(
+            dbg.contains("snapshot"),
+            "first event must be named 'snapshot': {dbg}"
+        );
+        assert!(
+            dbg.contains("containers") && dbg.contains("summary") && dbg.contains("progress"),
+            "snapshot payload must be a full StateResponse: {dbg}"
         );
     }
 }

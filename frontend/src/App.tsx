@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useMediaQuery } from "./useMediaQuery";
-import { useStatePoll } from "./useStatePoll";
+import { useRealtime } from "./useRealtime";
 import { notification } from "antd";
 import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
@@ -10,9 +10,13 @@ import {
   LogoutOutlined,
 } from "@ant-design/icons";
 import type {
+  BatchProgress as BatchProgressType,
+  ContainerEvent,
   ContainerInfo,
   ContainerSummary,
   StateResponse,
+  NotifEvent,
+  UpdateProgress,
   HistoryEntry,
   AppConfig,
   UpdateCheckConfig,
@@ -23,6 +27,7 @@ import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
 import HistoryPage from "./HistoryPage";
 import BatchProgress from "./components/BatchProgress";
+import NotifToast from "./components/NotifToast";
 import SummaryDialog from "./components/SummaryDialog";
 
 const { Text, Title } = Typography;
@@ -51,13 +56,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     paused: 0,
     with_updates: 0,
   });
-  const [progress, setProgress] = useState<{
-    total: number;
-    checked: number;
-    updated: number;
-    errors: number;
-    checking: string;
-  }>({
+  const [progress, setProgress] = useState<BatchProgressType>({
     total: 0,
     checked: 0,
     updated: 0,
@@ -136,68 +135,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     });
   }, [authenticated, api]);
 
-  // ── State polling (long-polling via GET /api/state) ────────────
-  useStatePoll(
-    useCallback(
-      (state: StateResponse) => {
-        console.log(
-          "[STATE] containers received, count:",
-          state.containers.length,
-        );
-        setContainers(state.containers);
-        setContainersLoaded(true);
-        setSummary(state.summary);
-        // Update progress from state response
-        const bp = state.progress;
-        setProgress(bp);
-        // Sync batchProgress so the progress bar reflects real progress
-        setBatchProgress({ current: bp.checked, total: bp.total });
-        // Check for batch complete: checking === "__batch__" and checked >= total
-        // OR progress reset to default while batch is active (race condition workaround)
-        if (
-          bp.checking === "__batch__" &&
-          bp.total > 0 &&
-          bp.checked >= bp.total
-        ) {
-          setBatchPhase("idle");
-          setShowSummary(true);
-          api("/api/history").then((d) => {
-            if (d) setHistory(d);
-          });
-          api("/api/config").then((d) => {
-            if (d) setConfig(d);
-          });
-          const notifMethod = bp.errors > 0 ? "warning" : "success";
-          notification[notifMethod]({
-            message: "✅ Batch completado",
-            description: `${bp.checked} containers · ${bp.updated} ok · ${bp.errors} errores`,
-            duration: 8,
-          });
-        } else if (
-          batchPhaseRef.current === "active" &&
-          bp.total === 0 &&
-          bp.checking === ""
-        ) {
-          // Race condition: backend reset progress_cache to default before
-          // state_h could read the "__batch__" marker. Detect completion
-          // via progress reset while batch is active.
-          setBatchPhase("idle");
-          setShowSummary(true);
-          api("/api/history").then((d) => {
-            if (d) setHistory(d);
-          });
-          api("/api/config").then((d) => {
-            if (d) setConfig(d);
-          });
-        }
-      },
-      [api],
-    ),
-    useCallback(() => {
-      console.error("[STATE] polling failed after max retries");
-    }, []),
-  );
-
   // ── Batch check/update state (lives in App to survive tab switches) ──
   type CheckAllPhase = "idle" | "active";
 
@@ -238,6 +175,132 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
     null,
   );
+
+  // ── Realtime transport (SSE `/api/stream`, long-poll fallback) ────
+  const finishBatch = useCallback(
+    (bp: BatchProgressType) => {
+      if (batchPhaseRef.current !== "active") return;
+      batchPhaseRef.current = "idle";
+      setBatchPhase("idle");
+      setShowSummary(true);
+      api("/api/history").then((d) => {
+        if (d) setHistory(d);
+      });
+      api("/api/config").then((d) => {
+        if (d) setConfig(d);
+      });
+      const notifMethod = bp.errors > 0 ? "warning" : "success";
+      notification[notifMethod]({
+        message: "✅ Batch completado",
+        description: `${bp.checked} containers · ${bp.updated} ok · ${bp.errors} errores`,
+        duration: 8,
+      });
+    },
+    [api],
+  );
+
+  const onState = useCallback((state: StateResponse) => {
+    setContainers(state.containers);
+    setContainersLoaded(true);
+    setSummary(state.summary);
+    setProgress(state.progress);
+    setBatchProgress({
+      current: state.progress.checked,
+      total: state.progress.total,
+    });
+  }, []);
+
+  // Batch end is detected from the `update-progress` event, not from heuristics.
+  const onProgress = useCallback(
+    (p: UpdateProgress) => {
+      setProgress({
+        total: p.total,
+        checked: p.checked,
+        updated: p.updated,
+        errors: p.errors,
+        checking: p.container,
+      });
+      setBatchProgress({ current: p.checked, total: p.total });
+      if (p.done) {
+        finishBatch({
+          total: p.total,
+          checked: p.checked,
+          updated: p.updated,
+          errors: p.errors,
+          checking: p.container,
+        });
+      }
+    },
+    [finishBatch],
+  );
+
+  // ── UI notifications from `notification` events ───────────────────
+  interface UiNotif extends NotifEvent {
+    _id: string;
+  }
+  const [notifs, setNotifs] = useState<UiNotif[]>([]);
+  const notifTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>(
+    {},
+  );
+
+  const dismissNotif = useCallback((id: string) => {
+    setNotifs((prev) => prev.filter((n) => n._id !== id));
+    const timer = notifTimersRef.current[id];
+    if (timer) {
+      clearTimeout(timer);
+      delete notifTimersRef.current[id];
+    }
+  }, []);
+
+  const onNotification = useCallback(
+    (n: NotifEvent) => {
+      const id = `${n.container}-${n.timestamp}-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 7)}`;
+      setNotifs((prev) => [...prev, { ...n, _id: id }].slice(-3));
+      notifTimersRef.current[id] = setTimeout(() => dismissNotif(id), 8000);
+    },
+    [dismissNotif],
+  );
+
+  // ── Container highlights from `container-event` events ────────────
+  const [highlights, setHighlights] = useState<Record<string, boolean>>({});
+  const highlightTimersRef = useRef<
+    Record<string, ReturnType<typeof setTimeout>>
+  >({});
+
+  const onContainerEvent = useCallback((ev: ContainerEvent) => {
+    setHighlights((prev) => ({ ...prev, [ev.name]: true }));
+    const existing = highlightTimersRef.current[ev.name];
+    if (existing) clearTimeout(existing);
+    highlightTimersRef.current[ev.name] = setTimeout(() => {
+      setHighlights((prev) => {
+        const next = { ...prev };
+        delete next[ev.name];
+        return next;
+      });
+      delete highlightTimersRef.current[ev.name];
+    }, 2000);
+  }, []);
+
+  // Clear pending timers on unmount (avoid state updates after teardown).
+  useEffect(
+    () => () => {
+      Object.values(notifTimersRef.current).forEach(clearTimeout);
+      Object.values(highlightTimersRef.current).forEach(clearTimeout);
+    },
+    [],
+  );
+
+  useRealtime({
+    onState,
+    onProgress,
+    onNotification,
+    onContainerEvent,
+    onError: useCallback(() => {
+      console.error("[REALTIME] transport down");
+    }, []),
+  });
 
   // Fetch update check config on mount (for last/next check times)
   const fetchCheckConfig = useCallback(async () => {
@@ -418,6 +481,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                 checkConfig={checkConfig}
                 onCheckAll={checkAll}
                 summary={summary}
+                highlights={highlights}
               />
             )}
             {view === "history" && (
@@ -442,6 +506,28 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           </div>
         </Layout.Content>
       </Layout>
+
+      {/* Realtime notification toasts (from `notification` SSE events) */}
+      {notifs.length > 0 && (
+        <Flex
+          vertical
+          gap={4}
+          style={{
+            position: "fixed",
+            top: 72,
+            right: 16,
+            zIndex: 1100,
+            width: "min(320px, calc(100vw - 32px))",
+            pointerEvents: "none",
+          }}
+        >
+          {notifs.map((n) => (
+            <div key={n._id} style={{ pointerEvents: "auto" }}>
+              <NotifToast notif={n} onDismiss={() => dismissNotif(n._id)} />
+            </div>
+          ))}
+        </Flex>
+      )}
     </Layout>
   );
 }

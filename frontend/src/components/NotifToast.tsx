@@ -36,6 +36,7 @@ export default function NotifToast({
           size="small"
           icon={<CloseOutlined />}
           onClick={onDismiss}
+          aria-label="Cerrar notificación"
           style={{ flexShrink: 0 }}
         />
       </Flex>

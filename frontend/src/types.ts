@@ -33,6 +33,13 @@ export interface NotifEvent {
   timestamp: string;
 }
 
+export interface ContainerEvent {
+  name: string;
+  action: string;
+  state: string;
+  timestamp: string;
+}
+
 export interface AppConfig {
   oidc_configured: boolean;
   port: number;

@@ -35,6 +35,7 @@ interface ContainerRowProps {
     action: string,
     label: string,
   ) => void;
+  highlighted?: boolean;
 }
 
 export default function ContainerRow({
@@ -55,6 +56,7 @@ export default function ContainerRow({
   onRestart,
   onRemove,
   onStackAction,
+  highlighted,
 }: ContainerRowProps) {
   const c = container;
   const hasUpdate = c.has_update;
@@ -96,6 +98,7 @@ export default function ContainerRow({
 
   return isMobile ? (
     <div
+      className={highlighted ? "alloy-highlight" : undefined}
       style={{
         background: "var(--ant-color-bg-container)",
         borderRadius: 6,
@@ -232,6 +235,7 @@ export default function ContainerRow({
     <Card
       bordered
       size="small"
+      className={highlighted ? "alloy-highlight" : undefined}
       styles={{
         body: {
           padding: 0,
