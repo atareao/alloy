@@ -1,4 +1,18 @@
 # Changelog
+## [0.23.8] - 2026-10-12
+
+### Bug Fixes
+
+- *(updates)* Migrar stacks y update-check a la API Bollard
+- *(workers)* Endurecer update-check (sin unwraps y anti-bucle Pull degradado)
+
+### Documentation
+
+- *(openspec)* Archivar change scheduler-reliability
+
+### Features
+
+- *(realtime)* SSE-first con stream único /api/stream
 ## [0.23.7] - 2026-09-30
 
 ### Bug Fixes
@@ -8,6 +22,10 @@
 ### Documentation
 
 - *(openspec)* Archivar change dockerignore-node-modules
+
+### Miscellaneous Tasks
+
+- Release v0.23.7
 ## [0.23.6] - 2026-09-30
 
 ### Miscellaneous Tasks
