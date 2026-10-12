@@ -332,8 +332,6 @@ pub const ALL_CONTAINERS: &str = "*";
 
 pub const LABEL_COMPOSE_PROJECT: &str = "com.docker.compose.project";
 pub const LABEL_COMPOSE_SERVICE: &str = "com.docker.compose.service";
-pub const LABEL_COMPOSE_CONFIG_FILES: &str = "com.docker.compose.project.config_files";
-pub const LABEL_COMPOSE_WORKING_DIR: &str = "com.docker.compose.project.working_dir";
 
 pub fn strip_name(name: &str) -> String {
     name.trim_start_matches('/').to_string()
