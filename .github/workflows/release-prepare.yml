@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   release:
@@ -33,10 +34,10 @@ jobs:
         id: bump
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD | head -1)
-          COMMITS=$(git log "$LAST_TAG"..HEAD --format="%s")
-          if echo "$COMMITS" | grep -q "BREAKING CHANGE\|!:"; then
+          COMMITS=$(git log "$LAST_TAG"..HEAD --format="%s" | sed -E 's/^[^A-Za-z0-9]+//')
+          if echo "$COMMITS" | grep -qE '!:'; then
             echo "type=--major" >> "$GITHUB_OUTPUT"
-          elif echo "$COMMITS" | grep -q "^feat"; then
+          elif echo "$COMMITS" | grep -qE '^feat'; then
             echo "type=--minor" >> "$GITHUB_OUTPUT"
           else
             echo "type=--patch" >> "$GITHUB_OUTPUT"
@@ -62,17 +63,15 @@ jobs:
           git push origin "v${V}"
       - name: Trigger Release workflow
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: |
           V="${{ steps.version.outputs.value }}"
-          gh workflow run Release --ref v${V}
-      - name: Sync development with main
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          gh workflow run Release --ref "v${V}"
+      - name: Sync develop with main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin development
-          git checkout -b temp-sync origin/development
+          git fetch origin develop
+          git checkout -b temp-sync origin/develop
           git merge origin/main --no-edit
-          git push origin temp-sync:development
+          git push origin temp-sync:develop
