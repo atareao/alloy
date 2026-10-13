@@ -1108,6 +1108,14 @@ export default function ConfigPage({
                     Exporta alertas, programaciones y ajustes a un archivo JSON.
                     Puedes importarlo después para restaurar la configuración.
                   </Typography.Text>
+                  <Typography.Text
+                    type="warning"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    ⚠️ Los tokens de notificación (Telegram, Matrix, Valet) y la
+                    URL del webhook no se exportan por seguridad; deberás
+                    reintroducirlos tras importar.
+                  </Typography.Text>
                   <Flex gap="middle">
                     <Button
                       type="primary"

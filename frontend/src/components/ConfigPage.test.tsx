@@ -579,3 +579,25 @@ describe("ConfigPage — tarjeta Matrix", () => {
     });
   });
 });
+
+describe("ConfigPage — tarjeta Exportar / Importar", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("advierte de que los tokens de notificación no se exportan", async () => {
+    renderConfigPage(makeConfig());
+
+    fireEvent.click(screen.getByText("ℹ️ Información"));
+
+    expect(
+      await screen.findByText("📦 Exportar / Importar configuración"),
+    ).toBeInTheDocument();
+
+    expect(
+      screen.getByText(
+        /tokens de notificación \(Telegram, Matrix, Valet\) y la URL del webhook no se exportan por seguridad/i,
+      ),
+    ).toBeInTheDocument();
+  });
+});
