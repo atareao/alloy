@@ -14,15 +14,21 @@ Se define como la conjunción de los campos obligatorios de cada canal (ver prop
 función pura derivada de `Settings`, testeable sin red.
 
 ### 2. Editabilidad de configuraciones parciales
+Desde `redact-notification-secrets` el valor del token **no** viaja al navegador, así que la
+UI no puede detectar "hay un token guardado" mirando el campo. Se añaden a `PublicConfig`
+tres banderas **no secretas**: `telegram_token_set`, `matrix_token_set`, `valet_token_set`
+(`settings.<token>.is_some()`).
+
 El switch de cada tarjeta se inicializa con:
 
 ```
-enabled = configured || (homeserver/token/room/... cualquiera no vacío)
+enabled = configured || <token_set> || <algún campo no secreto presente>
 ```
 
-Así, una config parcial (p. ej. homeserver sin token) sigue mostrando los campos y es
-editable, en lugar de ocultarlos. El switch "on" con canal incompleto muestra un
-`Typography.Text type="warning"`: "Faltan campos para completar la configuración".
+Así, una config parcial (p. ej. token guardado pero sin chat_id, o homeserver sin token)
+sigue mostrando los campos y es editable, en lugar de ocultarlos. El switch "on" con canal
+incompleto muestra un `Typography.Text type="warning"`: "Faltan campos para completar la
+configuración".
 
 ### 3. Sin cambio en la semántica de guardado
 El guardado sigue enviando los campos presentes; el backend ya distingue "ausente = no

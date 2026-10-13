@@ -77,6 +77,12 @@ pub struct PublicConfig {
     pub matrix_configured: bool,
     pub webhook_configured: bool,
     pub valet_configured: bool,
+    /// Whether a Telegram token is stored server-side (value never exposed).
+    pub telegram_token_set: bool,
+    /// Whether a Matrix token is stored server-side (value never exposed).
+    pub matrix_token_set: bool,
+    /// Whether a Valet token is stored server-side (value never exposed).
+    pub valet_token_set: bool,
     pub telegram_chat_id: Option<String>,
     pub matrix_homeserver: Option<String>,
     pub matrix_room: Option<String>,
