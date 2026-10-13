@@ -493,6 +493,8 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
         matrix_token: map.get("matrix_token").cloned().filter(|s| !s.is_empty()),
         matrix_room: map.get("matrix_room").cloned().filter(|s| !s.is_empty()),
         webhook_url: map.get("webhook_url").cloned().filter(|s| !s.is_empty()),
+        valet_url: map.get("valet_url").cloned().filter(|s| !s.is_empty()),
+        valet_token: map.get("valet_token").cloned().filter(|s| !s.is_empty()),
         update_check_cron: map
             .get("update_check_cron")
             .cloned()
@@ -526,6 +528,8 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         ("matrix_token", settings.matrix_token.clone()),
         ("matrix_room", settings.matrix_room.clone()),
         ("webhook_url", settings.webhook_url.clone()),
+        ("valet_url", settings.valet_url.clone()),
+        ("valet_token", settings.valet_token.clone()),
         ("update_check_cron", settings.update_check_cron.clone()),
         (
             "update_check_enabled",

@@ -157,12 +157,113 @@ pub async fn notify_webhook(
 }
 
 pub async fn notify_all(settings: &Arc<Mutex<Settings>>, container: &str, status: &str) {
+    notify_all_state(settings, container, status, None).await;
+}
+
+/// Fan-out a container-state notification across all channels, deriving the
+/// Valet `level` from the **raw Docker state** (`raw_state`) when available.
+///
+/// `notify_all` delegates here with `raw_state = None` (⇒ `info`), which is the
+/// correct semantics for message-based notices (updates, stacks, scheduler).
+pub async fn notify_all_state(
+    settings: &Arc<Mutex<Settings>>,
+    container: &str,
+    status: &str,
+    raw_state: Option<&str>,
+) {
     let s = settings.lock().await;
+    let level = valet_level_for(raw_state);
     let _ = tokio::join!(
         notify_telegram(&s, container, status),
         notify_matrix(&s, container, status),
-        notify_webhook(&s, container, status)
+        notify_webhook(&s, container, status),
+        notify_valet(&s, container, status, level)
     );
+}
+
+/// Map a container status to a Valet notification level (deterministic, pure).
+///
+/// - `critical` when the status contains `died`, `dead` or `error`.
+/// - `warning` when it contains `exit` (exited) or `stop` (stopped).
+/// - `info` otherwise.
+pub fn valet_level(status: &str) -> &'static str {
+    let s = status.to_lowercase();
+    if s.contains("died") || s.contains("dead") || s.contains("error") {
+        "critical"
+    } else if s.contains("exit") || s.contains("stop") {
+        "warning"
+    } else {
+        "info"
+    }
+}
+
+/// Derive the Valet `level` from the raw Docker state, if any.
+///
+/// `None` (message-based notices) maps to `info`; `Some(state)` delegates to
+/// [`valet_level`] so the level is computed over the raw state
+/// (`running`/`exited`/`dead`/…) rather than the localized status message.
+pub fn valet_level_for(raw_state: Option<&str>) -> &'static str {
+    match raw_state {
+        Some(state) => valet_level(state),
+        None => "info",
+    }
+}
+
+/// Build the Valet ingest endpoint from a base URL, trimming surrounding
+/// whitespace and trailing slashes.
+pub fn valet_endpoint(base: &str) -> String {
+    format!("{}/api/notifications", base.trim().trim_end_matches('/'))
+}
+
+/// Returns `Ok(())` on success, `Err(message)` on failure.
+pub async fn notify_valet(
+    settings: &Settings,
+    container: &str,
+    status: &str,
+    level: &str,
+) -> Result<(), String> {
+    let (Some(base), Some(token)) = (
+        settings.valet_url.as_deref(),
+        settings.valet_token.as_deref(),
+    ) else {
+        return Err("Valet no configurado: falta URL o token".into());
+    };
+    let body = serde_json::json!({
+        "message": format!("🪐 Alloy: {} → {}", container, status),
+        "origin": "alloy",
+        "author": "alloy",
+        "level": level,
+        "metadata": {
+            "container": container,
+            "status": status,
+            "timestamp": chrono::Utc::now().to_rfc3339()
+        }
+    });
+    match http_client()
+        .post(valet_endpoint(base))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                tracing::info!("Valet: ✅ notificación enviada");
+                Ok(())
+            } else {
+                let s = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                let err = format!("Valet: HTTP {} - {}", s, text);
+                tracing::error!("{}", err);
+                Err(err)
+            }
+        }
+        Err(e) => {
+            let err = format!("Valet: error de conexión: {}", e);
+            tracing::error!("{}", err);
+            Err(err)
+        }
+    }
 }
 
 // ── Test notification endpoint ──────────────────────────────
@@ -200,8 +301,19 @@ async fn test_notification_h(
                 Err(e) => Err(crate::models::AppError::Internal(e)),
             }
         }
+        "valet" => {
+            let msg = "🧪 Test de notificación desde Alloy — Valet funciona correctamente ✅";
+            match notify_valet(&s, "Alloy Test", msg, "info").await {
+                Ok(()) => Ok(Json(serde_json::json!({
+                    "status": "ok",
+                    "channel": "valet",
+                    "message": "enviado"
+                }))),
+                Err(e) => Err(crate::models::AppError::Internal(e)),
+            }
+        }
         other => Err(crate::models::AppError::BadRequest(format!(
-            "Canal desconocido: '{}'. Usa 'telegram' o 'matrix'.",
+            "Canal desconocido: '{}'. Usa 'telegram', 'matrix' o 'valet'.",
             other
         ))),
     }
@@ -352,11 +464,183 @@ mod tests {
         let _ = notify_matrix(&s, "test", "running").await;
     }
 
+    // ── valet_level ─────────────────────────────────────────
+
+    #[test]
+    fn test_valet_level_critical() {
+        for status in ["died", "dead", "error", "Error", "container died"] {
+            assert_eq!(valet_level(status), "critical", "status={status}");
+        }
+    }
+
+    #[test]
+    fn test_valet_level_warning() {
+        for status in ["exit", "exited", "stop", "stopped"] {
+            assert_eq!(valet_level(status), "warning", "status={status}");
+        }
+    }
+
+    #[test]
+    fn test_valet_level_info() {
+        for status in [
+            "running",
+            "start",
+            "started",
+            "pause",
+            "paused",
+            "unpause",
+            "restart",
+            "restarting",
+            "create",
+            "created",
+        ] {
+            assert_eq!(valet_level(status), "info", "status={status}");
+        }
+    }
+
+    #[test]
+    fn test_valet_level_mixed_case_substring() {
+        assert_eq!(valet_level("Death"), "info"); // "death" is not one of the keywords
+        assert_eq!(valet_level("DIED"), "critical");
+        assert_eq!(valet_level("Exited"), "warning");
+    }
+
+    // ── valet_level_for (task 2b.2) ─────────────────────────
+
+    #[test]
+    fn test_valet_level_for_none_is_info() {
+        assert_eq!(valet_level_for(None), "info");
+    }
+
+    #[test]
+    fn test_valet_level_for_raw_exited_is_warning() {
+        assert_eq!(valet_level_for(Some("exited")), "warning");
+    }
+
+    #[test]
+    fn test_valet_level_for_raw_dead_is_critical() {
+        assert_eq!(valet_level_for(Some("dead")), "critical");
+    }
+
+    #[test]
+    fn test_valet_level_for_raw_running_is_info() {
+        assert_eq!(valet_level_for(Some("running")), "info");
+    }
+
+    /// The localized status message ("⏹️ detenido") would map to `info` if fed
+    /// directly to `valet_level`; the raw Docker state must win instead.
+    #[test]
+    fn test_valet_level_for_uses_raw_not_localized_message() {
+        assert_eq!(valet_level("⏹️ detenido"), "info");
+        assert_eq!(valet_level_for(Some("exited")), "warning");
+        assert_eq!(valet_level_for(Some("dead")), "critical");
+        assert_eq!(valet_level_for(Some("running")), "info");
+    }
+
+    // ── valet_endpoint ──────────────────────────────────────
+
+    #[test]
+    fn test_valet_endpoint_plain() {
+        assert_eq!(
+            valet_endpoint("https://v.test"),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    #[test]
+    fn test_valet_endpoint_trailing_slash() {
+        assert_eq!(
+            valet_endpoint("https://v.test/"),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    #[test]
+    fn test_valet_endpoint_multiple_trailing_slashes() {
+        assert_eq!(
+            valet_endpoint("https://v.test///"),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    #[test]
+    fn test_valet_endpoint_whitespace_and_trailing_slash() {
+        assert_eq!(
+            valet_endpoint("  https://v.test/  "),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    // ── Early return: notify_valet ──────────────────────────
+
+    #[tokio::test]
+    async fn test_notify_valet_returns_early_no_url() {
+        let s = Settings {
+            valet_token: Some("val_x".into()),
+            ..Default::default()
+        };
+        let err = notify_valet(&s, "test", "running", "info")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Valet no configurado"), "err={err}");
+    }
+
+    #[tokio::test]
+    async fn test_notify_valet_returns_early_no_token() {
+        let s = Settings {
+            valet_url: Some("https://v.test".into()),
+            ..Default::default()
+        };
+        let err = notify_valet(&s, "test", "running", "info")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Valet no configurado"), "err={err}");
+    }
+
+    #[tokio::test]
+    async fn test_notify_valet_returns_early_both_missing() {
+        let err = notify_valet(&empty_settings(), "test", "running", "info")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Valet no configurado"), "err={err}");
+    }
+
     // ── notify_all ──────────────────────────────────────────
 
     #[tokio::test]
     async fn test_notify_all_does_not_panic() {
         let settings = Arc::new(Mutex::new(empty_settings()));
         notify_all(&settings, "test", "running").await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_all_does_not_panic_with_valet_unset() {
+        // Valet sin configurar: el fan-out no debe entrar en pánico.
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("t".into()),
+            telegram_chat_id: Some("c".into()),
+            ..Default::default()
+        }));
+        notify_all(&settings, "test", "running").await;
+    }
+
+    // ── notify_all_state (task 2b.2) ────────────────────────
+
+    #[tokio::test]
+    async fn test_notify_all_state_does_not_panic_with_raw_exited() {
+        let settings = Arc::new(Mutex::new(empty_settings()));
+        notify_all_state(&settings, "test", "⏹️ detenido", Some("exited")).await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_all_state_does_not_panic_with_raw_dead() {
+        let settings = Arc::new(Mutex::new(empty_settings()));
+        notify_all_state(&settings, "test", "💀 finalizado", Some("dead")).await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_all_state_does_not_panic_without_raw() {
+        let settings = Arc::new(Mutex::new(empty_settings()));
+        notify_all_state(&settings, "test", "✅ actualizado", None).await;
     }
 }

@@ -62,6 +62,11 @@ export default function ConfigPage({
   const [mxRoom, setMxRoom] = useState("");
   const [mxEnabled, setMxEnabled] = useState(false);
 
+  // Valet
+  const [valetUrl, setValetUrl] = useState("");
+  const [valetToken, setValetToken] = useState("");
+  const [valetEnabled, setValetEnabled] = useState(false);
+
   // Update check cron
   const [ucCron, setUcCron] = useState("0 */6 * * *");
   const [ucEnabled, setUcEnabled] = useState(false);
@@ -113,6 +118,9 @@ export default function ConfigPage({
     setMxToken(configProp.matrix_token ?? "");
     setMxRoom(configProp.matrix_room || "");
     setMxEnabled(configProp.matrix_configured);
+    setValetUrl(configProp.valet_url || "");
+    setValetToken(configProp.valet_token ?? "");
+    setValetEnabled(configProp.valet_configured);
   }, [configProp]);
 
   const showSuccess = (msg: string) => {
@@ -187,6 +195,40 @@ export default function ConfigPage({
       }
     } catch {
       setError("Error de conexión al guardar Matrix");
+    }
+    setSaving(null);
+  };
+
+  const saveValet = async () => {
+    setSaving("valet");
+    setError(null);
+    try {
+      const body: Record<string, string | null> = {
+        valet_url: valetUrl || null,
+        valet_token: valetToken || null,
+      };
+      if (!valetEnabled) {
+        body.valet_url = "";
+        body.valet_token = "";
+      }
+      const res = await apiFetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data: AppConfig = await res.json();
+        setConfigProp(data);
+        setValetUrl(data.valet_url || "");
+        setValetToken(data.valet_token ?? "");
+        showSuccess(
+          valetEnabled ? "✅ Valet configurado" : "❌ Valet desactivado",
+        );
+      } else {
+        setError("Error al guardar Valet");
+      }
+    } catch {
+      setError("Error de conexión al guardar Valet");
     }
     setSaving(null);
   };
@@ -544,6 +586,126 @@ export default function ConfigPage({
                         Guardar Matrix
                       </Button>
                     )}
+                  </Flex>
+                </Card>
+
+                {/* ═══ Valet ═══ */}
+                <Card bordered size="small">
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      🪐 Valet
+                    </Typography.Title>
+                    <Flex align="center" gap={8}>
+                      <Switch
+                        checked={valetEnabled}
+                        onChange={(checked) => setValetEnabled(checked)}
+                      />
+                      <Typography.Text>
+                        {valetEnabled ? "Activado" : "Desactivado"}
+                      </Typography.Text>
+                    </Flex>
+                  </Flex>
+                  {valetEnabled && (
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>URL</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Base URL de Valet (sin /api/notifications)
+                        </Typography.Text>
+                        <Input
+                          placeholder="https://valet.example.com"
+                          value={valetUrl}
+                          onChange={(e) => setValetUrl(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Ingest key</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Ingest key de Valet
+                        </Typography.Text>
+                        <Input.Password
+                          placeholder="val_..."
+                          value={valetToken}
+                          onChange={(e) => setValetToken(e.target.value)}
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                  <Flex
+                    justify="flex-end"
+                    gap="middle"
+                    style={{ marginTop: 16 }}
+                  >
+                    {valetEnabled && (
+                      <Button
+                        onClick={async () => {
+                          setTesting("valet");
+                          setError(null);
+                          try {
+                            const res = await apiFetch(
+                              "/api/notifications/test",
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: "valet" }),
+                              },
+                            );
+                            setTesting(null);
+                            if (res.ok) {
+                              showSuccess(
+                                "📤 Mensaje de prueba enviado a Valet",
+                              );
+                            } else {
+                              const data = await res
+                                .json()
+                                .catch(() => ({ error: "Error desconocido" }));
+                              setError(
+                                data.error || `Error HTTP ${res.status}`,
+                              );
+                            }
+                          } catch {
+                            setTesting(null);
+                            setError("Error de conexión al enviar test");
+                          }
+                        }}
+                        loading={testing === "valet"}
+                        style={{
+                          borderColor: "var(--ant-color-success)",
+                          color: "var(--ant-color-success)",
+                        }}
+                      >
+                        📤 Test
+                      </Button>
+                    )}
+                    <Button
+                      onClick={saveValet}
+                      loading={saving === "valet"}
+                      type="primary"
+                    >
+                      Guardar Valet
+                    </Button>
                   </Flex>
                 </Card>
               </Space>

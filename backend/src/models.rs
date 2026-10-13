@@ -76,11 +76,14 @@ pub struct PublicConfig {
     pub telegram_configured: bool,
     pub matrix_configured: bool,
     pub webhook_configured: bool,
+    pub valet_configured: bool,
     pub telegram_token: Option<String>,
     pub telegram_chat_id: Option<String>,
     pub matrix_homeserver: Option<String>,
     pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
+    pub valet_url: Option<String>,
+    pub valet_token: Option<String>,
     pub version: String,
     pub build_date: String,
     pub repo_url: String,
@@ -202,6 +205,10 @@ pub struct Settings {
     pub matrix_room: Option<String>,
     #[serde(default)]
     pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub valet_url: Option<String>,
+    #[serde(default)]
+    pub valet_token: Option<String>,
 
     #[serde(default)]
     pub update_check_cron: Option<String>,
@@ -310,6 +317,8 @@ pub struct UpdateSettingsReq {
     pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
     pub webhook_url: Option<String>,
+    pub valet_url: Option<String>,
+    pub valet_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
