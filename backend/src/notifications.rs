@@ -171,7 +171,11 @@ pub async fn notify_all_state(
     status: &str,
     raw_state: Option<&str>,
 ) {
-    let s = settings.lock().await;
+    // Clone the settings and release the `Mutex` guard at the end of this
+    // statement, *before* the network fan-out below. Otherwise a slow channel
+    // (up to the 30 s HTTP client timeout) would keep the lock and block
+    // `GET/PUT /api/config` and the test endpoint.
+    let s = settings.lock().await.clone();
     let level = valet_level_for(raw_state);
     let _ = tokio::join!(
         notify_telegram(&s, container, status),
@@ -642,5 +646,79 @@ mod tests {
     async fn test_notify_all_state_does_not_panic_without_raw() {
         let settings = Arc::new(Mutex::new(empty_settings()));
         notify_all_state(&settings, "test", "✅ actualizado", None).await;
+    }
+
+    // ── lock released during fan-out (change: notify-fanout-lock) ───
+
+    /// The `Mutex<Settings>` must be released before the network fan-out, so a
+    /// concurrent `GET/PUT /api/config` (modelled here by `try_lock`) does not
+    /// block while a channel is in flight.
+    ///
+    /// Strategy: a TCP listener accepts one connection and stays hanging, so
+    /// the webhook channel stays "in flight" (until its 30 s client timeout).
+    /// We spawn the fan-out, wait for the request to be in flight, and assert
+    /// the lock is free. The fan-out task is aborted (the 30 s timeout is way
+    /// too long for a test).
+    #[tokio::test]
+    async fn test_notify_all_state_releases_lock_during_fanout() {
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local_addr");
+
+        // Server: accept once, read the request head, then hang forever so the
+        // webhook stays in flight (no response is ever written). `accepted`
+        // signals the test deterministically once the connection is up (no fixed
+        // sleep), and the socket is kept alive across the `pending()` await so
+        // the client does not see an immediate EOF.
+        let accepted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let accepted2 = Arc::clone(&accepted);
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify2 = Arc::clone(&notify);
+        let server = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                accepted2.store(true, std::sync::atomic::Ordering::SeqCst);
+                notify2.notify_one();
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                // Keep the connection open (and `socket` alive) indefinitely.
+                std::future::pending::<()>().await;
+            }
+        });
+
+        let settings = Arc::new(Mutex::new(Settings {
+            webhook_url: Some(format!("http://{addr}/hook")),
+            ..Default::default()
+        }));
+
+        let settings_task = Arc::clone(&settings);
+        let fanout = tokio::spawn(async move {
+            notify_all_state(&settings_task, "c", "running", None).await;
+        });
+
+        // Wait deterministically until the webhook connection is accepted
+        // (bounded so a broken test cannot hang forever), then assert the lock
+        // is free while the channel is in flight.
+        tokio::time::timeout(Duration::from_secs(5), notify.notified())
+            .await
+            .expect("el servidor de prueba no aceptó la conexión a tiempo");
+
+        assert!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            "el servidor de prueba no aceptó la conexión: test no determinista"
+        );
+
+        assert!(
+            settings.try_lock().is_ok(),
+            "el lock de Settings NO se libera durante el fan-out (webhook en vuelo)"
+        );
+
+        fanout.abort();
+        let _ = fanout.await;
+        server.abort();
+        let _ = server.await;
     }
 }
