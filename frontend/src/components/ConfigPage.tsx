@@ -348,6 +348,7 @@ export default function ConfigPage({
                     </Typography.Title>
                     <Flex align="center" gap={8}>
                       <Switch
+                        aria-label="Activar Telegram"
                         checked={tgEnabled}
                         onChange={(checked) => setTgEnabled(checked)}
                       />
@@ -375,6 +376,7 @@ export default function ConfigPage({
                           Token que te proporciona @BotFather
                         </Typography.Text>
                         <Input.Password
+                          aria-label="Token del bot de Telegram"
                           placeholder={
                             configProp?.telegram_configured
                               ? "•••• configurado"
@@ -472,6 +474,7 @@ export default function ConfigPage({
                     </Typography.Title>
                     <Flex align="center" gap={8}>
                       <Switch
+                        aria-label="Activar Matrix"
                         checked={mxEnabled}
                         onChange={(checked) => setMxEnabled(checked)}
                       />
@@ -517,6 +520,7 @@ export default function ConfigPage({
                           Token de acceso de la cuenta de bot
                         </Typography.Text>
                         <Input.Password
+                          aria-label="Access token de Matrix"
                           placeholder={
                             configProp?.matrix_configured
                               ? "•••• configurado"
