@@ -120,16 +120,13 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
         port: 3066,
         timezone: crate::timezone::timezone_abbr(),
         telegram_configured: s.telegram_token.is_some(),
-        telegram_token: s.telegram_token.clone(),
         telegram_chat_id: s.telegram_chat_id.clone(),
         matrix_configured: s.matrix_homeserver.is_some(),
-        matrix_token: s.matrix_token.clone(),
         matrix_homeserver: s.matrix_homeserver.clone(),
         matrix_room: s.matrix_room.clone(),
         webhook_configured: s.webhook_url.is_some(),
         valet_configured: s.valet_url.is_some() && s.valet_token.is_some(),
         valet_url: s.valet_url.clone(),
-        valet_token: s.valet_token.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         build_date: env!("BUILD_DATE").to_string(),
         repo_url: "https://github.com/atareao/alloy".to_string(),
@@ -261,5 +258,110 @@ port: 8080
         let cfg: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(cfg.host(), "127.0.0.1");
         assert_eq!(cfg.port(), 8080);
+    }
+
+    // ── Redaction of notification secrets ────────────────────
+
+    /// `GET /api/config` must not leak the plaintext notification tokens;
+    /// it may only expose the boolean `*_configured` indicators.
+    #[tokio::test]
+    async fn test_config_handler_hides_secret_tokens() {
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("tg-secret".into()),
+            telegram_chat_id: Some("12345".into()),
+            matrix_homeserver: Some("https://matrix.example".into()),
+            matrix_token: Some("mx-secret".into()),
+            matrix_room: Some("!room:example".into()),
+            valet_url: Some("https://valet.example".into()),
+            valet_token: Some("val-secret".into()),
+            ..Default::default()
+        }));
+
+        let Json(cfg) = config_handler(State(settings)).await;
+        let value = serde_json::to_value(&cfg).unwrap();
+
+        assert!(
+            value.get("telegram_token").is_none(),
+            "telegram_token must not be serialized: {value}"
+        );
+        assert!(
+            value.get("matrix_token").is_none(),
+            "matrix_token must not be serialized: {value}"
+        );
+        assert!(
+            value.get("valet_token").is_none(),
+            "valet_token must not be serialized: {value}"
+        );
+
+        assert_eq!(value["telegram_configured"].as_bool(), Some(true));
+        assert_eq!(value["matrix_configured"].as_bool(), Some(true));
+        assert_eq!(value["valet_configured"].as_bool(), Some(true));
+
+        // Non-secret fields stay exposed.
+        assert_eq!(value["telegram_chat_id"], "12345");
+        assert_eq!(value["matrix_homeserver"], "https://matrix.example");
+        assert_eq!(value["valet_url"], "https://valet.example");
+    }
+
+    /// `PUT /api/config` with the token field absent (e.g. UI left it blank)
+    /// must preserve the stored token.
+    #[tokio::test]
+    async fn test_update_config_preserves_token_when_absent() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("keep-me".into()),
+            matrix_token: Some("keep-matrix".into()),
+            valet_token: Some("keep-valet".into()),
+            ..Default::default()
+        }));
+
+        let body = UpdateSettingsReq {
+            telegram_token: None,
+            telegram_chat_id: Some("chat".into()),
+            matrix_homeserver: None,
+            matrix_token: None,
+            matrix_room: None,
+            webhook_url: None,
+            valet_url: None,
+            valet_token: None,
+        };
+
+        let _ = update_config_h(State(settings.clone()), State(db_pool), Json(body)).await;
+
+        let s = settings.lock().await;
+        assert_eq!(s.telegram_token.as_deref(), Some("keep-me"));
+        assert_eq!(s.matrix_token.as_deref(), Some("keep-matrix"));
+        assert_eq!(s.valet_token.as_deref(), Some("keep-valet"));
+    }
+
+    /// `PUT /api/config` with the token set to `""` must delete the stored
+    /// token (`None`).
+    #[tokio::test]
+    async fn test_update_config_clears_token_when_empty() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("old-tg".into()),
+            matrix_token: Some("old-mx".into()),
+            valet_token: Some("old-val".into()),
+            ..Default::default()
+        }));
+
+        let body = UpdateSettingsReq {
+            telegram_token: Some(String::new()),
+            telegram_chat_id: None,
+            matrix_homeserver: None,
+            matrix_token: Some(String::new()),
+            matrix_room: None,
+            webhook_url: None,
+            valet_url: None,
+            valet_token: Some(String::new()),
+        };
+
+        let _ = update_config_h(State(settings.clone()), State(db_pool), Json(body)).await;
+
+        let s = settings.lock().await;
+        assert!(s.telegram_token.is_none());
+        assert!(s.matrix_token.is_none());
+        assert!(s.valet_token.is_none());
     }
 }
