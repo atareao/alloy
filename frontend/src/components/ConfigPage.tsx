@@ -601,6 +601,7 @@ export default function ConfigPage({
                     </Typography.Title>
                     <Flex align="center" gap={8}>
                       <Switch
+                        aria-label="Activar Valet"
                         checked={valetEnabled}
                         onChange={(checked) => setValetEnabled(checked)}
                       />
@@ -628,6 +629,7 @@ export default function ConfigPage({
                           Base URL de Valet (sin /api/notifications)
                         </Typography.Text>
                         <Input
+                          aria-label="URL de Valet"
                           placeholder="https://valet.example.com"
                           value={valetUrl}
                           onChange={(e) => setValetUrl(e.target.value)}
@@ -646,6 +648,7 @@ export default function ConfigPage({
                           Ingest key de Valet
                         </Typography.Text>
                         <Input.Password
+                          aria-label="Ingest key de Valet"
                           placeholder="val_..."
                           value={valetToken}
                           onChange={(e) => setValetToken(e.target.value)}

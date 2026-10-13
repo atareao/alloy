@@ -148,6 +148,31 @@ describe("ConfigPage — tarjeta Valet", () => {
     expect(tokenInput).toBeInTheDocument();
   });
 
+  it("expone nombre accesible en el switch y los campos (a11y)", async () => {
+    const config = makeConfig({
+      valet_configured: true,
+      valet_url: "https://valet.test",
+      valet_token: "val_abc",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("🪐 Valet")).toBeInTheDocument();
+    });
+
+    const card = getValetCard();
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Valet" }),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByLabelText("URL de Valet"),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByLabelText("Ingest key de Valet"),
+    ).toBeInTheDocument();
+  });
+
   it("guarda la URL y el token no vacíos al activar el switch", async () => {
     const config = makeConfig({
       valet_configured: false,
