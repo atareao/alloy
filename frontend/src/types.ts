@@ -52,6 +52,9 @@ export interface AppConfig {
   matrix_homeserver: string | null;
   matrix_room: string | null;
   webhook_configured: boolean;
+  valet_configured: boolean;
+  valet_url: string | null;
+  valet_token: string | null;
   version: string;
   build_date: string;
   repo_url: string;

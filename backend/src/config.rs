@@ -127,6 +127,9 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
         matrix_homeserver: s.matrix_homeserver.clone(),
         matrix_room: s.matrix_room.clone(),
         webhook_configured: s.webhook_url.is_some(),
+        valet_configured: s.valet_url.is_some() && s.valet_token.is_some(),
+        valet_url: s.valet_url.clone(),
+        valet_token: s.valet_token.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         build_date: env!("BUILD_DATE").to_string(),
         repo_url: "https://github.com/atareao/alloy".to_string(),
@@ -180,6 +183,20 @@ async fn update_config_h(
                 s.webhook_url = None;
             } else {
                 s.webhook_url = Some(v);
+            }
+        }
+        if let Some(v) = body.valet_url {
+            if v.is_empty() {
+                s.valet_url = None;
+            } else {
+                s.valet_url = Some(v);
+            }
+        }
+        if let Some(v) = body.valet_token {
+            if v.is_empty() {
+                s.valet_token = None;
+            } else {
+                s.valet_token = Some(v);
             }
         }
         let conn = db_pool.get().await.unwrap();

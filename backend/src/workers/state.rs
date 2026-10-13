@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, Mutex, Notify, RwLock};
 use crate::containers::fetch_containers;
 use crate::db::DbPool;
 use crate::models::*;
-use crate::notifications::notify_all;
+use crate::notifications::notify_all_state;
 
 pub type CachedContainers = Arc<RwLock<Option<Vec<ContainerInfo>>>>;
 
@@ -125,13 +125,14 @@ pub fn detect_state_changes(
 
 /// Pure helper: notifications to dispatch for state changes, honoring the
 /// per-container `notify_events` policy and skipping containers currently being
-/// updated by the scheduler. Returns `(container, status_message)` pairs.
+/// updated by the scheduler. Returns `(container, status_message, raw_state)`
+/// triples so the caller can compute the Valet level from the raw Docker state.
 pub fn detect_notifications(
     previous_states: &HashMap<String, String>,
     containers: &[ContainerInfo],
     policies: &[UpdatePolicy],
     update_in_progress: &HashSet<String>,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, String)> {
     containers
         .iter()
         .filter_map(|c| {
@@ -150,7 +151,7 @@ pub fn detect_notifications(
             if !should_notify {
                 return None;
             }
-            Some((c.name.clone(), status_message(&c.state)))
+            Some((c.name.clone(), status_message(&c.state), c.state.clone()))
         })
         .collect()
 }
@@ -188,8 +189,8 @@ async fn refresh(
         detect_notifications(previous_states, &containers, &policies, &in_progress)
     };
     drop(policies);
-    for (name, status_msg) in notifications {
-        notify_all(settings, &name, &status_msg).await;
+    for (name, status_msg, raw_state) in notifications {
+        notify_all_state(settings, &name, &status_msg, Some(&raw_state)).await;
         let _ = notif_tx.send(NotifEvent {
             container: name,
             status: status_msg,
@@ -399,6 +400,43 @@ mod tests {
         assert_eq!(notifications.len(), 1);
         assert_eq!(notifications[0].0, "nginx");
         assert!(!notifications[0].1.is_empty());
+    }
+
+    /// Task 2b.1: `detect_notifications` must return `(name, status_message, raw_state)`
+    /// so the worker can compute the Valet level from the raw Docker state, not from
+    /// the localized message.
+    #[test]
+    fn test_detect_notifications_exited_exposes_raw_state() {
+        let mut prev = HashMap::new();
+        prev.insert("nginx".to_string(), "running".to_string());
+        let containers = vec![make_container("nginx", "exited")];
+        let policies = vec![policy("nginx", true)];
+        let in_progress = HashSet::new();
+
+        let notifications = detect_notifications(&prev, &containers, &policies, &in_progress);
+        assert_eq!(notifications.len(), 1);
+        let (name, status_msg, raw_state) = &notifications[0];
+        assert_eq!(name, "nginx");
+        assert_eq!(raw_state, "exited", "third element must be the raw state");
+        assert!(
+            status_msg.contains("detenido"),
+            "second element must be the localized label, got {status_msg}"
+        );
+    }
+
+    #[test]
+    fn test_detect_notifications_dead_exposes_raw_state() {
+        let mut prev = HashMap::new();
+        prev.insert("nginx".to_string(), "running".to_string());
+        let containers = vec![make_container("nginx", "dead")];
+        let policies = vec![policy("nginx", true)];
+        let in_progress = HashSet::new();
+
+        let notifications = detect_notifications(&prev, &containers, &policies, &in_progress);
+        assert_eq!(notifications.len(), 1);
+        let (_, status_msg, raw_state) = &notifications[0];
+        assert_eq!(raw_state, "dead");
+        assert!(status_msg.contains("finalizado"), "got {status_msg}");
     }
 
     #[test]
