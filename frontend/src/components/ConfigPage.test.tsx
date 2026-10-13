@@ -469,6 +469,27 @@ describe("ConfigPage — tarjeta Telegram", () => {
       ).toHaveValue("");
     });
   });
+
+  it("expone nombre accesible en el switch y el campo de token (a11y)", async () => {
+    const config = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100123",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Telegram" }),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByLabelText("Token del bot de Telegram"),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("ConfigPage — tarjeta Matrix", () => {
@@ -577,6 +598,28 @@ describe("ConfigPage — tarjeta Matrix", () => {
         matrix_room: "",
       });
     });
+  });
+
+  it("expone nombre accesible en el switch y el campo de token (a11y)", async () => {
+    const config = makeConfig({
+      matrix_configured: true,
+      matrix_homeserver: "https://matrix.test",
+      matrix_room: "!room:matrix.test",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
+    });
+
+    const card = getCard("💬 Matrix");
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Matrix" }),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByLabelText("Access token de Matrix"),
+    ).toBeInTheDocument();
   });
 });
 
