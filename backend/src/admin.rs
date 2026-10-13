@@ -177,10 +177,16 @@ async fn export_config_h(
     let hist = update_history.lock().await;
     let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &sett);
+    // Redact secrets: never emit notification tokens in the exported payload.
+    let mut redacted = sett.clone();
+    redacted.telegram_token = None;
+    redacted.matrix_token = None;
+    redacted.valet_token = None;
+    redacted.webhook_url = None;
     Json(serde_json::json!({
         "version": 1,
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-        "settings": *sett,
+        "settings": redacted,
         "update_history": *hist,
     }))
 }
@@ -398,6 +404,50 @@ mod tests {
         assert_eq!(result.0["version"], 1);
         assert!(result.0["exported_at"].is_string());
         assert!(result.0["settings"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_export_config_redacts_tokens() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("tg".into()),
+            matrix_token: Some("mx".into()),
+            valet_token: Some("val".into()),
+            webhook_url: Some("https://hooks.test/secret".into()),
+            telegram_chat_id: Some("chat".into()),
+            valet_url: Some("https://v".into()),
+            matrix_homeserver: Some("https://matrix.test".into()),
+            matrix_room: Some("!room:matrix.test".into()),
+            update_check_cron: Some("0 */6 * * *".into()),
+            ..Default::default()
+        }));
+        let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> =
+            Arc::new(Mutex::new(vec![UpdateHistoryEntry {
+                container: "nginx".into(),
+                image: "nginx:latest".into(),
+                old_digest: "a".into(),
+                new_digest: "b".into(),
+                timestamp: "2026-01-01T00:00:00".into(),
+                status: "success".into(),
+                duration_ms: 10,
+            }]));
+
+        let result: Json<serde_json::Value> =
+            export_config_h(State(settings), State(update_history), State(db_pool)).await;
+
+        assert!(result.0["settings"]["telegram_token"].is_null());
+        assert!(result.0["settings"]["matrix_token"].is_null());
+        assert!(result.0["settings"]["valet_token"].is_null());
+        assert!(result.0["settings"]["webhook_url"].is_null());
+        assert_eq!(result.0["settings"]["telegram_chat_id"], "chat");
+        assert_eq!(result.0["settings"]["valet_url"], "https://v");
+        assert_eq!(
+            result.0["settings"]["matrix_homeserver"],
+            "https://matrix.test"
+        );
+        assert_eq!(result.0["settings"]["matrix_room"], "!room:matrix.test");
+        assert_eq!(result.0["settings"]["update_check_cron"], "0 */6 * * *");
+        assert_eq!(result.0["update_history"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
