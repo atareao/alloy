@@ -111,15 +111,18 @@ export default function ConfigPage({
   // Sync from props when config changes (from App.tsx eager fetch)
   useEffect(() => {
     if (!configProp) return;
-    setTgToken(configProp.telegram_token ?? "");
+    // Tokens are never preloaded from the API (they are secret and no longer
+    // returned in clear). The field starts empty; leaving it empty on save
+    // means "keep the stored token".
+    setTgToken("");
     setTgChatId(configProp.telegram_chat_id || "");
     setTgEnabled(configProp.telegram_configured);
     setMxHomeserver(configProp.matrix_homeserver || "");
-    setMxToken(configProp.matrix_token ?? "");
+    setMxToken("");
     setMxRoom(configProp.matrix_room || "");
     setMxEnabled(configProp.matrix_configured);
     setValetUrl(configProp.valet_url || "");
-    setValetToken(configProp.valet_token ?? "");
+    setValetToken("");
     setValetEnabled(configProp.valet_configured);
   }, [configProp]);
 
@@ -133,12 +136,16 @@ export default function ConfigPage({
     setError(null);
     try {
       const body: Record<string, string | null> = {
-        telegram_token: tgToken || null,
         telegram_chat_id: tgChatId || null,
       };
       if (!tgEnabled) {
+        // Channel off ⇒ send "" so the backend deletes the stored token.
         body.telegram_token = "";
         body.telegram_chat_id = "";
+      } else if (tgToken.trim()) {
+        // Only send when a new token was typed; empty (or blank) means
+        // "keep current".
+        body.telegram_token = tgToken.trim();
       }
       const res = await apiFetch("/api/config", {
         method: "PUT",
@@ -148,7 +155,7 @@ export default function ConfigPage({
       if (res.ok) {
         const data: AppConfig = await res.json();
         setConfigProp(data);
-        setTgToken(data.telegram_token ?? "");
+        setTgToken("");
         setTgChatId(data.telegram_chat_id || "");
         showSuccess(
           tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado",
@@ -168,13 +175,14 @@ export default function ConfigPage({
     try {
       const body: Record<string, string | null> = {
         matrix_homeserver: mxHomeserver || null,
-        matrix_token: mxToken || null,
         matrix_room: mxRoom || null,
       };
       if (!mxEnabled) {
         body.matrix_homeserver = "";
         body.matrix_token = "";
         body.matrix_room = "";
+      } else if (mxToken.trim()) {
+        body.matrix_token = mxToken.trim();
       }
       const res = await apiFetch("/api/config", {
         method: "PUT",
@@ -185,7 +193,7 @@ export default function ConfigPage({
         const data: AppConfig = await res.json();
         setConfigProp(data);
         setMxHomeserver(data.matrix_homeserver || "");
-        setMxToken(data.matrix_token ?? "");
+        setMxToken("");
         setMxRoom(data.matrix_room || "");
         showSuccess(
           mxEnabled ? "✅ Matrix configurado" : "❌ Matrix desactivado",
@@ -205,11 +213,12 @@ export default function ConfigPage({
     try {
       const body: Record<string, string | null> = {
         valet_url: valetUrl || null,
-        valet_token: valetToken || null,
       };
       if (!valetEnabled) {
         body.valet_url = "";
         body.valet_token = "";
+      } else if (valetToken.trim()) {
+        body.valet_token = valetToken.trim();
       }
       const res = await apiFetch("/api/config", {
         method: "PUT",
@@ -220,7 +229,7 @@ export default function ConfigPage({
         const data: AppConfig = await res.json();
         setConfigProp(data);
         setValetUrl(data.valet_url || "");
-        setValetToken(data.valet_token ?? "");
+        setValetToken("");
         showSuccess(
           valetEnabled ? "✅ Valet configurado" : "❌ Valet desactivado",
         );
@@ -366,7 +375,11 @@ export default function ConfigPage({
                           Token que te proporciona @BotFather
                         </Typography.Text>
                         <Input.Password
-                          placeholder="123456:ABC-DEF..."
+                          placeholder={
+                            configProp?.telegram_configured
+                              ? "•••• configurado"
+                              : "123456:ABC-DEF..."
+                          }
                           value={tgToken}
                           onChange={(e) => setTgToken(e.target.value)}
                         />
@@ -437,15 +450,13 @@ export default function ConfigPage({
                         📤 Test
                       </Button>
                     )}
-                    {tgEnabled && (
-                      <Button
-                        onClick={saveTelegram}
-                        loading={saving === "telegram"}
-                        type="primary"
-                      >
-                        Guardar Telegram
-                      </Button>
-                    )}
+                    <Button
+                      onClick={saveTelegram}
+                      loading={saving === "telegram"}
+                      type="primary"
+                    >
+                      Guardar Telegram
+                    </Button>
                   </Flex>
                 </Card>
 
@@ -506,7 +517,11 @@ export default function ConfigPage({
                           Token de acceso de la cuenta de bot
                         </Typography.Text>
                         <Input.Password
-                          placeholder="syt_..."
+                          placeholder={
+                            configProp?.matrix_configured
+                              ? "•••• configurado"
+                              : "syt_..."
+                          }
                           value={mxToken}
                           onChange={(e) => setMxToken(e.target.value)}
                         />
@@ -577,15 +592,13 @@ export default function ConfigPage({
                         📤 Test
                       </Button>
                     )}
-                    {mxEnabled && (
-                      <Button
-                        onClick={saveMatrix}
-                        loading={saving === "matrix"}
-                        type="primary"
-                      >
-                        Guardar Matrix
-                      </Button>
-                    )}
+                    <Button
+                      onClick={saveMatrix}
+                      loading={saving === "matrix"}
+                      type="primary"
+                    >
+                      Guardar Matrix
+                    </Button>
                   </Flex>
                 </Card>
 
@@ -649,7 +662,11 @@ export default function ConfigPage({
                         </Typography.Text>
                         <Input.Password
                           aria-label="Ingest key de Valet"
-                          placeholder="val_..."
+                          placeholder={
+                            configProp?.valet_configured
+                              ? "•••• configurado"
+                              : "val_..."
+                          }
                           value={valetToken}
                           onChange={(e) => setValetToken(e.target.value)}
                         />

@@ -45,16 +45,13 @@ export interface AppConfig {
   port: number;
   timezone: string;
   telegram_configured: boolean;
-  telegram_token: string | null;
   telegram_chat_id: string | null;
   matrix_configured: boolean;
-  matrix_token: string | null;
   matrix_homeserver: string | null;
   matrix_room: string | null;
   webhook_configured: boolean;
   valet_configured: boolean;
   valet_url: string | null;
-  valet_token: string | null;
   version: string;
   build_date: string;
   repo_url: string;
