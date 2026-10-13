@@ -22,10 +22,13 @@ fallar con error. Detectado en el review de `redact-notification-secrets`.
   - `matrix_configured = matrix_homeserver && matrix_token && matrix_room`
   - `valet_configured = valet_url && valet_token` (sin cambios)
   - `webhook_configured = webhook_url` (sin cambios)
+- `PublicConfig` expone banderas **no secretas** `telegram_token_set`/`matrix_token_set`/
+  `valet_token_set` (si hay un token guardado), ya que tras `redact-notification-secrets` el
+  valor no viaja al navegador.
 - **UI** (para que una config parcial siga siendo editable): el switch de cada tarjeta se
-  inicializa desde `*_configured` **o** desde "algún campo del canal presente"; si el switch
-  está activado pero el canal NO está completo, se muestra un aviso "Faltan campos" que
-  evita el estado engañoso.
+  inicializa desde `*_configured` **o** desde "algún campo del canal presente" (incluida la
+  bandera `*_token_set`); si el switch está activado pero el canal NO está completo, se
+  muestra un aviso "Faltan campos" que evita el estado engañoso.
 - Sin cambios en la semántica de envío de los notificadores (ya hacen early-return).
 
 ## Capabilities
@@ -42,7 +45,7 @@ fallar con error. Detectado en el review de `redact-notification-secrets`.
 - `frontend/src/components/ConfigPage.tsx`: inicialización de switches + aviso de campos
   incompletos.
 - `frontend/src/components/ConfigPage.test.tsx`: tests de derivación y del aviso.
-- Sin cambios en `models.rs` ni en el contrato de `PublicConfig`.
+- `models.rs`: `PublicConfig` gana las banderas no secretas `*_token_set` (el resto del contrato no cambia).
 
 ## Open Questions
 

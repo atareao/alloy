@@ -116,14 +116,30 @@ export default function ConfigPage({
     // means "keep the stored token".
     setTgToken("");
     setTgChatId(configProp.telegram_chat_id || "");
-    setTgEnabled(configProp.telegram_configured);
+    // A partial config stays editable: enable the switch if the channel is
+    // fully configured, if a token is stored, or if any non-secret field is
+    // present. The "incomplete" warning below covers the misleading case.
+    setTgEnabled(
+      configProp.telegram_configured ||
+        configProp.telegram_token_set ||
+        !!configProp.telegram_chat_id,
+    );
     setMxHomeserver(configProp.matrix_homeserver || "");
     setMxToken("");
     setMxRoom(configProp.matrix_room || "");
-    setMxEnabled(configProp.matrix_configured);
+    setMxEnabled(
+      configProp.matrix_configured ||
+        configProp.matrix_token_set ||
+        !!configProp.matrix_homeserver ||
+        !!configProp.matrix_room,
+    );
     setValetUrl(configProp.valet_url || "");
     setValetToken("");
-    setValetEnabled(configProp.valet_configured);
+    setValetEnabled(
+      configProp.valet_configured ||
+        configProp.valet_token_set ||
+        !!configProp.valet_url,
+    );
   }, [configProp]);
 
   const showSuccess = (msg: string) => {
@@ -357,6 +373,14 @@ export default function ConfigPage({
                       </Typography.Text>
                     </Flex>
                   </Flex>
+                  {tgEnabled && !configProp?.telegram_configured && (
+                    <Typography.Text
+                      type="warning"
+                      style={{ display: "block", marginBottom: 12 }}
+                    >
+                      Faltan campos para completar la configuración
+                    </Typography.Text>
+                  )}
                   {tgEnabled && (
                     <Space
                       direction="vertical"
@@ -483,6 +507,14 @@ export default function ConfigPage({
                       </Typography.Text>
                     </Flex>
                   </Flex>
+                  {mxEnabled && !configProp?.matrix_configured && (
+                    <Typography.Text
+                      type="warning"
+                      style={{ display: "block", marginBottom: 12 }}
+                    >
+                      Faltan campos para completar la configuración
+                    </Typography.Text>
+                  )}
                   {mxEnabled && (
                     <Space
                       direction="vertical"
@@ -627,6 +659,14 @@ export default function ConfigPage({
                       </Typography.Text>
                     </Flex>
                   </Flex>
+                  {valetEnabled && !configProp?.valet_configured && (
+                    <Typography.Text
+                      type="warning"
+                      style={{ display: "block", marginBottom: 12 }}
+                    >
+                      Faltan campos para completar la configuración
+                    </Typography.Text>
+                  )}
                   {valetEnabled && (
                     <Space
                       direction="vertical"

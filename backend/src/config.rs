@@ -119,13 +119,20 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
         oidc_configured: true,
         port: 3066,
         timezone: crate::timezone::timezone_abbr(),
-        telegram_configured: s.telegram_token.is_some(),
-        telegram_chat_id: s.telegram_chat_id.clone(),
-        matrix_configured: s.matrix_homeserver.is_some(),
-        matrix_homeserver: s.matrix_homeserver.clone(),
-        matrix_room: s.matrix_room.clone(),
+        // A channel is "configured" only when it can actually send: the
+        // conjunction of the fields its notifier requires.
+        telegram_configured: s.telegram_token.is_some() && s.telegram_chat_id.is_some(),
+        matrix_configured: s.matrix_homeserver.is_some()
+            && s.matrix_token.is_some()
+            && s.matrix_room.is_some(),
         webhook_configured: s.webhook_url.is_some(),
         valet_configured: s.valet_url.is_some() && s.valet_token.is_some(),
+        telegram_token_set: s.telegram_token.is_some(),
+        matrix_token_set: s.matrix_token.is_some(),
+        valet_token_set: s.valet_token.is_some(),
+        telegram_chat_id: s.telegram_chat_id.clone(),
+        matrix_homeserver: s.matrix_homeserver.clone(),
+        matrix_room: s.matrix_room.clone(),
         valet_url: s.valet_url.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         build_date: env!("BUILD_DATE").to_string(),
@@ -332,6 +339,105 @@ port: 8080
         assert_eq!(s.telegram_token.as_deref(), Some("keep-me"));
         assert_eq!(s.matrix_token.as_deref(), Some("keep-matrix"));
         assert_eq!(s.valet_token.as_deref(), Some("keep-valet"));
+    }
+
+    // ── `*_configured` mirrors real send capability ──────────
+
+    /// Serialize the handler output once for a given `Settings`.
+    async fn public_config_value(settings: Settings) -> serde_json::Value {
+        let Json(cfg) = config_handler(State(Arc::new(Mutex::new(settings)))).await;
+        serde_json::to_value(&cfg).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_telegram_configured_requires_token_and_chat_id() {
+        // Token only ⇒ not configured, but token_set reflects the stored token.
+        let value = public_config_value(Settings {
+            telegram_token: Some("tg".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["telegram_configured"].as_bool(), Some(false));
+        assert_eq!(value["telegram_token_set"].as_bool(), Some(true));
+
+        // Token + chat_id ⇒ configured.
+        let value = public_config_value(Settings {
+            telegram_token: Some("tg".into()),
+            telegram_chat_id: Some("123".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["telegram_configured"].as_bool(), Some(true));
+        assert_eq!(value["telegram_token_set"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_matrix_configured_requires_homeserver_token_and_room() {
+        // Homeserver only ⇒ not configured.
+        let value = public_config_value(Settings {
+            matrix_homeserver: Some("https://matrix.example".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["matrix_configured"].as_bool(), Some(false));
+        assert_eq!(value["matrix_token_set"].as_bool(), Some(false));
+
+        // Homeserver + token but no room ⇒ not configured, yet token_set=true.
+        let value = public_config_value(Settings {
+            matrix_homeserver: Some("https://matrix.example".into()),
+            matrix_token: Some("mx".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["matrix_configured"].as_bool(), Some(false));
+        assert_eq!(value["matrix_token_set"].as_bool(), Some(true));
+
+        // Complete ⇒ configured.
+        let value = public_config_value(Settings {
+            matrix_homeserver: Some("https://matrix.example".into()),
+            matrix_token: Some("mx".into()),
+            matrix_room: Some("!room:example".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["matrix_configured"].as_bool(), Some(true));
+        assert_eq!(value["matrix_token_set"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_valet_configured_requires_url_and_token() {
+        // URL only ⇒ not configured.
+        let value = public_config_value(Settings {
+            valet_url: Some("https://valet.example".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["valet_configured"].as_bool(), Some(false));
+        assert_eq!(value["valet_token_set"].as_bool(), Some(false));
+
+        // Complete ⇒ configured.
+        let value = public_config_value(Settings {
+            valet_url: Some("https://valet.example".into()),
+            valet_token: Some("val".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["valet_configured"].as_bool(), Some(true));
+        assert_eq!(value["valet_token_set"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_webhook_configured_requires_url() {
+        // URL absent ⇒ not configured.
+        let value = public_config_value(Settings::default()).await;
+        assert_eq!(value["webhook_configured"].as_bool(), Some(false));
+
+        let value = public_config_value(Settings {
+            webhook_url: Some("https://hook.example".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["webhook_configured"].as_bool(), Some(true));
     }
 
     /// `PUT /api/config` with the token set to `""` must delete the stored

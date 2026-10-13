@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
+import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { ConfigProvider } from "antd";
 import ConfigPage from "./ConfigPage";
@@ -26,12 +27,15 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     port: 3066,
     timezone: "UTC",
     telegram_configured: false,
+    telegram_token_set: false,
     telegram_chat_id: null,
     matrix_configured: false,
+    matrix_token_set: false,
     matrix_homeserver: null,
     matrix_room: null,
     webhook_configured: false,
     valet_configured: false,
+    valet_token_set: false,
     valet_url: null,
     version: "0.0.0",
     build_date: "2024-01-01T00:00:00Z",
@@ -620,6 +624,245 @@ describe("ConfigPage — tarjeta Matrix", () => {
     expect(
       within(card).getByLabelText("Access token de Matrix"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ConfigPage — aviso de configuración incompleta", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("Matrix parcial (homeserver sin token): switch activado, campos visibles y aviso", async () => {
+    const config = makeConfig({
+      matrix_configured: false,
+      matrix_token_set: false,
+      matrix_homeserver: "https://matrix.test",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
+    });
+
+    const card = getCard("💬 Matrix");
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Matrix" }),
+    ).toBeChecked();
+    expect(
+      within(card).getByLabelText("Access token de Matrix"),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText("Faltan campos para completar la configuración"),
+    ).toBeInTheDocument();
+  });
+
+  it("Matrix completa (configured=true): no muestra aviso", async () => {
+    const config = makeConfig({
+      matrix_configured: true,
+      matrix_homeserver: "https://matrix.test",
+      matrix_room: "!room:matrix.test",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
+    });
+
+    const card = getCard("💬 Matrix");
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Matrix" }),
+    ).toBeChecked();
+    expect(
+      within(card).queryByText("Faltan campos para completar la configuración"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("token guardado sin canal completo (token_set=true, configured=false): switch activado y aviso", async () => {
+    const config = makeConfig({
+      matrix_configured: false,
+      matrix_token_set: true,
+      matrix_homeserver: null,
+      matrix_room: null,
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
+    });
+
+    const card = getCard("💬 Matrix");
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Matrix" }),
+    ).toBeChecked();
+    expect(
+      within(card).getByText("Faltan campos para completar la configuración"),
+    ).toBeInTheDocument();
+  });
+
+  it("Telegram parcial (chat_id sin token): switch activado y aviso", async () => {
+    const config = makeConfig({
+      telegram_configured: false,
+      telegram_token_set: false,
+      telegram_chat_id: "-100123",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Telegram" }),
+    ).toBeChecked();
+    expect(
+      within(card).getByText("Faltan campos para completar la configuración"),
+    ).toBeInTheDocument();
+  });
+
+  it("Valet parcial (url sin token): switch activado y aviso", async () => {
+    const config = makeConfig({
+      valet_configured: false,
+      valet_token_set: false,
+      valet_url: "https://valet.test",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("🪐 Valet")).toBeInTheDocument();
+    });
+
+    const card = getValetCard();
+
+    expect(
+      within(card).getByRole("switch", { name: "Activar Valet" }),
+    ).toBeChecked();
+    expect(
+      within(card).getByText("Faltan campos para completar la configuración"),
+    ).toBeInTheDocument();
+  });
+
+  it("activar manualmente un canal totalmente vacío: switch on, campos visibles y aviso", async () => {
+    // Canal sin campos y sin configurar: el aviso debe aparecer al activarlo.
+    const config = makeConfig();
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
+    });
+
+    const card = getCard("💬 Matrix");
+
+    const switchEl = within(card).getByRole("switch", {
+      name: "Activar Matrix",
+    });
+    expect(switchEl).not.toBeChecked();
+
+    fireEvent.click(switchEl);
+
+    await waitFor(() => {
+      expect(
+        within(card).getByRole("switch", { name: "Activar Matrix" }),
+      ).toBeChecked();
+    });
+    expect(
+      within(card).getByLabelText("Access token de Matrix"),
+    ).toBeInTheDocument();
+    expect(
+      within(card).getByText("Faltan campos para completar la configuración"),
+    ).toBeInTheDocument();
+  });
+
+  it("el aviso desaparece tras un guardado que devuelve configured=true", async () => {
+    const initial = makeConfig({ matrix_homeserver: "https://matrix.test" });
+    const saved = makeConfig({
+      matrix_configured: true,
+      matrix_homeserver: "https://matrix.test",
+      matrix_room: "!room:matrix.test",
+    });
+
+    // Mount-time requests plus a PUT /api/config that returns a fully
+    // configured channel (like the real backend after a complete save).
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      if (url === "/api/update-check/config") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "0 */6 * * *",
+              enabled: false,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/config" && method === "PUT") {
+        return Promise.resolve(new Response(JSON.stringify(saved)));
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    // Stateful harness so setConfig (called by the page on save) feeds the new
+    // config back through the `config` prop, as App.tsx does.
+    function Harness() {
+      const [cfg, setCfg] = useState<AppConfig>(initial);
+      return (
+        <ConfigPage
+          config={cfg}
+          setConfig={setCfg}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      );
+    }
+
+    render(
+      <Wrapper>
+        <Harness />
+      </Wrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
+    });
+
+    expect(
+      within(getCard("💬 Matrix")).getByText(
+        "Faltan campos para completar la configuración",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      within(getCard("💬 Matrix")).getByRole("button", {
+        name: /guardar matrix/i,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        within(getCard("💬 Matrix")).queryByText(
+          "Faltan campos para completar la configuración",
+        ),
+      ).not.toBeInTheDocument();
+    });
   });
 });
 
