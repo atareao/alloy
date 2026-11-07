@@ -1,3 +1,7 @@
+// Los handlers axum devuelven `Result<T, Response>` por diseño (Response = 128 bytes).
+// Boxear el error rompería el contrato `IntoResponse`; es el patrón habitual en apps axum.
+#![allow(clippy::result_large_err)]
+
 mod admin;
 mod auth;
 mod config;
