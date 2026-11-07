@@ -1,4 +1,14 @@
 # Changelog
+## [0.23.9] - 2026-11-07
+
+### Bug Fixes
+
+- *(deps)* Parchear dependencias transitivas vulnerables (Dependabot)
+- *(backend)* Permitir clippy::result_large_err en handlers axum
+
+### Documentation
+
+- *(openspec)* Archivar change clippy-result-large-err
 ## [0.23.8] - 2026-10-12
 
 ### Bug Fixes
@@ -13,6 +23,10 @@
 ### Features
 
 - *(realtime)* SSE-first con stream único /api/stream
+
+### Miscellaneous Tasks
+
+- Release v0.23.8
 ## [0.23.7] - 2026-09-30
 
 ### Bug Fixes
