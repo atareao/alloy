@@ -8,7 +8,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run tests
@@ -21,17 +21,31 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Check Node version consistency
+        run: |
+          PKG_MAJOR=$(grep -oE '"node"[[:space:]]*:[[:space:]]*"\^?[0-9]+' frontend/package.json | grep -oE '[0-9]+$')
+          DOCKER_MAJOR=$(grep -oE '^FROM .*node:[0-9]+' Dockerfile | grep -oE '[0-9]+$')
+          echo "package.json engines.node major: $PKG_MAJOR"
+          echo "Dockerfile node major: $DOCKER_MAJOR"
+          if [ -z "$PKG_MAJOR" ] || [ -z "$DOCKER_MAJOR" ]; then
+            echo "::error::No se pudo determinar el major de Node en package.json o Dockerfile"
+            exit 1
+          fi
+          if [ "$PKG_MAJOR" != "$DOCKER_MAJOR" ]; then
+            echo "::error::Node desalineado: package.json=$PKG_MAJOR Dockerfile=$DOCKER_MAJOR"
+            exit 1
+          fi
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v5
         with:
           # Sin `version`: la toma de `packageManager` en frontend/package.json
           package_json_file: frontend/package.json
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          # Igual que el stage `frontend-builder` del Dockerfile
-          node-version: 23
+          # Fuente única de verdad: engines.node de frontend/package.json
+          node-version-file: frontend/package.json
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install dependencies

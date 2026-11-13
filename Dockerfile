@@ -27,7 +27,7 @@ RUN touch src/main.rs && \
 # ═══════════════════════════════════════════════════════════════
 # Stage 2: Frontend (pnpm)
 # ═══════════════════════════════════════════════════════════════
-FROM docker.io/library/node:23-alpine AS frontend-builder
+FROM docker.io/library/node:24-alpine AS frontend-builder
 
 RUN npm install -g pnpm@11.21.0
 
