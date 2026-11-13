@@ -33,8 +33,8 @@
 
 ## 5. Cierre
 
-- [ ] 5.1 Actualizar el spec vivo `openspec/specs/security/dependency-hygiene/spec.md` vía `openspec archive pnpm-single-package-manager --yes`.
-- [ ] 5.2 Verificar que `openspec/changes/pnpm-single-package-manager/` fue eliminado; si no, `rm -rf`.
+- [x] 5.1 Actualizar el spec vivo `openspec/specs/security/dependency-hygiene/spec.md` vía `openspec archive pnpm-single-package-manager --yes`.
+- [x] 5.2 Verificar que `openspec/changes/pnpm-single-package-manager/` fue eliminado; si no, `rm -rf`.
 - [ ] 5.3 Verificar tras el merge que Dependabot sigue versionando el ecosistema `npm` de `/frontend` contra `pnpm-lock.yaml` (ver `docs/security-dependencies.md`).
 - [x] 5.4 Documentar el cambio en `docs/` y registrar el follow-up del job de frontend en CI.
-- [ ] 5.5 Corregir a mano el `## Purpose` del spec vivo `security/dependency-hygiene`: el archive no lo reescribe y aún menciona `frontend/package-lock.json`.
+- [x] 5.5 Corregir a mano el `## Purpose` del spec vivo `security/dependency-hygiene`: el archive no lo reescribe y aún menciona `frontend/package-lock.json`.
