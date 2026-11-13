@@ -30,11 +30,10 @@
 - [x] 4.2 `actionlint` sin issues **nuevos** en los 3 workflows (quedan 2 `SC2086` info
       preexistentes en `release.yml`, ajenos al cambio).
 - [x] 4.3 Simular el guard en local (extraer ambos majors y compararlos).
-- [ ] 4.4 PR: el job `frontend` (con setup-node desde `engines.node`) y el job `test` en verde.
-- [ ] 4.5 Verificar el pipeline de release con las actions nuevas. Nota: `gh workflow run` sobre un
-      tag existente usa la versión **antigua** del workflow, así que no sirve. Opciones: (a) tag de
-      pre-release desechable sobre el commit de merge y borrarlo después, o (b) esperar al siguiente
-      release real. Decidir con el usuario.
+- [x] 4.4 PR: el job `frontend` (con setup-node desde `engines.node`) y el job `test` en verde.
+- [ ] 4.5 **(post-merge)** Verificar el pipeline de release con las actions nuevas en el
+      release real `develop→main` (v0.24.1): workflows *Prepare Release* y *Release* en verde y
+      sin warnings de Node 20.
 
 ## 5. Documentación y cierre
 
