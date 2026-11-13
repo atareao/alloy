@@ -1,4 +1,13 @@
 # Changelog
+## [0.24.1] - 2026-11-13
+
+### Documentation
+
+- *(openspec)* Archiva change ci-node-24
+
+### Miscellaneous Tasks
+
+- *(toolchain)* Actions a Node 24 y Node unificado en la LTS 24
 ## [0.24.0] - 2026-11-13
 
 ### Bug Fixes
@@ -40,6 +49,7 @@
 - Corrige la rama objetivo de los PR (development → develop)
 - Verifica el frontend en cada PR
 - *(release)* Dispara Release con PAT y elimina el dispatch roto
+- Release v0.24.0
 
 ### Performance
 
