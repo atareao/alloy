@@ -42,11 +42,15 @@ producción:
 | Qué | Dónde | Valor |
 |---|---|---|
 | Versión de pnpm | `frontend/package.json` → `packageManager` | `pnpm@11.21.0` |
-| Versión de Node | `.github/workflows/ci.yml` → `node-version` | `23` (= `node:23-alpine` del `Dockerfile`) |
+| Versión de Node | `frontend/package.json` → `engines.node` | `^24` (= `node:24-alpine` del `Dockerfile`) |
 
-El workflow **no** declara la versión de pnpm: `pnpm/action-setup@v4` la resuelve desde
+El workflow **no** declara la versión de pnpm: `pnpm/action-setup@v5` la resuelve desde
 `packageManager` (con `package_json_file: frontend/package.json`, porque el manifest no está en la
 raíz). Quien bumpee el gestor solo tiene que tocar `frontend/package.json`.
+
+Tampoco declara la versión de Node: `actions/setup-node@v5` la lee con
+`node-version-file: frontend/package.json` (`engines.node`). El tag del `Dockerfile` sigue siendo
+una declaración aparte, y un guard en CI (`Check Node version consistency`) falla si divergen.
 
 ## Cómo habilitar / desplegar
 
@@ -69,7 +73,8 @@ cd frontend && pnpm install --frozen-lockfile \
 - **`pnpm/action-setup@v4` sin `version`** (D2): el pin vive solo en `packageManager`, que es
   justo el campo que introdujo `pnpm-single-package-manager`. Declarar la versión en el workflow
   la duplicaría.
-- **Node 23** (D3): paridad con el `Dockerfile`, no modernidad del runtime.
+- **Node 24** (D3, revisado en `ci-node-24`): LTS vigente, con `engines.node` como fuente única
+  y un guard que la mantiene alineada con el `Dockerfile`.
 - **Sin `pnpm audit`**: depende de la base de avisos en red; bloquearía PRs por un advisory nuevo
   ajeno al cambio. La higiene de dependencias la cubren Dependabot y
   `security/dependency-hygiene`.
@@ -79,12 +84,11 @@ cd frontend && pnpm install --frozen-lockfile \
 
 ## Follow-ups
 
-- **Las actions apuntan a Node 20, deprecado.** `actions/checkout@v4`, `actions/setup-node@v4`
-  y `pnpm/action-setup@v4` targetean Node 20 y el runner las fuerza a Node 24, con un warning en
-  cada ejecución. Actualizar a las versiones que targeteen Node 24.
-- **Node 23 está EOL** (fue release non-LTS) y el entorno local usa `24.22.1`. Hay tres versiones
-  en juego y ninguna es una LTS soportada. Unificar en la LTS vigente con una **fuente única de
-  verdad** (`engines` en `package.json` + `node-version-file` en CI + tag del `Dockerfile`).
+- ~~**Las actions apuntan a Node 20, deprecado.**~~ **Resuelto** en `ci-node-24`: actions a las
+  versiones con Node 24.
+- ~~**Node 23 está EOL** ... unificar en la LTS vigente con una fuente única de verdad.~~
+  **Resuelto** en `ci-node-24`: `engines.node: ^24` como fuente única, `node-version-file` en CI,
+  `node:24-alpine` en el `Dockerfile` y guard de consistencia. Ver `docs/ci-node-24.md`.
 - **`release-prepare.yml` falla en `main`** (`gh run list` lo muestra en rojo). No lo introduce
   este cambio y no se ha investigado.
 - **Tests de integración de `containers`**: dependen de un socket Podman y de contenedores
