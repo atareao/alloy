@@ -1,4 +1,9 @@
 # Changelog
+## [0.23.10] - 2026-11-13
+
+### Documentation
+
+- Añado licencia MIT
 ## [0.23.9] - 2026-11-07
 
 ### Bug Fixes
@@ -9,6 +14,10 @@
 ### Documentation
 
 - *(openspec)* Archivar change clippy-result-large-err
+
+### Miscellaneous Tasks
+
+- Release v0.23.9
 ## [0.23.8] - 2026-10-12
 
 ### Bug Fixes
