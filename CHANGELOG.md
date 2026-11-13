@@ -1,9 +1,58 @@
 # Changelog
+## [0.24.0] - 2026-11-13
+
+### Bug Fixes
+
+- *(notifications)* El indicador "configurado" refleja la capacidad real de envío
+- *(build)* Identidad UID/GID configurable en build y runtime
+
+### Documentation
+
+- *(openspec)* Archivar change valet-notifier
+- *(openspec)* Archivar change valet-a11y
+- *(openspec)* Archivar change notify-fanout-lock
+- *(openspec)* Archivar change redact-notification-secrets
+- *(openspec)* Archivar change redact-export-secrets
+- *(openspec)* Archivar change notification-cards-a11y
+- *(openspec)* Archivar change notify-configured-consistency
+- Adelgaza AGENTS.md y extrae arquitectura/referencia a docs/
+- *(openspec)* Archiva el change pnpm-single-package-manager
+- Documenta la verificación del frontend en CI
+- *(openspec)* Archiva el change frontend-ci-verification
+- *(openspec)* Archiva change telegram-topic-id
+
+### Features
+
+- *(notifications)* Notificador Valet (ingesta + tarjeta de configuración)
+- Merge feature/valet-notifier into develop
+- *(ui)* Nombre accesible en los controles de la tarjeta Valet
+- Merge feature/valet-a11y into develop
+- Merge feature/notify-fanout-lock into develop
+- Merge feature/redact-notification-secrets into develop
+- Merge feature/redact-export-secrets into develop
+- Merge feature/notification-cards-a11y into develop
+- Merge feature/notify-configured-consistency into develop
+- *(notifications)* Soporte de Topic ID en Telegram
+
+### Miscellaneous Tasks
+
+- *(release)* Bump con gitmoji, trigger con token válido, sync a develop y quitar publish roto
+- Corrige la rama objetivo de los PR (development → develop)
+- Verifica el frontend en cada PR
+- *(release)* Dispara Release con PAT y elimina el dispatch roto
+
+### Performance
+
+- *(notifications)* No retener el lock de Settings durante el fan-out
 ## [0.23.10] - 2026-11-13
 
 ### Documentation
 
 - Añado licencia MIT
+
+### Miscellaneous Tasks
+
+- Release v0.23.10
 ## [0.23.9] - 2026-11-07
 
 ### Bug Fixes
