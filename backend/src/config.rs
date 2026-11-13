@@ -131,6 +131,7 @@ async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<Pu
         matrix_token_set: s.matrix_token.is_some(),
         valet_token_set: s.valet_token.is_some(),
         telegram_chat_id: s.telegram_chat_id.clone(),
+        telegram_topic_id: s.telegram_topic_id.clone(),
         matrix_homeserver: s.matrix_homeserver.clone(),
         matrix_room: s.matrix_room.clone(),
         valet_url: s.valet_url.clone(),
@@ -159,6 +160,16 @@ async fn update_config_h(
                 s.telegram_chat_id = None;
             } else {
                 s.telegram_chat_id = Some(v);
+            }
+        }
+        // Absent ⇒ preserve the stored topic; empty/blank ⇒ clear it; otherwise
+        // store the `trim`med value so stray spaces never reach Telegram.
+        if let Some(v) = body.telegram_topic_id {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                s.telegram_topic_id = None;
+            } else {
+                s.telegram_topic_id = Some(trimmed.to_string());
             }
         }
         if let Some(v) = body.matrix_homeserver {
@@ -325,6 +336,7 @@ port: 8080
         let body = UpdateSettingsReq {
             telegram_token: None,
             telegram_chat_id: Some("chat".into()),
+            telegram_topic_id: None,
             matrix_homeserver: None,
             matrix_token: None,
             matrix_room: None,
@@ -455,6 +467,7 @@ port: 8080
         let body = UpdateSettingsReq {
             telegram_token: Some(String::new()),
             telegram_chat_id: None,
+            telegram_topic_id: None,
             matrix_homeserver: None,
             matrix_token: Some(String::new()),
             matrix_room: None,
@@ -469,5 +482,178 @@ port: 8080
         assert!(s.telegram_token.is_none());
         assert!(s.matrix_token.is_none());
         assert!(s.valet_token.is_none());
+    }
+
+    // ── telegram_topic_id via GET/PUT /api/config ────────────
+    // (change: telegram-topic-id)
+
+    /// Build a `PUT /api/config` body that only carries `telegram_topic_id`,
+    /// mirroring a UI that sends just the field that changed. `None` models the
+    /// field being **absent** from the JSON payload.
+    fn update_req_topic(telegram_topic_id: Option<String>) -> UpdateSettingsReq {
+        UpdateSettingsReq {
+            telegram_token: None,
+            telegram_chat_id: None,
+            matrix_homeserver: None,
+            matrix_token: None,
+            matrix_room: None,
+            webhook_url: None,
+            valet_url: None,
+            valet_token: None,
+            telegram_topic_id,
+        }
+    }
+
+    /// Scenario: Guardar un topic.
+    /// `PUT` with `"42"` stores it and `GET` echoes it back.
+    #[tokio::test]
+    async fn test_update_config_saves_telegram_topic_id() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("tg".into()),
+            telegram_chat_id: Some("123".into()),
+            ..Default::default()
+        }));
+
+        let Json(cfg) = update_config_h(
+            State(settings.clone()),
+            State(db_pool),
+            Json(update_req_topic(Some("42".into()))),
+        )
+        .await;
+
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["telegram_topic_id"], "42");
+
+        let s = settings.lock().await;
+        assert_eq!(s.telegram_topic_id.as_deref(), Some("42"));
+    }
+
+    /// The stored value is normalized with `trim` (D4).
+    #[tokio::test]
+    async fn test_update_config_trims_telegram_topic_id() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+
+        let Json(cfg) = update_config_h(
+            State(settings.clone()),
+            State(db_pool),
+            Json(update_req_topic(Some("  42  ".into()))),
+        )
+        .await;
+
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["telegram_topic_id"], "42");
+
+        let s = settings.lock().await;
+        assert_eq!(s.telegram_topic_id.as_deref(), Some("42"));
+    }
+
+    /// Scenario: Desactivar el topic. `""` ⇒ `None` y `GET` devuelve `null`.
+    #[tokio::test]
+    async fn test_update_config_clears_telegram_topic_id_when_empty() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        }));
+
+        let Json(cfg) = update_config_h(
+            State(settings.clone()),
+            State(db_pool),
+            Json(update_req_topic(Some(String::new()))),
+        )
+        .await;
+
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["telegram_topic_id"], serde_json::Value::Null);
+
+        let s = settings.lock().await;
+        assert_eq!(s.telegram_topic_id, None);
+    }
+
+    /// A whitespace-only value is treated as "disabled", not as a topic.
+    #[tokio::test]
+    async fn test_update_config_clears_telegram_topic_id_when_blank() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        }));
+
+        let _ = update_config_h(
+            State(settings.clone()),
+            State(db_pool),
+            Json(update_req_topic(Some("   ".into()))),
+        )
+        .await;
+
+        let s = settings.lock().await;
+        assert_eq!(s.telegram_topic_id, None);
+    }
+
+    /// Scenario: Campo ausente lo conserva.
+    #[tokio::test]
+    async fn test_update_config_preserves_telegram_topic_id_when_absent() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        }));
+
+        let Json(cfg) = update_config_h(
+            State(settings.clone()),
+            State(db_pool),
+            Json(update_req_topic(None)),
+        )
+        .await;
+
+        let value = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(value["telegram_topic_id"], "42");
+
+        let s = settings.lock().await;
+        assert_eq!(s.telegram_topic_id.as_deref(), Some("42"));
+    }
+
+    /// `GET /api/config` exposes the stored topic for the UI to preload it, and
+    /// `null` when nothing is configured.
+    #[tokio::test]
+    async fn test_config_handler_exposes_telegram_topic_id() {
+        let value = public_config_value(Settings {
+            telegram_token: Some("tg".into()),
+            telegram_chat_id: Some("123".into()),
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["telegram_topic_id"], "42");
+
+        let value = public_config_value(Settings::default()).await;
+        assert!(
+            value["telegram_topic_id"].is_null(),
+            "sin topic el campo debe ser null: {value}"
+        );
+    }
+
+    /// The topic must NOT alter `telegram_configured`, which stays
+    /// `telegram_token ∧ telegram_chat_id`.
+    #[tokio::test]
+    async fn test_telegram_configured_ignores_topic_id() {
+        let value = public_config_value(Settings {
+            telegram_token: Some("tg".into()),
+            telegram_chat_id: Some("123".into()),
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["telegram_configured"].as_bool(), Some(true));
+
+        // Topic alone (no token/chat_id) is not a configured channel.
+        let value = public_config_value(Settings {
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(value["telegram_configured"].as_bool(), Some(false));
     }
 }

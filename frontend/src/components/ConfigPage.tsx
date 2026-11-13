@@ -54,6 +54,7 @@ export default function ConfigPage({
   // Telegram
   const [tgToken, setTgToken] = useState("");
   const [tgChatId, setTgChatId] = useState("");
+  const [tgTopicId, setTgTopicId] = useState("");
   const [tgEnabled, setTgEnabled] = useState(false);
 
   // Matrix
@@ -116,6 +117,7 @@ export default function ConfigPage({
     // means "keep the stored token".
     setTgToken("");
     setTgChatId(configProp.telegram_chat_id || "");
+    setTgTopicId(configProp.telegram_topic_id || "");
     // A partial config stays editable: enable the switch if the channel is
     // fully configured, if a token is stored, or if any non-secret field is
     // present. The "incomplete" warning below covers the misleading case.
@@ -153,11 +155,15 @@ export default function ConfigPage({
     try {
       const body: Record<string, string | null> = {
         telegram_chat_id: tgChatId || null,
+        // Empty string means "delete the stored topic"; null would mean
+        // "keep current" (field absent) on the backend.
+        telegram_topic_id: tgTopicId.trim() || "",
       };
       if (!tgEnabled) {
         // Channel off ⇒ send "" so the backend deletes the stored token.
         body.telegram_token = "";
         body.telegram_chat_id = "";
+        body.telegram_topic_id = "";
       } else if (tgToken.trim()) {
         // Only send when a new token was typed; empty (or blank) means
         // "keep current".
@@ -173,6 +179,7 @@ export default function ConfigPage({
         setConfigProp(data);
         setTgToken("");
         setTgChatId(data.telegram_chat_id || "");
+        setTgTopicId(data.telegram_topic_id || "");
         showSuccess(
           tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado",
         );
@@ -426,6 +433,28 @@ export default function ConfigPage({
                           placeholder="-1001234567890"
                           value={tgChatId}
                           onChange={(e) => setTgChatId(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Topic ID</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          ID del topic del foro (opcional, para supergrupos)
+                        </Typography.Text>
+                        <Input
+                          aria-label="Topic ID (opcional)"
+                          placeholder="42"
+                          inputMode="numeric"
+                          value={tgTopicId}
+                          onChange={(e) =>
+                            setTgTopicId(e.target.value.replace(/\D/g, ""))
+                          }
                         />
                       </Space>
                     </Space>
