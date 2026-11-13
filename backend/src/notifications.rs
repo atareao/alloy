@@ -13,6 +13,33 @@ fn tg_chat_id(settings: &Settings) -> Option<&str> {
     settings.telegram_chat_id.as_deref()
 }
 
+/// Resolve the Telegram forum topic (message thread) from settings.
+///
+/// Absent, empty or blank ⇒ `Ok(None)` (notifications go to the general topic).
+/// A numeric value (surrounding whitespace ignored) ⇒ `Ok(Some(id))`.
+/// Anything else is a hard error: posting to *General* by accident would be
+/// silently wrong, so the caller fails fast instead.
+fn tg_topic_id(settings: &Settings) -> Result<Option<i64>, String> {
+    match settings.telegram_topic_id.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) => raw
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("Telegram: topic inválido '{raw}': debe ser un número entero")),
+    }
+}
+
+/// Build the `sendMessage` body. Without a topic the body is byte-for-byte the
+/// legacy one; with a topic `message_thread_id` is added as a **number** (the
+/// Telegram API rejects a string there).
+fn telegram_payload(chat_id: &str, text: String, topic: Option<i64>) -> serde_json::Value {
+    let mut body = serde_json::json!({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"});
+    if let Some(thread_id) = topic {
+        body["message_thread_id"] = serde_json::json!(thread_id);
+    }
+    body
+}
+
 fn mx_homeserver(settings: &Settings) -> Option<&str> {
     settings.matrix_homeserver.as_deref()
 }
@@ -34,7 +61,15 @@ pub async fn notify_telegram(
     let (Some(token), Some(chat_id)) = (tg_token(settings), tg_chat_id(settings)) else {
         return Err("Telegram no configurado: falta token o chat_id".into());
     };
-    let body = serde_json::json!({"chat_id": chat_id, "text": format!("🪐 *Alloy*\n*{}*: {}", container, status), "parse_mode": "Markdown"});
+    let topic = match tg_topic_id(settings) {
+        Ok(topic) => topic,
+        Err(err) => {
+            tracing::error!("{}", err);
+            return Err(err);
+        }
+    };
+    let text = format!("🪐 *Alloy*\n*{}*: {}", container, status);
+    let body = telegram_payload(chat_id, text, topic);
     match http_client()
         .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
         .json(&body)
@@ -348,6 +383,16 @@ mod tests {
             matrix_homeserver: Some(hs.into()),
             matrix_token: Some(token.into()),
             matrix_room: Some(room.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Telegram channel plus a configured topic (change: telegram-topic-id).
+    fn settings_with_tg_topic(topic: &str) -> Settings {
+        Settings {
+            telegram_token: Some("token".into()),
+            telegram_chat_id: Some("chat".into()),
+            telegram_topic_id: Some(topic.into()),
             ..Default::default()
         }
     }
@@ -720,5 +765,94 @@ mod tests {
         let _ = fanout.await;
         server.abort();
         let _ = server.await;
+    }
+
+    // ── telegram_topic_id (change: telegram-topic-id) ───────
+
+    // GREEN contract pinned by these tests:
+    //   fn tg_topic_id(settings: &Settings) -> Result<Option<i64>, String>
+    //   fn telegram_payload(chat_id: &str, text: String, topic: Option<i64>) -> serde_json::Value
+
+    // ── tg_topic_id ─────────────────────────────────────────
+
+    /// No topic configured ⇒ `Ok(None)`: the `message_thread_id` key is omitted.
+    #[test]
+    fn test_tg_topic_id_absent_is_ok_none() {
+        assert_eq!(tg_topic_id(&settings_with_tg("tok", "chat")), Ok(None));
+    }
+
+    #[test]
+    fn test_tg_topic_id_valid_is_ok_some() {
+        assert_eq!(tg_topic_id(&settings_with_tg_topic("42")), Ok(Some(42)));
+    }
+
+    /// The value is `trim`med before parsing, so stray spaces are still valid.
+    #[test]
+    fn test_tg_topic_id_whitespace_wrapped_is_ok_some() {
+        assert_eq!(tg_topic_id(&settings_with_tg_topic("  42  ")), Ok(Some(42)));
+    }
+
+    /// Scenario: Topic inválido (D3). A non-numeric topic is a hard error, so
+    /// `notify_telegram` fails fast instead of silently posting to *General*.
+    #[test]
+    fn test_tg_topic_id_non_numeric_is_err() {
+        let err = tg_topic_id(&settings_with_tg_topic("abc")).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("topic"),
+            "el error debe identificar el topic inválido: {err}"
+        );
+    }
+
+    // ── telegram_payload ────────────────────────────────────
+
+    /// Scenario: Sin topic configurado — the body must be byte-for-byte the
+    /// legacy body (no `message_thread_id` key at all).
+    #[test]
+    fn test_telegram_payload_without_topic_is_legacy_body() {
+        let body = telegram_payload("-100123", "hola".into(), None);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "chat_id": "-100123",
+                "text": "hola",
+                "parse_mode": "Markdown",
+            })
+        );
+        assert!(
+            body.get("message_thread_id").is_none(),
+            "sin topic la clave message_thread_id no debe aparecer: {body}"
+        );
+    }
+
+    /// Scenario: Envío a un topic concreto — `message_thread_id` must be a
+    /// **number** (the Telegram API rejects a string here).
+    #[test]
+    fn test_telegram_payload_with_topic_has_numeric_thread_id() {
+        let body = telegram_payload("-100123", "hola".into(), Some(42));
+        assert_eq!(body["message_thread_id"], serde_json::json!(42));
+        assert!(
+            body["message_thread_id"].is_i64(),
+            "message_thread_id debe ser numérico, no string: {body}"
+        );
+        // The rest of the body is untouched.
+        assert_eq!(body["chat_id"], "-100123");
+        assert_eq!(body["text"], "hola");
+        assert_eq!(body["parse_mode"], "Markdown");
+    }
+
+    // ── notify_telegram con topic inválido ──────────────────
+
+    /// Scenario: Topic inválido — `notify_telegram` returns `Err` **without**
+    /// emitting the HTTP request. The error is the topic error (a failed HTTP
+    /// round-trip would instead surface as a transport error), which is what
+    /// makes this assertion meaningful without a network mock.
+    #[tokio::test]
+    async fn test_notify_telegram_invalid_topic_returns_err_without_http() {
+        let s = settings_with_tg_topic("abc");
+        let err = notify_telegram(&s, "test", "running").await.unwrap_err();
+        assert!(
+            err.to_lowercase().contains("topic"),
+            "topic inválido ⇒ Err antes de emitir HTTP (no un error de red): {err}"
+        );
     }
 }

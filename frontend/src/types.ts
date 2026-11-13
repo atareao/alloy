@@ -47,6 +47,7 @@ export interface AppConfig {
   telegram_configured: boolean;
   telegram_token_set: boolean;
   telegram_chat_id: string | null;
+  telegram_topic_id: string | null;
   matrix_configured: boolean;
   matrix_token_set: boolean;
   matrix_homeserver: string | null;

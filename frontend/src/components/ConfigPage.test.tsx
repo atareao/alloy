@@ -29,6 +29,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     telegram_configured: false,
     telegram_token_set: false,
     telegram_chat_id: null,
+    telegram_topic_id: null,
     matrix_configured: false,
     matrix_token_set: false,
     matrix_homeserver: null,
@@ -493,6 +494,142 @@ describe("ConfigPage — tarjeta Telegram", () => {
     expect(
       within(card).getByLabelText("Token del bot de Telegram"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ConfigPage — tarjeta Telegram: Topic ID (opcional)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("precarga el campo Topic ID con el valor guardado", async () => {
+    const config = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100123",
+      telegram_topic_id: "42",
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+    const topicInput = within(card).getByLabelText(/topic id/i);
+    expect(topicInput).toHaveValue("42");
+  });
+
+  it("incluye telegram_topic_id en el PUT al guardar la tarjeta Telegram", async () => {
+    const config = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100123",
+      telegram_topic_id: "42",
+    });
+    const { calls } = renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+
+    fireEvent.click(
+      within(card).getByRole("button", { name: /guardar telegram/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({
+        telegram_chat_id: "-100123",
+        telegram_topic_id: "42",
+      });
+    });
+  });
+
+  it("envía telegram_topic_id vacío al guardar con el switch apagado", async () => {
+    const config = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100123",
+      telegram_topic_id: "42",
+    });
+    const { calls } = renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+
+    // Apagar el switch
+    fireEvent.click(within(card).getByRole("switch"));
+
+    fireEvent.click(
+      within(card).getByRole("button", { name: /guardar telegram/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ telegram_topic_id: "" });
+    });
+  });
+
+  it("envía telegram_topic_id vacío cuando el campo queda vacío (borra el topic)", async () => {
+    const config = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100123",
+      telegram_topic_id: "42",
+    });
+    const { calls } = renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+
+    fireEvent.change(within(card).getByLabelText(/topic id/i), {
+      target: { value: "   " },
+    });
+
+    fireEvent.click(
+      within(card).getByRole("button", { name: /guardar telegram/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      const body = put!.body as Record<string, unknown>;
+      // "" borra el topic; null sería interpretado como "conservar".
+      expect(body.telegram_topic_id).toBe("");
+    });
+  });
+
+  it("sanea el campo Topic ID para aceptar solo dígitos", async () => {
+    const config = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100123",
+      telegram_topic_id: null,
+    });
+    renderConfigPage(config);
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+    const topicInput = within(card).getByLabelText(/topic id/i);
+
+    fireEvent.change(topicInput, { target: { value: "4a2b-3" } });
+
+    expect(topicInput).toHaveValue("423");
   });
 });
 
