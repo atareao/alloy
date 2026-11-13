@@ -241,7 +241,7 @@ just build
 
 # Or build manually (requires Rust + Node.js)
 cd backend && cargo build --release
-cd frontend && npm install && npm run build
+cd frontend && pnpm install && pnpm run build
 ```
 
 ## Configuration
@@ -390,10 +390,10 @@ just fmt-fix    # cargo fmt
 
 # Manual dev workflow
 cd backend && cargo run     # Run with local config.yaml
-cd frontend && npm run dev  # Vite dev server (hot reload)
+cd frontend && pnpm run dev  # Vite dev server (hot reload)
 
 # Build frontend for production
-cd frontend && npm run build
+cd frontend && pnpm run build
 ```
 
 ### Testing

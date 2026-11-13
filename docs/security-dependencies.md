@@ -8,7 +8,6 @@ aplicación ni de comportamiento.
 
 ## Ficheros implicados
 
-- `frontend/package-lock.json` — lockfile de `npm` (uso local).
 - `frontend/pnpm-lock.yaml` — lockfile de `pnpm` (stage `frontend-builder` del `Dockerfile`).
 - `backend/Cargo.lock` — lockfile de `cargo`.
 
@@ -38,8 +37,8 @@ Ninguna. Sin variables de entorno ni cambios de despliegue.
 ## Cómo verificar
 
 ```bash
-cd frontend && npm audit                    # 0 vulnerabilities
-cd frontend && npx tsc -b && npx vitest run && npm run build
+cd frontend && pnpm audit                   # sin vulnerabilidades abiertas
+cd frontend && pnpm exec tsc -b && pnpm run test && pnpm run build
 cd backend  && cargo test && cargo clippy -- -D warnings
 gh api repos/atareao/alloy/dependabot/alerts --jq '[.[]|select(.state=="open")]|length'  # 0
 ```
@@ -56,4 +55,5 @@ gh api repos/atareao/alloy/dependabot/alerts --jq '[.[]|select(.state=="open")]|
 ## Follow-ups
 
 - Dependabot solo cierra las alertas cuando el fix llega a la rama por defecto (`main`).
-- Valorar unificar en un único gestor de paquetes (hoy conviven `npm` y `pnpm`).
+- ~~Valorar unificar en un único gestor de paquetes (hoy conviven `npm` y `pnpm`).~~
+  **Resuelto** en `pnpm-single-package-manager` (ver `docs/pnpm-single-package-manager.md`).

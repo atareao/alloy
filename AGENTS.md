@@ -29,9 +29,9 @@ El detalle largo de arquitectura, API y stack está en `docs/` (ver la tabla fin
 
 - **Pre-commit obligatorio:** `cd backend && just check` (fmt + clippy vía `.justfile`).
 - **Tests backend:** `cd backend && cargo test`.
-- **Build frontend:** `cd frontend && npm run build`.
-- **Type check:** `npx tsc -b` (**build mode**; el global dice `tsc --noEmit`).
-- Lint/format ya fijados por el global: `cargo clippy -- -D warnings`, `cargo fmt -- --check`, `npm run lint`.
+- **Build frontend:** `cd frontend && pnpm run build`.
+- **Type check:** `pnpm exec tsc -b` (**build mode**; el global dice `tsc --noEmit`).
+- Lint/format ya fijados por el global: `cargo clippy -- -D warnings`, `cargo fmt -- --check`, `pnpm run lint`.
 
 ## 3. Trampas del proyecto (quirks — literal)
 
