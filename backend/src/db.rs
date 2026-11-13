@@ -486,6 +486,10 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .get("telegram_chat_id")
             .cloned()
             .filter(|s| !s.is_empty()),
+        telegram_topic_id: map
+            .get("telegram_topic_id")
+            .cloned()
+            .filter(|s| !s.is_empty()),
         matrix_homeserver: map
             .get("matrix_homeserver")
             .cloned()
@@ -493,6 +497,8 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
         matrix_token: map.get("matrix_token").cloned().filter(|s| !s.is_empty()),
         matrix_room: map.get("matrix_room").cloned().filter(|s| !s.is_empty()),
         webhook_url: map.get("webhook_url").cloned().filter(|s| !s.is_empty()),
+        valet_url: map.get("valet_url").cloned().filter(|s| !s.is_empty()),
+        valet_token: map.get("valet_token").cloned().filter(|s| !s.is_empty()),
         update_check_cron: map
             .get("update_check_cron")
             .cloned()
@@ -522,10 +528,13 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
     let pairs = vec![
         ("telegram_token", settings.telegram_token.clone()),
         ("telegram_chat_id", settings.telegram_chat_id.clone()),
+        ("telegram_topic_id", settings.telegram_topic_id.clone()),
         ("matrix_homeserver", settings.matrix_homeserver.clone()),
         ("matrix_token", settings.matrix_token.clone()),
         ("matrix_room", settings.matrix_room.clone()),
         ("webhook_url", settings.webhook_url.clone()),
+        ("valet_url", settings.valet_url.clone()),
+        ("valet_token", settings.valet_token.clone()),
         ("update_check_cron", settings.update_check_cron.clone()),
         (
             "update_check_enabled",
@@ -849,6 +858,43 @@ mod tests {
         let conn = test_conn();
         let settings = load_settings(&conn).unwrap();
         assert_eq!(settings.telegram_token, None);
+    }
+
+    // ── telegram_topic_id round-trip (change: telegram-topic-id) ───
+
+    /// `save_settings`/`load_settings` must round-trip the Telegram topic like
+    /// any other string key.
+    #[test]
+    fn test_settings_topic_id_save_load_roundtrip() {
+        let conn = test_conn();
+        let settings = Settings {
+            telegram_token: Some("bot123".into()),
+            telegram_chat_id: Some("chat456".into()),
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        };
+        save_settings(&conn, &settings).unwrap();
+
+        let loaded = load_settings(&conn).unwrap();
+        assert_eq!(loaded.telegram_topic_id.as_deref(), Some("42"));
+    }
+
+    /// Persisting `None` must delete the stored key, so a later load yields
+    /// `None` again (same `None ⇒ DELETE` semantics as the rest).
+    #[test]
+    fn test_settings_topic_id_none_deletes_row() {
+        let conn = test_conn();
+        let with_topic = Settings {
+            telegram_topic_id: Some("42".into()),
+            ..Default::default()
+        };
+        save_settings(&conn, &with_topic).unwrap();
+
+        let without_topic = Settings::default();
+        save_settings(&conn, &without_topic).unwrap();
+
+        let loaded = load_settings(&conn).unwrap();
+        assert_eq!(loaded.telegram_topic_id, None);
     }
 
     #[test]

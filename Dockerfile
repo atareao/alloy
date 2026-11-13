@@ -47,9 +47,14 @@ RUN pnpm run build
 # ═══════════════════════════════════════════════════════════════
 FROM alpine:3.23
 
+ARG UID=1000
+ARG GID=1000
+
 RUN apk add --no-cache \
     ca-certificates \
-    && adduser -D -h /app -u 1000 app
+    su-exec \
+    && addgroup -g "$GID" app \
+    && adduser -D -h /app -u "$UID" -G app app
 
 WORKDIR /app
 COPY --from=backend-builder /build/target/release/alloy .
@@ -57,6 +62,9 @@ COPY --from=frontend-builder /build/dist ./dist
 
 RUN mkdir -p /app/data && chown -R app:app /app
 
-USER app
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+ENV PUID=${UID} PGID=${GID}
+USER root
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EXPOSE 3066
 CMD ["./alloy"]

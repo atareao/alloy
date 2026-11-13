@@ -54,6 +54,7 @@ export default function ConfigPage({
   // Telegram
   const [tgToken, setTgToken] = useState("");
   const [tgChatId, setTgChatId] = useState("");
+  const [tgTopicId, setTgTopicId] = useState("");
   const [tgEnabled, setTgEnabled] = useState(false);
 
   // Matrix
@@ -61,6 +62,11 @@ export default function ConfigPage({
   const [mxToken, setMxToken] = useState("");
   const [mxRoom, setMxRoom] = useState("");
   const [mxEnabled, setMxEnabled] = useState(false);
+
+  // Valet
+  const [valetUrl, setValetUrl] = useState("");
+  const [valetToken, setValetToken] = useState("");
+  const [valetEnabled, setValetEnabled] = useState(false);
 
   // Update check cron
   const [ucCron, setUcCron] = useState("0 */6 * * *");
@@ -106,13 +112,36 @@ export default function ConfigPage({
   // Sync from props when config changes (from App.tsx eager fetch)
   useEffect(() => {
     if (!configProp) return;
-    setTgToken(configProp.telegram_token ?? "");
+    // Tokens are never preloaded from the API (they are secret and no longer
+    // returned in clear). The field starts empty; leaving it empty on save
+    // means "keep the stored token".
+    setTgToken("");
     setTgChatId(configProp.telegram_chat_id || "");
-    setTgEnabled(configProp.telegram_configured);
+    setTgTopicId(configProp.telegram_topic_id || "");
+    // A partial config stays editable: enable the switch if the channel is
+    // fully configured, if a token is stored, or if any non-secret field is
+    // present. The "incomplete" warning below covers the misleading case.
+    setTgEnabled(
+      configProp.telegram_configured ||
+        configProp.telegram_token_set ||
+        !!configProp.telegram_chat_id,
+    );
     setMxHomeserver(configProp.matrix_homeserver || "");
-    setMxToken(configProp.matrix_token ?? "");
+    setMxToken("");
     setMxRoom(configProp.matrix_room || "");
-    setMxEnabled(configProp.matrix_configured);
+    setMxEnabled(
+      configProp.matrix_configured ||
+        configProp.matrix_token_set ||
+        !!configProp.matrix_homeserver ||
+        !!configProp.matrix_room,
+    );
+    setValetUrl(configProp.valet_url || "");
+    setValetToken("");
+    setValetEnabled(
+      configProp.valet_configured ||
+        configProp.valet_token_set ||
+        !!configProp.valet_url,
+    );
   }, [configProp]);
 
   const showSuccess = (msg: string) => {
@@ -125,12 +154,20 @@ export default function ConfigPage({
     setError(null);
     try {
       const body: Record<string, string | null> = {
-        telegram_token: tgToken || null,
         telegram_chat_id: tgChatId || null,
+        // Empty string means "delete the stored topic"; null would mean
+        // "keep current" (field absent) on the backend.
+        telegram_topic_id: tgTopicId.trim() || "",
       };
       if (!tgEnabled) {
+        // Channel off ⇒ send "" so the backend deletes the stored token.
         body.telegram_token = "";
         body.telegram_chat_id = "";
+        body.telegram_topic_id = "";
+      } else if (tgToken.trim()) {
+        // Only send when a new token was typed; empty (or blank) means
+        // "keep current".
+        body.telegram_token = tgToken.trim();
       }
       const res = await apiFetch("/api/config", {
         method: "PUT",
@@ -140,8 +177,9 @@ export default function ConfigPage({
       if (res.ok) {
         const data: AppConfig = await res.json();
         setConfigProp(data);
-        setTgToken(data.telegram_token ?? "");
+        setTgToken("");
         setTgChatId(data.telegram_chat_id || "");
+        setTgTopicId(data.telegram_topic_id || "");
         showSuccess(
           tgEnabled ? "✅ Telegram configurado" : "❌ Telegram desactivado",
         );
@@ -160,13 +198,14 @@ export default function ConfigPage({
     try {
       const body: Record<string, string | null> = {
         matrix_homeserver: mxHomeserver || null,
-        matrix_token: mxToken || null,
         matrix_room: mxRoom || null,
       };
       if (!mxEnabled) {
         body.matrix_homeserver = "";
         body.matrix_token = "";
         body.matrix_room = "";
+      } else if (mxToken.trim()) {
+        body.matrix_token = mxToken.trim();
       }
       const res = await apiFetch("/api/config", {
         method: "PUT",
@@ -177,7 +216,7 @@ export default function ConfigPage({
         const data: AppConfig = await res.json();
         setConfigProp(data);
         setMxHomeserver(data.matrix_homeserver || "");
-        setMxToken(data.matrix_token ?? "");
+        setMxToken("");
         setMxRoom(data.matrix_room || "");
         showSuccess(
           mxEnabled ? "✅ Matrix configurado" : "❌ Matrix desactivado",
@@ -187,6 +226,41 @@ export default function ConfigPage({
       }
     } catch {
       setError("Error de conexión al guardar Matrix");
+    }
+    setSaving(null);
+  };
+
+  const saveValet = async () => {
+    setSaving("valet");
+    setError(null);
+    try {
+      const body: Record<string, string | null> = {
+        valet_url: valetUrl || null,
+      };
+      if (!valetEnabled) {
+        body.valet_url = "";
+        body.valet_token = "";
+      } else if (valetToken.trim()) {
+        body.valet_token = valetToken.trim();
+      }
+      const res = await apiFetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        const data: AppConfig = await res.json();
+        setConfigProp(data);
+        setValetUrl(data.valet_url || "");
+        setValetToken("");
+        showSuccess(
+          valetEnabled ? "✅ Valet configurado" : "❌ Valet desactivado",
+        );
+      } else {
+        setError("Error al guardar Valet");
+      }
+    } catch {
+      setError("Error de conexión al guardar Valet");
     }
     setSaving(null);
   };
@@ -297,6 +371,7 @@ export default function ConfigPage({
                     </Typography.Title>
                     <Flex align="center" gap={8}>
                       <Switch
+                        aria-label="Activar Telegram"
                         checked={tgEnabled}
                         onChange={(checked) => setTgEnabled(checked)}
                       />
@@ -305,6 +380,14 @@ export default function ConfigPage({
                       </Typography.Text>
                     </Flex>
                   </Flex>
+                  {tgEnabled && !configProp?.telegram_configured && (
+                    <Typography.Text
+                      type="warning"
+                      style={{ display: "block", marginBottom: 12 }}
+                    >
+                      Faltan campos para completar la configuración
+                    </Typography.Text>
+                  )}
                   {tgEnabled && (
                     <Space
                       direction="vertical"
@@ -324,7 +407,12 @@ export default function ConfigPage({
                           Token que te proporciona @BotFather
                         </Typography.Text>
                         <Input.Password
-                          placeholder="123456:ABC-DEF..."
+                          aria-label="Token del bot de Telegram"
+                          placeholder={
+                            configProp?.telegram_configured
+                              ? "•••• configurado"
+                              : "123456:ABC-DEF..."
+                          }
                           value={tgToken}
                           onChange={(e) => setTgToken(e.target.value)}
                         />
@@ -345,6 +433,28 @@ export default function ConfigPage({
                           placeholder="-1001234567890"
                           value={tgChatId}
                           onChange={(e) => setTgChatId(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Topic ID</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          ID del topic del foro (opcional, para supergrupos)
+                        </Typography.Text>
+                        <Input
+                          aria-label="Topic ID (opcional)"
+                          placeholder="42"
+                          inputMode="numeric"
+                          value={tgTopicId}
+                          onChange={(e) =>
+                            setTgTopicId(e.target.value.replace(/\D/g, ""))
+                          }
                         />
                       </Space>
                     </Space>
@@ -395,15 +505,13 @@ export default function ConfigPage({
                         📤 Test
                       </Button>
                     )}
-                    {tgEnabled && (
-                      <Button
-                        onClick={saveTelegram}
-                        loading={saving === "telegram"}
-                        type="primary"
-                      >
-                        Guardar Telegram
-                      </Button>
-                    )}
+                    <Button
+                      onClick={saveTelegram}
+                      loading={saving === "telegram"}
+                      type="primary"
+                    >
+                      Guardar Telegram
+                    </Button>
                   </Flex>
                 </Card>
 
@@ -419,6 +527,7 @@ export default function ConfigPage({
                     </Typography.Title>
                     <Flex align="center" gap={8}>
                       <Switch
+                        aria-label="Activar Matrix"
                         checked={mxEnabled}
                         onChange={(checked) => setMxEnabled(checked)}
                       />
@@ -427,6 +536,14 @@ export default function ConfigPage({
                       </Typography.Text>
                     </Flex>
                   </Flex>
+                  {mxEnabled && !configProp?.matrix_configured && (
+                    <Typography.Text
+                      type="warning"
+                      style={{ display: "block", marginBottom: 12 }}
+                    >
+                      Faltan campos para completar la configuración
+                    </Typography.Text>
+                  )}
                   {mxEnabled && (
                     <Space
                       direction="vertical"
@@ -464,7 +581,12 @@ export default function ConfigPage({
                           Token de acceso de la cuenta de bot
                         </Typography.Text>
                         <Input.Password
-                          placeholder="syt_..."
+                          aria-label="Access token de Matrix"
+                          placeholder={
+                            configProp?.matrix_configured
+                              ? "•••• configurado"
+                              : "syt_..."
+                          }
                           value={mxToken}
                           onChange={(e) => setMxToken(e.target.value)}
                         />
@@ -535,15 +657,148 @@ export default function ConfigPage({
                         📤 Test
                       </Button>
                     )}
-                    {mxEnabled && (
-                      <Button
-                        onClick={saveMatrix}
-                        loading={saving === "matrix"}
-                        type="primary"
+                    <Button
+                      onClick={saveMatrix}
+                      loading={saving === "matrix"}
+                      type="primary"
+                    >
+                      Guardar Matrix
+                    </Button>
+                  </Flex>
+                </Card>
+
+                {/* ═══ Valet ═══ */}
+                <Card bordered size="small">
+                  <Flex
+                    justify="space-between"
+                    align="center"
+                    style={{ marginBottom: 16 }}
+                  >
+                    <Typography.Title level={4} style={{ margin: 0 }}>
+                      🪐 Valet
+                    </Typography.Title>
+                    <Flex align="center" gap={8}>
+                      <Switch
+                        aria-label="Activar Valet"
+                        checked={valetEnabled}
+                        onChange={(checked) => setValetEnabled(checked)}
+                      />
+                      <Typography.Text>
+                        {valetEnabled ? "Activado" : "Desactivado"}
+                      </Typography.Text>
+                    </Flex>
+                  </Flex>
+                  {valetEnabled && !configProp?.valet_configured && (
+                    <Typography.Text
+                      type="warning"
+                      style={{ display: "block", marginBottom: 12 }}
+                    >
+                      Faltan campos para completar la configuración
+                    </Typography.Text>
+                  )}
+                  {valetEnabled && (
+                    <Space
+                      direction="vertical"
+                      size="middle"
+                      style={{ width: "100%" }}
+                    >
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
                       >
-                        Guardar Matrix
+                        <Typography.Text strong>URL</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Base URL de Valet (sin /api/notifications)
+                        </Typography.Text>
+                        <Input
+                          aria-label="URL de Valet"
+                          placeholder="https://valet.example.com"
+                          value={valetUrl}
+                          onChange={(e) => setValetUrl(e.target.value)}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>Ingest key</Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Ingest key de Valet
+                        </Typography.Text>
+                        <Input.Password
+                          aria-label="Ingest key de Valet"
+                          placeholder={
+                            configProp?.valet_configured
+                              ? "•••• configurado"
+                              : "val_..."
+                          }
+                          value={valetToken}
+                          onChange={(e) => setValetToken(e.target.value)}
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                  <Flex
+                    justify="flex-end"
+                    gap="middle"
+                    style={{ marginTop: 16 }}
+                  >
+                    {valetEnabled && (
+                      <Button
+                        onClick={async () => {
+                          setTesting("valet");
+                          setError(null);
+                          try {
+                            const res = await apiFetch(
+                              "/api/notifications/test",
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: "valet" }),
+                              },
+                            );
+                            setTesting(null);
+                            if (res.ok) {
+                              showSuccess(
+                                "📤 Mensaje de prueba enviado a Valet",
+                              );
+                            } else {
+                              const data = await res
+                                .json()
+                                .catch(() => ({ error: "Error desconocido" }));
+                              setError(
+                                data.error || `Error HTTP ${res.status}`,
+                              );
+                            }
+                          } catch {
+                            setTesting(null);
+                            setError("Error de conexión al enviar test");
+                          }
+                        }}
+                        loading={testing === "valet"}
+                        style={{
+                          borderColor: "var(--ant-color-success)",
+                          color: "var(--ant-color-success)",
+                        }}
+                      >
+                        📤 Test
                       </Button>
                     )}
+                    <Button
+                      onClick={saveValet}
+                      loading={saving === "valet"}
+                      type="primary"
+                    >
+                      Guardar Valet
+                    </Button>
                   </Flex>
                 </Card>
               </Space>
@@ -925,6 +1180,14 @@ export default function ConfigPage({
                   >
                     Exporta alertas, programaciones y ajustes a un archivo JSON.
                     Puedes importarlo después para restaurar la configuración.
+                  </Typography.Text>
+                  <Typography.Text
+                    type="warning"
+                    style={{ display: "block", marginBottom: 16 }}
+                  >
+                    ⚠️ Los tokens de notificación (Telegram, Matrix, Valet) y la
+                    URL del webhook no se exportan por seguridad; deberás
+                    reintroducirlos tras importar.
                   </Typography.Text>
                   <Flex gap="middle">
                     <Button

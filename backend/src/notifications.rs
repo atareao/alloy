@@ -13,6 +13,33 @@ fn tg_chat_id(settings: &Settings) -> Option<&str> {
     settings.telegram_chat_id.as_deref()
 }
 
+/// Resolve the Telegram forum topic (message thread) from settings.
+///
+/// Absent, empty or blank ⇒ `Ok(None)` (notifications go to the general topic).
+/// A numeric value (surrounding whitespace ignored) ⇒ `Ok(Some(id))`.
+/// Anything else is a hard error: posting to *General* by accident would be
+/// silently wrong, so the caller fails fast instead.
+fn tg_topic_id(settings: &Settings) -> Result<Option<i64>, String> {
+    match settings.telegram_topic_id.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) => raw
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|_| format!("Telegram: topic inválido '{raw}': debe ser un número entero")),
+    }
+}
+
+/// Build the `sendMessage` body. Without a topic the body is byte-for-byte the
+/// legacy one; with a topic `message_thread_id` is added as a **number** (the
+/// Telegram API rejects a string there).
+fn telegram_payload(chat_id: &str, text: String, topic: Option<i64>) -> serde_json::Value {
+    let mut body = serde_json::json!({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"});
+    if let Some(thread_id) = topic {
+        body["message_thread_id"] = serde_json::json!(thread_id);
+    }
+    body
+}
+
 fn mx_homeserver(settings: &Settings) -> Option<&str> {
     settings.matrix_homeserver.as_deref()
 }
@@ -34,7 +61,15 @@ pub async fn notify_telegram(
     let (Some(token), Some(chat_id)) = (tg_token(settings), tg_chat_id(settings)) else {
         return Err("Telegram no configurado: falta token o chat_id".into());
     };
-    let body = serde_json::json!({"chat_id": chat_id, "text": format!("🪐 *Alloy*\n*{}*: {}", container, status), "parse_mode": "Markdown"});
+    let topic = match tg_topic_id(settings) {
+        Ok(topic) => topic,
+        Err(err) => {
+            tracing::error!("{}", err);
+            return Err(err);
+        }
+    };
+    let text = format!("🪐 *Alloy*\n*{}*: {}", container, status);
+    let body = telegram_payload(chat_id, text, topic);
     match http_client()
         .post(format!("https://api.telegram.org/bot{}/sendMessage", token))
         .json(&body)
@@ -157,12 +192,117 @@ pub async fn notify_webhook(
 }
 
 pub async fn notify_all(settings: &Arc<Mutex<Settings>>, container: &str, status: &str) {
-    let s = settings.lock().await;
+    notify_all_state(settings, container, status, None).await;
+}
+
+/// Fan-out a container-state notification across all channels, deriving the
+/// Valet `level` from the **raw Docker state** (`raw_state`) when available.
+///
+/// `notify_all` delegates here with `raw_state = None` (⇒ `info`), which is the
+/// correct semantics for message-based notices (updates, stacks, scheduler).
+pub async fn notify_all_state(
+    settings: &Arc<Mutex<Settings>>,
+    container: &str,
+    status: &str,
+    raw_state: Option<&str>,
+) {
+    // Clone the settings and release the `Mutex` guard at the end of this
+    // statement, *before* the network fan-out below. Otherwise a slow channel
+    // (up to the 30 s HTTP client timeout) would keep the lock and block
+    // `GET/PUT /api/config` and the test endpoint.
+    let s = settings.lock().await.clone();
+    let level = valet_level_for(raw_state);
     let _ = tokio::join!(
         notify_telegram(&s, container, status),
         notify_matrix(&s, container, status),
-        notify_webhook(&s, container, status)
+        notify_webhook(&s, container, status),
+        notify_valet(&s, container, status, level)
     );
+}
+
+/// Map a container status to a Valet notification level (deterministic, pure).
+///
+/// - `critical` when the status contains `died`, `dead` or `error`.
+/// - `warning` when it contains `exit` (exited) or `stop` (stopped).
+/// - `info` otherwise.
+pub fn valet_level(status: &str) -> &'static str {
+    let s = status.to_lowercase();
+    if s.contains("died") || s.contains("dead") || s.contains("error") {
+        "critical"
+    } else if s.contains("exit") || s.contains("stop") {
+        "warning"
+    } else {
+        "info"
+    }
+}
+
+/// Derive the Valet `level` from the raw Docker state, if any.
+///
+/// `None` (message-based notices) maps to `info`; `Some(state)` delegates to
+/// [`valet_level`] so the level is computed over the raw state
+/// (`running`/`exited`/`dead`/…) rather than the localized status message.
+pub fn valet_level_for(raw_state: Option<&str>) -> &'static str {
+    match raw_state {
+        Some(state) => valet_level(state),
+        None => "info",
+    }
+}
+
+/// Build the Valet ingest endpoint from a base URL, trimming surrounding
+/// whitespace and trailing slashes.
+pub fn valet_endpoint(base: &str) -> String {
+    format!("{}/api/notifications", base.trim().trim_end_matches('/'))
+}
+
+/// Returns `Ok(())` on success, `Err(message)` on failure.
+pub async fn notify_valet(
+    settings: &Settings,
+    container: &str,
+    status: &str,
+    level: &str,
+) -> Result<(), String> {
+    let (Some(base), Some(token)) = (
+        settings.valet_url.as_deref(),
+        settings.valet_token.as_deref(),
+    ) else {
+        return Err("Valet no configurado: falta URL o token".into());
+    };
+    let body = serde_json::json!({
+        "message": format!("🪐 Alloy: {} → {}", container, status),
+        "origin": "alloy",
+        "author": "alloy",
+        "level": level,
+        "metadata": {
+            "container": container,
+            "status": status,
+            "timestamp": chrono::Utc::now().to_rfc3339()
+        }
+    });
+    match http_client()
+        .post(valet_endpoint(base))
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                tracing::info!("Valet: ✅ notificación enviada");
+                Ok(())
+            } else {
+                let s = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                let err = format!("Valet: HTTP {} - {}", s, text);
+                tracing::error!("{}", err);
+                Err(err)
+            }
+        }
+        Err(e) => {
+            let err = format!("Valet: error de conexión: {}", e);
+            tracing::error!("{}", err);
+            Err(err)
+        }
+    }
 }
 
 // ── Test notification endpoint ──────────────────────────────
@@ -200,8 +340,19 @@ async fn test_notification_h(
                 Err(e) => Err(crate::models::AppError::Internal(e)),
             }
         }
+        "valet" => {
+            let msg = "🧪 Test de notificación desde Alloy — Valet funciona correctamente ✅";
+            match notify_valet(&s, "Alloy Test", msg, "info").await {
+                Ok(()) => Ok(Json(serde_json::json!({
+                    "status": "ok",
+                    "channel": "valet",
+                    "message": "enviado"
+                }))),
+                Err(e) => Err(crate::models::AppError::Internal(e)),
+            }
+        }
         other => Err(crate::models::AppError::BadRequest(format!(
-            "Canal desconocido: '{}'. Usa 'telegram' o 'matrix'.",
+            "Canal desconocido: '{}'. Usa 'telegram', 'matrix' o 'valet'.",
             other
         ))),
     }
@@ -232,6 +383,16 @@ mod tests {
             matrix_homeserver: Some(hs.into()),
             matrix_token: Some(token.into()),
             matrix_room: Some(room.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Telegram channel plus a configured topic (change: telegram-topic-id).
+    fn settings_with_tg_topic(topic: &str) -> Settings {
+        Settings {
+            telegram_token: Some("token".into()),
+            telegram_chat_id: Some("chat".into()),
+            telegram_topic_id: Some(topic.into()),
             ..Default::default()
         }
     }
@@ -352,11 +513,346 @@ mod tests {
         let _ = notify_matrix(&s, "test", "running").await;
     }
 
+    // ── valet_level ─────────────────────────────────────────
+
+    #[test]
+    fn test_valet_level_critical() {
+        for status in ["died", "dead", "error", "Error", "container died"] {
+            assert_eq!(valet_level(status), "critical", "status={status}");
+        }
+    }
+
+    #[test]
+    fn test_valet_level_warning() {
+        for status in ["exit", "exited", "stop", "stopped"] {
+            assert_eq!(valet_level(status), "warning", "status={status}");
+        }
+    }
+
+    #[test]
+    fn test_valet_level_info() {
+        for status in [
+            "running",
+            "start",
+            "started",
+            "pause",
+            "paused",
+            "unpause",
+            "restart",
+            "restarting",
+            "create",
+            "created",
+        ] {
+            assert_eq!(valet_level(status), "info", "status={status}");
+        }
+    }
+
+    #[test]
+    fn test_valet_level_mixed_case_substring() {
+        assert_eq!(valet_level("Death"), "info"); // "death" is not one of the keywords
+        assert_eq!(valet_level("DIED"), "critical");
+        assert_eq!(valet_level("Exited"), "warning");
+    }
+
+    // ── valet_level_for (task 2b.2) ─────────────────────────
+
+    #[test]
+    fn test_valet_level_for_none_is_info() {
+        assert_eq!(valet_level_for(None), "info");
+    }
+
+    #[test]
+    fn test_valet_level_for_raw_exited_is_warning() {
+        assert_eq!(valet_level_for(Some("exited")), "warning");
+    }
+
+    #[test]
+    fn test_valet_level_for_raw_dead_is_critical() {
+        assert_eq!(valet_level_for(Some("dead")), "critical");
+    }
+
+    #[test]
+    fn test_valet_level_for_raw_running_is_info() {
+        assert_eq!(valet_level_for(Some("running")), "info");
+    }
+
+    /// The localized status message ("⏹️ detenido") would map to `info` if fed
+    /// directly to `valet_level`; the raw Docker state must win instead.
+    #[test]
+    fn test_valet_level_for_uses_raw_not_localized_message() {
+        assert_eq!(valet_level("⏹️ detenido"), "info");
+        assert_eq!(valet_level_for(Some("exited")), "warning");
+        assert_eq!(valet_level_for(Some("dead")), "critical");
+        assert_eq!(valet_level_for(Some("running")), "info");
+    }
+
+    // ── valet_endpoint ──────────────────────────────────────
+
+    #[test]
+    fn test_valet_endpoint_plain() {
+        assert_eq!(
+            valet_endpoint("https://v.test"),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    #[test]
+    fn test_valet_endpoint_trailing_slash() {
+        assert_eq!(
+            valet_endpoint("https://v.test/"),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    #[test]
+    fn test_valet_endpoint_multiple_trailing_slashes() {
+        assert_eq!(
+            valet_endpoint("https://v.test///"),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    #[test]
+    fn test_valet_endpoint_whitespace_and_trailing_slash() {
+        assert_eq!(
+            valet_endpoint("  https://v.test/  "),
+            "https://v.test/api/notifications"
+        );
+    }
+
+    // ── Early return: notify_valet ──────────────────────────
+
+    #[tokio::test]
+    async fn test_notify_valet_returns_early_no_url() {
+        let s = Settings {
+            valet_token: Some("val_x".into()),
+            ..Default::default()
+        };
+        let err = notify_valet(&s, "test", "running", "info")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Valet no configurado"), "err={err}");
+    }
+
+    #[tokio::test]
+    async fn test_notify_valet_returns_early_no_token() {
+        let s = Settings {
+            valet_url: Some("https://v.test".into()),
+            ..Default::default()
+        };
+        let err = notify_valet(&s, "test", "running", "info")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Valet no configurado"), "err={err}");
+    }
+
+    #[tokio::test]
+    async fn test_notify_valet_returns_early_both_missing() {
+        let err = notify_valet(&empty_settings(), "test", "running", "info")
+            .await
+            .unwrap_err();
+        assert!(err.contains("Valet no configurado"), "err={err}");
+    }
+
     // ── notify_all ──────────────────────────────────────────
 
     #[tokio::test]
     async fn test_notify_all_does_not_panic() {
         let settings = Arc::new(Mutex::new(empty_settings()));
         notify_all(&settings, "test", "running").await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_all_does_not_panic_with_valet_unset() {
+        // Valet sin configurar: el fan-out no debe entrar en pánico.
+        let settings = Arc::new(Mutex::new(Settings {
+            telegram_token: Some("t".into()),
+            telegram_chat_id: Some("c".into()),
+            ..Default::default()
+        }));
+        notify_all(&settings, "test", "running").await;
+    }
+
+    // ── notify_all_state (task 2b.2) ────────────────────────
+
+    #[tokio::test]
+    async fn test_notify_all_state_does_not_panic_with_raw_exited() {
+        let settings = Arc::new(Mutex::new(empty_settings()));
+        notify_all_state(&settings, "test", "⏹️ detenido", Some("exited")).await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_all_state_does_not_panic_with_raw_dead() {
+        let settings = Arc::new(Mutex::new(empty_settings()));
+        notify_all_state(&settings, "test", "💀 finalizado", Some("dead")).await;
+    }
+
+    #[tokio::test]
+    async fn test_notify_all_state_does_not_panic_without_raw() {
+        let settings = Arc::new(Mutex::new(empty_settings()));
+        notify_all_state(&settings, "test", "✅ actualizado", None).await;
+    }
+
+    // ── lock released during fan-out (change: notify-fanout-lock) ───
+
+    /// The `Mutex<Settings>` must be released before the network fan-out, so a
+    /// concurrent `GET/PUT /api/config` (modelled here by `try_lock`) does not
+    /// block while a channel is in flight.
+    ///
+    /// Strategy: a TCP listener accepts one connection and stays hanging, so
+    /// the webhook channel stays "in flight" (until its 30 s client timeout).
+    /// We spawn the fan-out, wait for the request to be in flight, and assert
+    /// the lock is free. The fan-out task is aborted (the 30 s timeout is way
+    /// too long for a test).
+    #[tokio::test]
+    async fn test_notify_all_state_releases_lock_during_fanout() {
+        use std::time::Duration;
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local_addr");
+
+        // Server: accept once, read the request head, then hang forever so the
+        // webhook stays in flight (no response is ever written). `accepted`
+        // signals the test deterministically once the connection is up (no fixed
+        // sleep), and the socket is kept alive across the `pending()` await so
+        // the client does not see an immediate EOF.
+        let accepted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let accepted2 = Arc::clone(&accepted);
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify2 = Arc::clone(&notify);
+        let server = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                accepted2.store(true, std::sync::atomic::Ordering::SeqCst);
+                notify2.notify_one();
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                // Keep the connection open (and `socket` alive) indefinitely.
+                std::future::pending::<()>().await;
+            }
+        });
+
+        let settings = Arc::new(Mutex::new(Settings {
+            webhook_url: Some(format!("http://{addr}/hook")),
+            ..Default::default()
+        }));
+
+        let settings_task = Arc::clone(&settings);
+        let fanout = tokio::spawn(async move {
+            notify_all_state(&settings_task, "c", "running", None).await;
+        });
+
+        // Wait deterministically until the webhook connection is accepted
+        // (bounded so a broken test cannot hang forever), then assert the lock
+        // is free while the channel is in flight.
+        tokio::time::timeout(Duration::from_secs(5), notify.notified())
+            .await
+            .expect("el servidor de prueba no aceptó la conexión a tiempo");
+
+        assert!(
+            accepted.load(std::sync::atomic::Ordering::SeqCst),
+            "el servidor de prueba no aceptó la conexión: test no determinista"
+        );
+
+        assert!(
+            settings.try_lock().is_ok(),
+            "el lock de Settings NO se libera durante el fan-out (webhook en vuelo)"
+        );
+
+        fanout.abort();
+        let _ = fanout.await;
+        server.abort();
+        let _ = server.await;
+    }
+
+    // ── telegram_topic_id (change: telegram-topic-id) ───────
+
+    // GREEN contract pinned by these tests:
+    //   fn tg_topic_id(settings: &Settings) -> Result<Option<i64>, String>
+    //   fn telegram_payload(chat_id: &str, text: String, topic: Option<i64>) -> serde_json::Value
+
+    // ── tg_topic_id ─────────────────────────────────────────
+
+    /// No topic configured ⇒ `Ok(None)`: the `message_thread_id` key is omitted.
+    #[test]
+    fn test_tg_topic_id_absent_is_ok_none() {
+        assert_eq!(tg_topic_id(&settings_with_tg("tok", "chat")), Ok(None));
+    }
+
+    #[test]
+    fn test_tg_topic_id_valid_is_ok_some() {
+        assert_eq!(tg_topic_id(&settings_with_tg_topic("42")), Ok(Some(42)));
+    }
+
+    /// The value is `trim`med before parsing, so stray spaces are still valid.
+    #[test]
+    fn test_tg_topic_id_whitespace_wrapped_is_ok_some() {
+        assert_eq!(tg_topic_id(&settings_with_tg_topic("  42  ")), Ok(Some(42)));
+    }
+
+    /// Scenario: Topic inválido (D3). A non-numeric topic is a hard error, so
+    /// `notify_telegram` fails fast instead of silently posting to *General*.
+    #[test]
+    fn test_tg_topic_id_non_numeric_is_err() {
+        let err = tg_topic_id(&settings_with_tg_topic("abc")).unwrap_err();
+        assert!(
+            err.to_lowercase().contains("topic"),
+            "el error debe identificar el topic inválido: {err}"
+        );
+    }
+
+    // ── telegram_payload ────────────────────────────────────
+
+    /// Scenario: Sin topic configurado — the body must be byte-for-byte the
+    /// legacy body (no `message_thread_id` key at all).
+    #[test]
+    fn test_telegram_payload_without_topic_is_legacy_body() {
+        let body = telegram_payload("-100123", "hola".into(), None);
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "chat_id": "-100123",
+                "text": "hola",
+                "parse_mode": "Markdown",
+            })
+        );
+        assert!(
+            body.get("message_thread_id").is_none(),
+            "sin topic la clave message_thread_id no debe aparecer: {body}"
+        );
+    }
+
+    /// Scenario: Envío a un topic concreto — `message_thread_id` must be a
+    /// **number** (the Telegram API rejects a string here).
+    #[test]
+    fn test_telegram_payload_with_topic_has_numeric_thread_id() {
+        let body = telegram_payload("-100123", "hola".into(), Some(42));
+        assert_eq!(body["message_thread_id"], serde_json::json!(42));
+        assert!(
+            body["message_thread_id"].is_i64(),
+            "message_thread_id debe ser numérico, no string: {body}"
+        );
+        // The rest of the body is untouched.
+        assert_eq!(body["chat_id"], "-100123");
+        assert_eq!(body["text"], "hola");
+        assert_eq!(body["parse_mode"], "Markdown");
+    }
+
+    // ── notify_telegram con topic inválido ──────────────────
+
+    /// Scenario: Topic inválido — `notify_telegram` returns `Err` **without**
+    /// emitting the HTTP request. The error is the topic error (a failed HTTP
+    /// round-trip would instead surface as a transport error), which is what
+    /// makes this assertion meaningful without a network mock.
+    #[tokio::test]
+    async fn test_notify_telegram_invalid_topic_returns_err_without_http() {
+        let s = settings_with_tg_topic("abc");
+        let err = notify_telegram(&s, "test", "running").await.unwrap_err();
+        assert!(
+            err.to_lowercase().contains("topic"),
+            "topic inválido ⇒ Err antes de emitir HTTP (no un error de red): {err}"
+        );
     }
 }

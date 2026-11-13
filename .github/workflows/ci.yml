@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, development]
+    branches: [main, develop]
 
 jobs:
   test:
@@ -17,3 +17,35 @@ jobs:
         run: cargo fmt --manifest-path backend/Cargo.toml --all -- --check
       - name: Clippy
         run: cargo clippy --manifest-path backend/Cargo.toml -- -D warnings
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          # Sin `version`: la toma de `packageManager` en frontend/package.json
+          package_json_file: frontend/package.json
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Igual que el stage `frontend-builder` del Dockerfile
+          node-version: 23
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: Type check
+        working-directory: frontend
+        run: pnpm exec tsc -b
+      - name: Run tests
+        working-directory: frontend
+        run: pnpm run test
+      - name: Build
+        working-directory: frontend
+        run: pnpm run build
+      - name: Lint
+        working-directory: frontend
+        run: pnpm run lint

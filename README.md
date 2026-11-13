@@ -220,6 +220,7 @@ podman run -d \
   --name alloy \
   -p 3066:3066 \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -v alloy-data:/app/data \
   -e OIDC_ISSUER_URL=https://your-oidc-provider.example.com \
   -e OIDC_CLIENT_ID=alloy \
   -e OIDC_CLIENT_SECRET=your-secret \
@@ -229,6 +230,9 @@ podman run -d \
 
 > [!IMPORTANT]
 > Alloy **requires OIDC** authentication. There is no simple JWT fallback. You must configure `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URL`.
+
+> [!TIP]
+> If your host user is not UID/GID `1000`, add `-e PUID=$(id -u) -e PGID=$(id -g)` so the container can write the `data/` volume. See [docs/container-identity.md](docs/container-identity.md).
 
 ### From source
 
@@ -241,7 +245,7 @@ just build
 
 # Or build manually (requires Rust + Node.js)
 cd backend && cargo build --release
-cd frontend && npm install && npm run build
+cd frontend && pnpm install && pnpm run build
 ```
 
 ## Configuration
@@ -265,6 +269,8 @@ oidc_redirect_url: "https://alloy.example.com/api/auth/callback"
 |---|---|---|---|
 | `PORT` | `3066` | No | Server listening port |
 | `HOST` | `0.0.0.0` | No | Bind address |
+| `PUID` | `1000` | No | UID del proceso (identidad del contenedor) |
+| `PGID` | `1000` | No | GID del proceso (identidad del contenedor) |
 | `OIDC_ISSUER_URL` | — | **Yes** | OIDC provider discovery URL |
 | `OIDC_CLIENT_ID` | — | **Yes** | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | — | **Yes** | OIDC client secret |
@@ -361,6 +367,20 @@ The Quadlet automatically handles:
 > [!WARNING]
 > Alloy requires OIDC configuration. Set the `OIDC_*` environment variables before exposing Alloy to a network.
 
+### Container user (UID/GID)
+
+The image runs the server as an unprivileged user and can match your host identity
+without rebuilding:
+
+```sh
+podman run ... -e PUID=$(id -u) -e PGID=$(id -g) ghcr.io/atareao/alloy:latest
+```
+
+At startup the entrypoint takes ownership of `/app/data` and drops privileges with
+`su-exec`; the server process never runs as `root`. If building your own image, bake
+the identity in with `podman build --build-arg UID=$(id -u) --build-arg GID=$(id -g)`.
+Details: [docs/container-identity.md](docs/container-identity.md).
+
 ### Build and push custom image
 
 ```sh
@@ -390,10 +410,10 @@ just fmt-fix    # cargo fmt
 
 # Manual dev workflow
 cd backend && cargo run     # Run with local config.yaml
-cd frontend && npm run dev  # Vite dev server (hot reload)
+cd frontend && pnpm run dev  # Vite dev server (hot reload)
 
 # Build frontend for production
-cd frontend && npm run build
+cd frontend && pnpm run build
 ```
 
 ### Testing

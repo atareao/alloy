@@ -76,11 +76,20 @@ pub struct PublicConfig {
     pub telegram_configured: bool,
     pub matrix_configured: bool,
     pub webhook_configured: bool,
-    pub telegram_token: Option<String>,
+    pub valet_configured: bool,
+    /// Whether a Telegram token is stored server-side (value never exposed).
+    pub telegram_token_set: bool,
+    /// Whether a Matrix token is stored server-side (value never exposed).
+    pub matrix_token_set: bool,
+    /// Whether a Valet token is stored server-side (value never exposed).
+    pub valet_token_set: bool,
     pub telegram_chat_id: Option<String>,
+    /// Telegram forum topic (message thread) the notifications are routed to.
+    /// Not a secret, exposed verbatim so the UI can preload the field.
+    pub telegram_topic_id: Option<String>,
     pub matrix_homeserver: Option<String>,
-    pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
+    pub valet_url: Option<String>,
     pub version: String,
     pub build_date: String,
     pub repo_url: String,
@@ -195,6 +204,8 @@ pub struct Settings {
     #[serde(default)]
     pub telegram_chat_id: Option<String>,
     #[serde(default)]
+    pub telegram_topic_id: Option<String>,
+    #[serde(default)]
     pub matrix_homeserver: Option<String>,
     #[serde(default)]
     pub matrix_token: Option<String>,
@@ -202,6 +213,10 @@ pub struct Settings {
     pub matrix_room: Option<String>,
     #[serde(default)]
     pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub valet_url: Option<String>,
+    #[serde(default)]
+    pub valet_token: Option<String>,
 
     #[serde(default)]
     pub update_check_cron: Option<String>,
@@ -306,10 +321,13 @@ pub struct UpdateCheckConfig {
 pub struct UpdateSettingsReq {
     pub telegram_token: Option<String>,
     pub telegram_chat_id: Option<String>,
+    pub telegram_topic_id: Option<String>,
     pub matrix_homeserver: Option<String>,
     pub matrix_token: Option<String>,
     pub matrix_room: Option<String>,
     pub webhook_url: Option<String>,
+    pub valet_url: Option<String>,
+    pub valet_token: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -767,5 +785,66 @@ mod tests {
         assert_eq!(cloned.name, "redis");
         assert_eq!(cloned.action, "die");
         assert!(format!("{:?}", evt).contains("redis"));
+    }
+
+    // ── Settings.telegram_topic_id (change: telegram-topic-id) ───
+
+    /// `telegram_topic_id` is optional and `#[serde(default)]`: an empty JSON
+    /// object must deserialize it to `None` (backwards-compatible with the
+    /// settings already stored on disk).
+    #[test]
+    fn test_settings_topic_id_defaults_to_none_when_absent() {
+        let s: Settings = serde_json::from_str("{}").expect("empty settings must deserialize");
+        assert_eq!(s.telegram_topic_id, None);
+    }
+
+    /// Round-trip of the topic through serde (same shape as the other
+    /// `telegram_*` string fields).
+    #[test]
+    fn test_settings_topic_id_roundtrip() {
+        let s: Settings =
+            serde_json::from_str(r#"{"telegram_topic_id":"42"}"#).expect("topic must deserialize");
+        assert_eq!(s.telegram_topic_id.as_deref(), Some("42"));
+
+        let value = serde_json::to_value(&s).expect("Settings must serialize");
+        assert_eq!(value["telegram_topic_id"], "42");
+    }
+
+    /// An explicit `null` must also map to `None` (nothing was configured).
+    #[test]
+    fn test_settings_topic_id_null_is_none() {
+        let s: Settings =
+            serde_json::from_str(r#"{"telegram_topic_id":null}"#).expect("null topic is valid");
+        assert_eq!(s.telegram_topic_id, None);
+    }
+
+    // ── PublicConfig.telegram_topic_id (change: telegram-topic-id) ───
+
+    /// The topic is not a secret: `PublicConfig` exposes its value directly
+    /// (no `*_set` indicator) so the UI can preload the field.
+    #[test]
+    fn test_public_config_exposes_topic_id() {
+        let cfg = PublicConfig {
+            oidc_configured: true,
+            port: 3066,
+            timezone: "UTC".into(),
+            telegram_configured: true,
+            matrix_configured: false,
+            webhook_configured: false,
+            valet_configured: false,
+            telegram_token_set: true,
+            matrix_token_set: false,
+            valet_token_set: false,
+            telegram_chat_id: Some("chat".into()),
+            telegram_topic_id: Some("42".into()),
+            matrix_homeserver: None,
+            matrix_room: None,
+            valet_url: None,
+            version: "0.0.0".into(),
+            build_date: "now".into(),
+            repo_url: "https://example.test".into(),
+        };
+        let value = serde_json::to_value(&cfg).expect("PublicConfig must serialize");
+        assert_eq!(value["telegram_topic_id"], "42");
     }
 }
