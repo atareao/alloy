@@ -1,0 +1,234 @@
+# Alloy — Architecture Reference
+
+> Bloques extraídos **literalmente** de `AGENTS.md`. Las reglas operativas (obligaciones y quirks) permanecen en `AGENTS.md`.
+
+### Project Overview
+
+**Alloy** is a full-featured Docker management dashboard with a Rust/Axum backend and a React/TypeScript/Vite frontend. Provides real-time container monitoring, management, and automation via SSE streams, with **mandatory OIDC authentication** (PocketID-style JWKS validation) and Telegram/Matrix notifications.
+### Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Backend** | Rust (edition 2021), Axum 0.8, Tokio (full), Bollard 0.18 (Docker API) |
+| **Frontend** | React, TypeScript, Vite, Ant Design v6, Vitest |
+| **Auth** | OIDC obligatorio (no fallback JWT simple). Validación de tokens contra JWKS vía `{issuer}/.well-known/jwks.json` |
+| **Real-time** | Server-Sent Events (SSE) via `broadcast::channel` + `tokio-stream` |
+| **Persistence** | JSON files (no database) — `data/updates_history.json`, `data/alerts.json`, `data/schedules.json`, `data/settings.json` |
+| **Notifications** | Telegram Bot API, Matrix Client-Server API |
+| **Build** | Multi-stage Dockerfile (Podman), `just` task runner, `vampus` versioning |
+| **Linting** | `cargo clippy -- -D warnings`, `cargo fmt -- --check` |
+### Project Structure
+
+```
+/
+├── AGENTS.md               # This file — project documentation for agents
+├── .gitignore
+├── .dockerignore
+├── .justfile               # Task runner (build, lint, fmt, check, gitflow, upgrade)
+├── .vampus.yml             # Version management (current: 0.6.0)
+├── Dockerfile              # Multi-stage Docker build (build context = root)
+├── data/                   # Persistent JSON files (runtime)
+├── backend/
+│   ├── Cargo.toml          # Rust dependencies
+│   ├── Cargo.lock
+│   ├── config.yaml         # Active runtime configuration
+│   ├── src/
+│   │   ├── main.rs         # (289) Entry point — startup, workers spawn, router
+│   │   ├── admin.rs        #  (96) Admin handlers (alerts, settings)
+│   │   ├── auth.rs         # (480) OIDC auth code flow, middleware, frontend SPA fallback
+│   │   ├── config.rs       # (338) Config struct, YAML load, env override, Podman secrets
+│   │   ├── containers.rs   # (410) Container CRUD, inspect, fetch, pull
+│   │   ├── events.rs       #  (62) SSE event stream handler
+│   │   ├── models.rs       # (402) All data types, constants, AppError
+│   │   ├── notifications.rs# (135) Telegram & Matrix notification dispatchers
+│   │   ├── persistence.rs  # (153) JSON load/save helpers
+│   │   ├── stacks.rs       # (374) Docker Compose stack management
+│   │   ├── state.rs        # (216) AppState, JwtValidator, OidcMetadata, FromRef impls
+│   │   ├── updates.rs      # (524) Image pull, update, digest compare, version check
+│   │   └── workers.rs      # (756) Background workers: state, auto-update, alerts, scheduler
+│   └── target/             # Build artifacts
+└── frontend/
+    ├── index.html
+    ├── vite.config.ts
+    ├── src/
+    │   ├── main.tsx
+    │   ├── App.tsx           # Main app with tabs: Dashboard, History, Alerts, Schedule, Config
+    │   ├── api.ts            # (19) API helper functions
+    │   ├── types.ts          # TypeScript interfaces
+    │   ├── useSSE.ts         # SSE hook for real-time events
+    │   ├── AlertsPage.tsx
+    │   ├── HistoryPage.tsx
+    │   ├── SchedulePage.tsx
+    │   ├── components/
+    │   │   ├── DashboardPage.tsx
+    │   │   ├── ConfigPage.tsx
+    │   │   ├── LoginScreen.tsx
+    │   │   ├── PolicyActionButton.tsx
+    │   │   ├── ErrorBoundary.tsx
+    │   │   └── NotifToast.tsx
+    │   ├── api.test.ts
+    │   ├── ErrorBoundary.test.tsx
+    │   ├── LoginScreen.test.tsx
+    │   └── NotifToast.test.tsx
+    └── dist/                # Pre-built frontend assets
+```
+### Architecture & Key Patterns
+
+#### 1. Modular backend (13 módulos)
+
+El backend está organizado en 13 módulos (~4.235 líneas totales). Cada módulo tiene una responsabilidad clara:
+
+| Módulo | Líneas | Responsabilidad |
+|---|---|---|
+| `workers.rs` | 756 | Workers asíncronos: estado Docker, auto-update, alertas, scheduler |
+| `updates.rs` | 524 | Pull/update de imágenes, comparación de versiones |
+| `auth.rs` | 480 | OIDC auth code flow, middleware de sesión, frontend SPA fallback |
+| `containers.rs` | 410 | CRUD de contenedores, inspect, fetch, pull |
+| `models.rs` | 402 | Tipos, constantes, AppError, tests |
+| `stacks.rs` | 374 | Gestión de stacks Docker Compose |
+| `config.rs` | 338 | Config (YAML + env vars + Podman secrets) |
+| `main.rs` | 289 | Entry point, startup, workers, router |
+| `state.rs` | 216 | AppState, JwtValidator, OidcMetadata, FromRef impls |
+| `persistence.rs` | 153 | Helpers genéricos load/save JSON |
+| `notifications.rs` | 135 | Dispatchers Telegram y Matrix |
+| `admin.rs` | 96 | Handlers de admin (alerts, settings) |
+| `events.rs` | 62 | Handler SSE de eventos de estado |
+
+#### 2. AppState (shared state via Axum)
+
+```rust
+struct AppState {
+    docker: Docker,                                    // Bollard client
+    config: Config,                                    // From config.yaml + env vars
+    tx: broadcast::Sender<StateEvent>,                 // Container state SSE
+    update_tx: broadcast::Sender<UpdateProgress>,       // Update progress SSE
+    notif_tx: broadcast::Sender<NotifEvent>,            // Notification SSE
+    oidc_states: OidcStates,                           // OIDC CSRF states (con timestamp)
+    oidc_metadata: Option<OidcMetadata>,               // Descubierto via OIDC discovery
+    jwt_validator: JwtValidator,                       // JWKS-based token validation
+    update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
+    alerts: Arc<Mutex<Vec<AlertConfig>>>,
+    schedules: Arc<Mutex<Vec<ScheduleTask>>>,
+    cached_containers: CachedContainers,               // Cache de contenedores (Arc<RwLock<Option<Vec<ContainerInfo>>>>)
+    settings: Arc<Mutex<Settings>>,                    // Settings dinámicos (auto-update, notificaciones)
+}
+```
+
+Pattern: `broadcast::channel` para SSE fan-out, `Arc<Mutex<T>>` para estado mutable persistente, `Arc<AppState>` compartido vía `axum::extract::FromRef` entre handlers.
+
+#### 3. SSE (Server-Sent Events)
+
+Cuatro SSE endpoints proveen actualizaciones en tiempo real:
+
+- `GET /api/events` — Cambios de estado de contenedores (Docker Events API)
+- `GET /api/updates` — Progreso de pull/update de imágenes
+- `GET /api/notifications` — Eventos de alertas y notificaciones
+
+Cada uno usa `BroadcastStream` wrapping un `broadcast::Receiver`. La autenticación SSE se hace vía cookie de sesión (httponly).
+
+#### 4. Background Workers (tokio::spawn)
+
+| Worker | Intervalo | Propósito |
+|---|---|---|
+| `state_worker` | Docker Events API + fallback 30s | Escucha eventos Docker (start/stop/die/etc.), refresca lista de contenedores |
+| `auto_update_worker` | `auto_update_interval_hours` (default 6h) | Pull + restart de contenedores con auto-update |
+| `alerts_worker` | 30s | Monitorea cambios de estado de contenedores (running→exited→running) |
+| `scheduler_worker` | 60s | Evalúa expresiones cron, ejecuta acciones programadas |
+| `oidc_states_cleanup` | 5 min | Limpia estados OIDC CSRF expirados (>10 min) |
+
+#### 5. Authentication (OIDC obligatorio)
+
+- **No hay JWT simple** — no existe `POST /api/login`
+- **OIDC es obligatorio**: se requieren `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`
+- **Discovery**: obtiene metadata via `{issuer}/.well-known/openid-configuration`
+- **JWKS validation**: descarga claves de `{issuer}/.well-known/jwks.json` y valida tokens con RSA256
+- **Auth code flow**: `GET /api/auth/login` → redirect al provider → callback → sesión vía cookie firmada
+- **Auth middleware**: chequea cookie `session=...` (firmada con `oidc_client_secret`), `Authorization: Bearer ...` header, o `?token=...` query param (para SSE)
+- **JwtValidator** en `state.rs`: estilo PocketID/oxinbox, con `fetch_jwks()` al startup y auto-fetch en primer uso
+
+#### 6. Docker API via Bollard
+
+Conecta via socket local (`Docker::connect_with_local_defaults`) o `DOCKER_HOST` env var. Key operations:
+
+- `list_containers` — polling para estado
+- `inspect_container` — inspección detallada
+- `stats` — stats de contenedor
+- `restart_container`, `stop_container`, `start_container`, `remove_container` — lifecycle
+- `prune_containers`, `prune_images`, `prune_networks`, `prune_volumes` — cleanup
+- `create_image` — pull de imágenes
+- `events` — stream de eventos Docker (state_worker)
+
+#### 7. JSON Persistence (sin base de datos)
+
+El estado se persiste en archivos JSON en `data/`. Se cargan al startup y se guardan en cada mutación:
+
+- `data/updates_history.json` — historial de actualizaciones
+- `data/alerts.json` — configuración de alertas por contenedor
+- `data/schedules.json` — tareas programadas
+- `data/settings.json` — configuración dinámica (auto-update, Telegram, Matrix)
+
+Cargados al startup via `load_json::<T>()` y guardados via `json_writer()` (flush + rename atómico).
+
+#### 8. Configuration
+
+Cargada desde `config.yaml` (YAML) con override de variables de entorno. Soporta **Podman Secrets** (`/run/secrets/<name>`):
+
+- `HOST`, `PORT`, `SCAN_INTERVAL_SECS`, `ALLOWED_CONTAINERS`
+- `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URL`
+- `ALERTS` (inline en YAML), `SCHEDULE` (inline en YAML)
+### API Routes
+
+```
+# Auth (OIDC)
+GET  /api/auth/login              → OIDC redirect
+GET  /api/auth/callback           → OIDC callback (code→token exchange)
+GET  /api/auth/me                 → Session info (sub, name, email)
+GET  /api/auth/logout             → Clear session cookie
+
+# Containers
+GET  /api/containers              → List containers
+GET  /api/containers/{name}/inspect → Detailed inspect
+
+# Container lifecycle
+POST /api/containers/{name}/start
+POST /api/containers/{name}/stop
+POST /api/containers/{name}/restart
+POST /api/containers/{name}/remove
+
+# Real-time (SSE)
+GET  /api/events                  → Container state stream (Docker Events API)
+GET  /api/updates                 → Update progress stream
+GET  /api/notifications           → Notification stream
+
+# Updates
+POST /api/update/{name}           → Pull + restart single container
+POST /api/update-all              → Pull + restart all containers
+POST /api/check-update/{name}     → Compare local vs Docker Hub
+
+# Stacks (docker-compose)
+GET  /api/stacks                  → List compose projects
+POST /api/stacks/{project}/update → Pull + recreate stack services
+
+# Admin
+GET  /api/admin/alerts            → List alerts
+POST /api/admin/alerts            → Create alert
+DELETE /api/admin/alerts/{id}     → Delete alert
+GET  /api/admin/settings          → Get settings
+PUT  /api/admin/settings          → Update settings (auto-update, Telegram, Matrix)
+
+# History
+GET  /api/history                 → Update history
+DELETE /api/history               → Clear history
+
+# Schedule
+GET  /api/schedule                → List scheduled tasks
+POST /api/schedule                → Create schedule
+DELETE /api/schedule/{id}         → Delete schedule
+
+# Config
+GET  /api/config                  → Public configuration (sin secrets)
+GET  /api/health                  → Health check (Docker ping)
+
+# Frontend (catch-all)
+GET  /*                           → SPA fallback (frontend/dist/index.html)
+```
