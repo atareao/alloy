@@ -4,7 +4,17 @@
 //! resolución del socket del daemon de contenedores para que ningún módulo de test
 //! duplique la lógica ni asuma un UID concreto.
 
+use bollard::container::{
+    Config as ContainerConfig, CreateContainerOptions, ListContainersOptions,
+    RemoveContainerOptions, StartContainerOptions,
+};
+use bollard::image::CreateImageOptions;
+use bollard::models::{HostConfig, PortBinding};
 use bollard::{Docker, API_DEFAULT_VERSION};
+use futures::StreamExt;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::OnceCell;
 
 /// Socket del sistema (podman instalado a nivel root).
 const SYSTEM_SOCKET: &str = "/run/podman/podman.sock";
@@ -73,6 +83,175 @@ pub fn podman_client() -> Docker {
              Comprueba que el daemon está en marcha y que DOCKER_HOST apunta a su socket."
         )
     })
+}
+
+/// Imagen mínima para los contenedores de fixture (misma base que el runtime del Dockerfile).
+const FIXTURE_IMAGE: &str = "docker.io/library/alpine:3.23";
+/// Contador global para nombres únicos entre tests paralelos.
+static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Pull de la imagen de fixture una sola vez por proceso.
+static FIXTURE_IMAGE_READY: OnceCell<()> = OnceCell::const_new();
+
+/// Nombre único de fixture: `<prefix>-<pid>-<contador>`.
+pub fn fixture_name(prefix: &str) -> String {
+    format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+async fn ensure_fixture_image(docker: &bollard::Docker) {
+    FIXTURE_IMAGE_READY
+        .get_or_init(|| async {
+            if docker.inspect_image(FIXTURE_IMAGE).await.is_ok() {
+                return;
+            }
+            let mut stream = docker.create_image(
+                Some(CreateImageOptions {
+                    from_image: FIXTURE_IMAGE,
+                    ..Default::default()
+                }),
+                None,
+                None,
+            );
+            while let Some(item) = stream.next().await {
+                item.expect("Tests de integración: falló el pull de la imagen de fixture");
+            }
+        })
+        .await;
+}
+
+/// Contenedor efímero de fixture. Se elimina (con `force`) al hacer `Drop`.
+pub struct FixtureContainer {
+    docker: bollard::Docker,
+    name: String,
+}
+
+impl FixtureContainer {
+    /// Crea y arranca un contenedor efímero con `<prefix>` como nombre base.
+    ///
+    /// Publica un puerto (`80/tcp` → puerto efímero del host) para que `fetch_containers`
+    /// produzca `ports` no vacío, y usa `sleep 600` para que quede en estado `running`.
+    pub async fn run(prefix: &str) -> Self {
+        let docker = podman_client();
+        ensure_fixture_image(&docker).await;
+        let name = fixture_name(prefix);
+
+        let mut exposed_ports: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        exposed_ports.insert("80/tcp".to_string(), HashMap::new());
+        let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
+        port_bindings.insert(
+            "80/tcp".to_string(),
+            Some(vec![PortBinding {
+                host_ip: Some("127.0.0.1".to_string()),
+                host_port: None,
+            }]),
+        );
+
+        let config = ContainerConfig {
+            image: Some(FIXTURE_IMAGE.to_string()),
+            cmd: Some(vec!["sleep".to_string(), "600".to_string()]),
+            exposed_ports: Some(exposed_ports),
+            host_config: Some(HostConfig {
+                port_bindings: Some(port_bindings),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        docker
+            .create_container(
+                Some(CreateContainerOptions {
+                    name: name.clone(),
+                    platform: None,
+                }),
+                config,
+            )
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Tests de integración: no se pudo crear el fixture '{name}': {e}")
+            });
+
+        // A partir de aquí el contenedor ya existe: se encapsula para que `Drop` lo limpie
+        // aunque el arranque o la espera fallen (evita fixtures huérfanos).
+        let fixture = FixtureContainer { docker, name };
+
+        fixture
+            .docker
+            .start_container(fixture.name(), None::<StartContainerOptions<String>>)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Tests de integración: no se pudo arrancar el fixture '{}': {e}",
+                    fixture.name()
+                )
+            });
+
+        // Espera a que el daemon lo registre (evita carrera con list_containers).
+        for _ in 0..50 {
+            let listed = fixture
+                .docker
+                .list_containers(Some(ListContainersOptions::<String> {
+                    all: true,
+                    ..Default::default()
+                }))
+                .await
+                .unwrap_or_default();
+            let found = listed.iter().any(|c| {
+                c.names
+                    .as_ref()
+                    .map(|ns| {
+                        ns.iter()
+                            .any(|n| n.trim_start_matches('/') == fixture.name())
+                    })
+                    .unwrap_or(false)
+            });
+            if found {
+                return fixture;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        panic!(
+            "Tests de integración: el fixture '{}' no apareció en list_containers",
+            fixture.name()
+        );
+    }
+
+    /// Nombre del contenedor de fixture.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl Drop for FixtureContainer {
+    fn drop(&mut self) {
+        let docker = self.docker.clone();
+        let name = self.name.clone();
+        // `remove_container` es async y no se puede `block_on` dentro del runtime de `#[tokio::test]`:
+        // se ejecuta en un hilo con su propio runtime.
+        let _ = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("runtime de limpieza");
+            rt.block_on(async {
+                if let Err(e) = docker
+                    .remove_container(
+                        &name,
+                        Some(RemoveContainerOptions {
+                            force: true,
+                            v: false,
+                            link: false,
+                        }),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        "Tests de integración: no se pudo eliminar el fixture '{name}': {e}"
+                    );
+                }
+            });
+        })
+        .join();
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +367,15 @@ mod tests {
             resolve_socket(Some("   "), Some("   "), never_exists),
             "/run/user/1000/podman/podman.sock"
         );
+    }
+
+    #[test]
+    fn fixture_name_is_unique_and_prefixed() {
+        let a = fixture_name("alloy-it");
+        let b = fixture_name("alloy-it");
+        assert_ne!(a, b);
+        assert!(a.starts_with("alloy-it-"));
+        assert!(b.starts_with("alloy-it-"));
+        assert!(a.contains(&std::process::id().to_string()));
     }
 }

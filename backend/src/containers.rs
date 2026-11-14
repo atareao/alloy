@@ -684,29 +684,36 @@ pub fn routes() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::db::test_pool;
-    use crate::test_support::podman_client;
+    use crate::test_support::{podman_client, FixtureContainer};
 
     // ── fetch_containers ─────────────────────────────────────
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_returns_list() {
         let docker = podman_client();
         let pool = test_pool();
+        let f = FixtureContainer::run("alloy-it").await;
         let result = fetch_containers(&docker, &None, &pool).await;
         assert!(!result.is_empty(), "Should have at least one container");
+        assert!(
+            result.iter().any(|c| c.name == f.name()),
+            "Fixture '{}' should be in the list",
+            f.name()
+        );
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_structure() {
         let docker = podman_client();
         let pool = test_pool();
+        let f = FixtureContainer::run("alloy-it").await;
         let containers = fetch_containers(&docker, &None, &pool).await;
         let c = containers
             .iter()
-            .find(|c| c.name == "alloy")
-            .expect("Container 'alloy' should be running");
+            .find(|c| c.name == f.name())
+            .expect("Fixture 'alloy-it' should be running");
 
         assert!(!c.id.is_empty(), "Container should have an ID");
         assert!(!c.image.is_empty(), "Container should have an image");
@@ -718,11 +725,12 @@ mod tests {
         );
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_fields() {
         let docker = podman_client();
         let pool = test_pool();
+        let f = FixtureContainer::run("alloy-it").await;
         let containers = fetch_containers(&docker, &None, &pool).await;
         for c in &containers {
             // Every container must have these basic fields
@@ -752,25 +760,39 @@ mod tests {
             // size_mb should be a valid number
             assert!(c.size_mb >= 0.0, "Size should be >= 0 for {}", c.name);
         }
+        assert!(
+            containers.iter().any(|c| c.name == f.name()),
+            "Fixture '{}' should be in the list",
+            f.name()
+        );
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_with_allowed_filter() {
         let docker = podman_client();
         let pool = test_pool();
-        let allowed = Some(vec!["alloy".into(), "oxinbox".into()]);
+        let f1 = FixtureContainer::run("alloy-it").await;
+        let f2 = FixtureContainer::run("alloy-it").await;
+        let allowed_names = vec![f1.name().to_string(), f2.name().to_string()];
+        let allowed = Some(allowed_names.clone());
         let containers = fetch_containers(&docker, &allowed, &pool).await;
         for c in &containers {
             assert!(
-                c.name == "alloy" || c.name == "oxinbox",
+                allowed_names.contains(&c.name),
                 "Filtered container '{}' should not appear",
                 c.name
             );
         }
+        for name in &allowed_names {
+            assert!(
+                containers.iter().any(|c| c.name == *name),
+                "Fixture '{name}' should appear in the filtered list"
+            );
+        }
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_with_empty_allowed() {
         let docker = podman_client();
@@ -785,22 +807,23 @@ mod tests {
 
     // ── find_container_by_name ───────────────────────────────
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_find_container_by_name_found() {
         let docker = podman_client();
-        let container = find_container_by_name(&docker, "alloy")
+        let f = FixtureContainer::run("alloy-it").await;
+        let container = find_container_by_name(&docker, f.name())
             .await
-            .expect("Container 'alloy' should be found");
+            .expect("Fixture should be found");
         let name = container
             .names
             .as_ref()
             .and_then(|n| n.first())
             .map(|n| strip_name(n));
-        assert_eq!(name.as_deref(), Some("alloy"));
+        assert_eq!(name.as_deref(), Some(f.name()));
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_find_container_by_name_not_found() {
         let docker = podman_client();
@@ -812,44 +835,71 @@ mod tests {
         }
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
-    async fn test_integration_find_container_by_name_oxinbox() {
+    async fn test_integration_find_container_by_name_second_fixture() {
         let docker = podman_client();
-        let container = find_container_by_name(&docker, "oxinbox")
+        let f1 = FixtureContainer::run("alloy-it").await;
+        let f2 = FixtureContainer::run("alloy-it").await;
+        // Dos fixtures con nombres distintos coexisten sin colisión.
+        assert_ne!(f1.name(), f2.name());
+
+        let container = find_container_by_name(&docker, f2.name())
             .await
-            .expect("Container 'oxinbox' should be found");
+            .expect("Fixture should be found");
         let name = container
             .names
             .as_ref()
             .and_then(|n| n.first())
             .map(|n| strip_name(n));
-        assert_eq!(name.as_deref(), Some("oxinbox"));
+        assert_eq!(name.as_deref(), Some(f2.name()));
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
-    async fn test_integration_find_container_by_name_postgres() {
+    async fn test_integration_find_container_by_name_fixture_coexists() {
         let docker = podman_client();
-        let container = find_container_by_name(&docker, "preemer-db")
+        let f1 = FixtureContainer::run("alloy-it").await;
+        let f2 = FixtureContainer::run("alloy-it").await;
+
+        let found1 = find_container_by_name(&docker, f1.name())
             .await
-            .expect("Container 'preemer-db' should be found");
-        let name = container
+            .expect("Fixture 1 should be found");
+        let found2 = find_container_by_name(&docker, f2.name())
+            .await
+            .expect("Fixture 2 should be found");
+        let name1 = found1
             .names
             .as_ref()
             .and_then(|n| n.first())
             .map(|n| strip_name(n));
-        assert_eq!(name.as_deref(), Some("preemer-db"));
+        let name2 = found2
+            .names
+            .as_ref()
+            .and_then(|n| n.first())
+            .map(|n| strip_name(n));
+
+        assert_eq!(name1.as_deref(), Some(f1.name()));
+        assert_eq!(name2.as_deref(), Some(f2.name()));
     }
 
     // ── Port parsing ─────────────────────────────────────────
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_ports() {
         let docker = podman_client();
         let pool = test_pool();
+        let f = FixtureContainer::run("alloy-it").await;
         let containers = fetch_containers(&docker, &None, &pool).await;
+
+        assert!(
+            containers
+                .iter()
+                .any(|c| c.name == f.name() && !c.ports.is_empty()),
+            "Fixture '{}' should expose a published port",
+            f.name()
+        );
 
         // Check that containers with ports have valid port strings
         for c in &containers {
