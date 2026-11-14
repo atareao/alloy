@@ -86,5 +86,3 @@ Los scripts embebidos (`run:`) deben comillar las escrituras a los ficheros de e
 - Probar `release.yml` (jobs `build`/`release`/`docker`) con un `workflow_dispatch` real.
 - Valorar migrar de PAT a **GitHub App** para evitar caducidades.
 - `release.yml` no se ha ejecutado desde su reescritura (sept-2026).
-- La rama `else` de *Prepare archive* (`7z`, `ARTIFACT=$PKG.zip`) es **código muerto**: la matriz solo
-  usa `archive: tar.gz`. Verificar `7z` y el consumo de `ARTIFACT` si algún día se añade un target `zip`.
