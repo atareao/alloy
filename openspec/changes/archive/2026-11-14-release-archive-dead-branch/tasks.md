@@ -19,4 +19,4 @@
 
 ## 4. Documentación y cierre
 
-- [ ] 4.1 Auditar, abrir PR a `develop`, pasar CI y archivar con `openspec archive`.
+- [x] 4.1 Auditar, abrir PR a `develop`, pasar CI y archivar con `openspec archive`.
