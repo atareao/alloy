@@ -407,6 +407,7 @@ just check      # Pre-commit: fmt + clippy
 just lint       # cargo clippy --all-targets --all-features
 just fmt        # cargo fmt -- --check
 just fmt-fix    # cargo fmt
+just install-hooks  # Instala el hook pre-commit (core.hooksPath=.githooks)
 
 # Manual dev workflow
 cd backend && cargo run     # Run with local config.yaml
@@ -419,14 +420,16 @@ cd frontend && pnpm run build
 ### Testing
 
 ```sh
-# Backend: tests unitarios (320 tests; 12 de integración quedan aislados con #[ignore])
+# Backend: tests unitarios (321 tests; 12 de integración quedan aislados con #[ignore])
 cd backend && cargo test
 
 # Frontend (81 tests)
 cd frontend && pnpm run test
 ```
 
-> Los 12 tests de integración del backend (requieren daemon y contenedores locales) están aislados con `#[ignore]`: ver [docs/integration-tests.md](docs/integration-tests.md).
+> Los 12 tests de integración del backend están aislados con `#[ignore]` y provisionan sus propios contenedores efímeros (requieren daemon y red para el pull): ver [docs/integration-tests.md](docs/integration-tests.md).
+>
+> El hook `pre-commit` (bloquea código fuente sin change proposal) se instala con `just install-hooks`: ver [docs/pre-commit-hook.md](docs/pre-commit-hook.md).
 >
 > La suite del frontend aísla la API estática de antd y el scheduler de React entre tests para evitar errores intermitentes de teardown: ver [docs/frontend-test-isolation.md](docs/frontend-test-isolation.md).
 
