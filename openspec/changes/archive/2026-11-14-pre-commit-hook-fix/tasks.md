@@ -22,4 +22,4 @@
 ## 4. Documentación y cierre
 
 - [x] 4.1 Verificar `just install-hooks` en un repo de prueba (o `git config` local reversible).
-- [ ] 4.2 Auditar, abrir PR a `develop`, pasar CI y archivar con `openspec archive`.
+- [x] 4.2 Auditar, abrir PR a `develop`, pasar CI y archivar con `openspec archive`.
