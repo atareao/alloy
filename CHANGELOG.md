@@ -1,4 +1,27 @@
 # Changelog
+## [0.24.2] - 2026-11-14
+
+### Bug Fixes
+
+- *(frontend)* Aísla la suite de tests del teardown intermitente de antd/jsdom
+
+### Documentation
+
+- *(openspec)* Archiva change integration-test-isolation
+- *(openspec)* Archiva change frontend-teardown-flake
+- *(openspec)* Archiva change cargo-lock-sync
+- *(openspec)* Archiva change dockerfile-pnpm-single-source
+- *(openspec)* Archiva change release-sc2086
+
+### Miscellaneous Tasks
+
+- *(ci)* Sincroniza y vigila el lockfile de Rust
+- *(ci)* Deriva la versión de pnpm del Dockerfile desde packageManager
+- *(ci)* Comilla $GITHUB_ENV en release.yml y vigila actionlint en CI
+
+### Testing
+
+- *(backend)* Aísla los tests de integración del ciclo de `cargo test`
 ## [0.24.1] - 2026-11-13
 
 ### Documentation
@@ -8,6 +31,7 @@
 ### Miscellaneous Tasks
 
 - *(toolchain)* Actions a Node 24 y Node unificado en la LTS 24
+- Release v0.24.1
 ## [0.24.0] - 2026-11-13
 
 ### Bug Fixes
