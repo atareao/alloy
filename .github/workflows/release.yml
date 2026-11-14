@@ -21,11 +21,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             ext: ""
-            archive: tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             ext: ""
-            archive: tar.gz
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain
@@ -39,13 +37,8 @@ jobs:
           ARCHIVE_NAME="alloy${{ matrix.ext }}"
           cp "$BIN" "$ARCHIVE_NAME"
           PKG="alloy-${{ matrix.target }}"
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar czf "$PKG.tar.gz" "$ARCHIVE_NAME"
-            echo "ARTIFACT=$PKG.tar.gz" >> "$GITHUB_ENV"
-          else
-            7z a "$PKG.zip" "$ARCHIVE_NAME"
-            echo "ARTIFACT=$PKG.zip" >> "$GITHUB_ENV"
-          fi
+          tar czf "$PKG.tar.gz" "$ARCHIVE_NAME"
+          echo "ARTIFACT=$PKG.tar.gz" >> "$GITHUB_ENV"
       - name: Upload artifact
         uses: actions/upload-artifact@v6
         with:
@@ -74,7 +67,7 @@ jobs:
             [[ "$f" == *.md ]] && continue
             [[ "$f" == *.txt ]] && continue
             [ -f "$f" ] || continue
-            arch=$(echo "$f" | sed 's/^alloy-//; s/\.tar\.gz$//; s/\.zip$//')
+            arch=$(echo "$f" | sed 's/^alloy-//; s/\.tar\.gz$//')
             echo "| \`$arch\` | \`$f\` |" >> notes.md
           done
       - name: Create release
@@ -84,7 +77,6 @@ jobs:
           body_path: notes.md
           files: |
             *.tar.gz
-            *.zip
           generate_release_notes: true
 
   docker:
