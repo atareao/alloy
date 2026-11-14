@@ -660,7 +660,7 @@ mod tests {
 
     // ── list_stacks_h ────────────────────────────────────────
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_list_stacks_returns_valid_structure() {
         let docker = podman_client();
@@ -677,7 +677,7 @@ mod tests {
         }
     }
 
-    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
+    #[ignore = "requiere daemon de contenedores y red (pull de la imagen de fixture alpine)"]
     #[tokio::test]
     async fn test_integration_list_stacks_services_have_state() {
         let docker = podman_client();

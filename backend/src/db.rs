@@ -13,6 +13,16 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
     let conn = obj.lock().unwrap();
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
+    apply_schema(&conn)?;
+
+    Ok(pool)
+}
+
+/// Esquema de la base de datos (tablas) + migraciones idempotentes.
+///
+/// Compartido por `init_db()` (producción) y `test_pool()` (tests) para que el esquema de
+/// test no pueda divergir del real (p. ej. columnas añadidas por migraciones).
+fn apply_schema(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS containers (
@@ -71,25 +81,19 @@ pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
         ",
     )?;
 
+    // Migraciones idempotentes (ignorar el error si la columna ya existe).
     let _ = conn.execute_batch(
         "ALTER TABLE update_policies ADD COLUMN notify_events INTEGER NOT NULL DEFAULT 0;",
     );
-
-    // Migraciones para columnas check time
     let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN last_check TEXT;");
     let _ = conn.execute_batch("ALTER TABLE containers ADD COLUMN next_check TEXT;");
-
-    // Migración para last_remote_digest
     let _ = conn.execute_batch(
         "ALTER TABLE containers ADD COLUMN last_remote_digest TEXT NOT NULL DEFAULT '';",
     );
-
-    // Migración para last_pulled_digest (digest de la imagen ya en caché local)
     let _ = conn.execute_batch(
         "ALTER TABLE containers ADD COLUMN last_pulled_digest TEXT NOT NULL DEFAULT '';",
     );
-
-    Ok(pool)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -104,36 +108,7 @@ pub fn test_pool() -> DbPool {
             rt.block_on(async {
                 let obj = pool.get().await.unwrap();
                 let conn = obj.lock().unwrap();
-                conn.execute_batch(
-                    "CREATE TABLE IF NOT EXISTS containers (
-                        id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT NOT NULL DEFAULT '',
-                        image_tag TEXT NOT NULL DEFAULT '', size_mb REAL NOT NULL DEFAULT 0.0,
-                        state TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
-                        ports TEXT NOT NULL DEFAULT '[]', traefik_url TEXT, compose_project TEXT,
-                        has_update INTEGER NOT NULL DEFAULT 0, registry_url TEXT NOT NULL DEFAULT '',
-                        last_check TEXT, next_check TEXT,
-                        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-                    );
-                    CREATE TABLE IF NOT EXISTS update_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, container TEXT NOT NULL,
-                        image TEXT NOT NULL, old_digest TEXT NOT NULL DEFAULT '',
-                        new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
-                        status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
-                    );
-                    CREATE TABLE IF NOT EXISTS update_policies (
-                        container TEXT PRIMARY KEY, action TEXT NOT NULL DEFAULT 'none',
-                        cleanup_old_image INTEGER NOT NULL DEFAULT 0,
-                        rollback_on_failure INTEGER NOT NULL DEFAULT 0,
-                        notify_events INTEGER NOT NULL DEFAULT 0
-                    );
-                    CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY, value TEXT NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS container_updating (
-                        container TEXT PRIMARY KEY
-                    );",
-                )
-                .expect("Failed to create test schema");
+                apply_schema(&conn).expect("Failed to create test schema");
             });
         }
     });
