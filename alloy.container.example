@@ -41,10 +41,8 @@ After=network-online.target
 ContainerName=alloy
 UserNS=keep-id
 
-# Identidad del proceso (opcional). Si NO usas keep-id y tu usuario del host
-# no es 1000, descomenta y ajusta para que el volumen data/ sea escribible:
-#Environment=PUID=1000
-#Environment=PGID=1000
+# Identidad del proceso: se fija en build con --build-arg UID/GID. Con
+# UserNS=keep-id ya queda alineada con el usuario del host.
 
 # Imagen construida localmente con `just build`
 Image=localhost/atareao/alloy:latest

@@ -232,7 +232,7 @@ podman run -d \
 > Alloy **requires OIDC** authentication. There is no simple JWT fallback. You must configure `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URL`.
 
 > [!TIP]
-> If your host user is not UID/GID `1000`, add `-e PUID=$(id -u) -e PGID=$(id -g)` so the container can write the `data/` volume. See [docs/container-identity.md](docs/container-identity.md).
+> The container runs as the unprivileged user `app` (UID/GID `1000`) and can be built with your host identity using `--build-arg UID=$(id -u) --build-arg GID=$(id -g)`. To give it access to the Docker socket, pass its group with `--group-add <gid>` (e.g. `--group-add 999`). See [docs/container-identity.md](docs/container-identity.md).
 
 ### From source
 
@@ -269,8 +269,6 @@ oidc_redirect_url: "https://alloy.example.com/api/auth/callback"
 |---|---|---|---|
 | `PORT` | `3066` | No | Server listening port |
 | `HOST` | `0.0.0.0` | No | Bind address |
-| `PUID` | `1000` | No | UID del proceso (identidad del contenedor) |
-| `PGID` | `1000` | No | GID del proceso (identidad del contenedor) |
 | `OIDC_ISSUER_URL` | — | **Yes** | OIDC provider discovery URL |
 | `OIDC_CLIENT_ID` | — | **Yes** | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | — | **Yes** | OIDC client secret |
@@ -369,17 +367,13 @@ The Quadlet automatically handles:
 
 ### Container user (UID/GID)
 
-The image runs the server as an unprivileged user and can match your host identity
-without rebuilding:
+The image runs the server as the unprivileged user `app` (`USER app`), whose identity can be matched to your host at build time:
 
 ```sh
-podman run ... -e PUID=$(id -u) -e PGID=$(id -g) ghcr.io/atareao/alloy:latest
+podman build --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t localhost/alloy:latest .
 ```
 
-At startup the entrypoint takes ownership of `/app/data` and drops privileges with
-`su-exec`; the server process never runs as `root`. If building your own image, bake
-the identity in with `podman build --build-arg UID=$(id -u) --build-arg GID=$(id -g)`.
-Details: [docs/container-identity.md](docs/container-identity.md).
+At runtime the process keeps the supplementary groups granted to the container, so `--group-add <gid>` (or `group_add` / `GroupAdd=`) is all you need to give it access to `/var/run/docker.sock`; the server never runs as `root`. Details: [docs/container-identity.md](docs/container-identity.md).
 
 ### Build and push custom image
 
