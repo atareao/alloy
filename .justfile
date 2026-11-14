@@ -26,6 +26,11 @@ fmt:
 fmt-fix:
     cd backend && cargo fmt
 
+# Instala el hook pre-commit versionado (core.hooksPath=.githooks)
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "✅ Hook pre-commit instalado (core.hooksPath=.githooks)"
+
 # Tests unitarios (no requieren daemon de contenedores)
 test:
     cd backend && cargo test
