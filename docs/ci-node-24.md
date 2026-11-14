@@ -97,7 +97,4 @@ No hay variables de entorno ni secretos nuevos. Para cambiar de LTS en el futuro
 
 ## Follow-ups
 
-- Los 2 avisos `SC2086` (info) de `actionlint` en `release.yml` (línea ~37) son **preexistentes**
-  y ajenos a este cambio (citado de `$GITHUB_ENV` en el paso *Prepare archive*). Se dejan como
-  están para no mezclar.
 - `release.yml`/`release-prepare.yml` quedan sin ejercitar hasta el próximo release real.
