@@ -1,4 +1,13 @@
 # Changelog
+## [0.24.4] - 2026-11-14
+
+### Bug Fixes
+
+- *(build)* Elimina el entrypoint y restaura los grupos suplementarios
+
+### Documentation
+
+- *(openspec)* Archiva remove-container-entrypoint en build/container-identity
 ## [0.24.3] - 2026-11-14
 
 ### Bug Fixes
@@ -10,6 +19,10 @@
 - *(openspec)* Archiva change integration-test-fixtures
 - *(openspec)* Archiva change pre-commit-hook-fix
 - *(openspec)* Archiva change release-archive-dead-branch
+
+### Miscellaneous Tasks
+
+- Release v0.24.3
 
 ### Refactor
 
