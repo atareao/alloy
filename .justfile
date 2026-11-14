@@ -26,6 +26,30 @@ fmt:
 fmt-fix:
     cd backend && cargo fmt
 
+# Tests unitarios (no requieren daemon de contenedores)
+test:
+    cd backend && cargo test
+
+# Tests de integración (requieren daemon Podman/Docker y contenedores locales)
+test-integration:
+    #!/usr/bin/env sh
+    set -eu
+    if [ -n "${DOCKER_HOST:-}" ]; then
+        : # DOCKER_HOST manda
+    elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -S "${XDG_RUNTIME_DIR}/podman/podman.sock" ]; then
+        export DOCKER_HOST="unix://${XDG_RUNTIME_DIR}/podman/podman.sock"
+    elif [ -S /run/podman/podman.sock ]; then
+        export DOCKER_HOST="unix:///run/podman/podman.sock"
+    elif [ -S /run/user/1000/podman/podman.sock ]; then
+        export DOCKER_HOST="unix:///run/user/1000/podman/podman.sock"
+    else
+        echo "❌ No hay daemon de contenedores accesible." >&2
+        echo "   Define DOCKER_HOST (p. ej. DOCKER_HOST=unix:///run/user/$(id -u)/podman/podman.sock)" >&2
+        echo "   o arranca el socket: systemctl --user start podman.socket" >&2
+        exit 1
+    fi
+    cd backend && cargo test -- --ignored
+
 build:
     @podman build \
         --no-cache \
