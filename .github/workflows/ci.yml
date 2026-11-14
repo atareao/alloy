@@ -46,6 +46,28 @@ jobs:
             echo "::error::Node desalineado: package.json=$PKG_MAJOR Dockerfile=$DOCKER_MAJOR"
             exit 1
           fi
+      - name: Check pnpm version consistency
+        run: |
+          PKG_PNPM=$(grep -oE '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@[0-9][^"]*' frontend/package.json | grep -oE 'pnpm@.*' || true)
+          echo "frontend/package.json packageManager: ${PKG_PNPM:-<vacio>}"
+          if [ -z "$PKG_PNPM" ]; then
+            echo "::error::No se pudo leer packageManager (pnpm@x.y.z) de frontend/package.json"
+            exit 1
+          fi
+          PKG_PNPM_VER=${PKG_PNPM#pnpm@}
+          PKG_PNPM_VER=${PKG_PNPM_VER%%+*}
+          # Codigo del Dockerfile sin comentarios (ni de linea completa ni de cola): no cuentan como deriva.
+          DOCKERFILE_CODE=$(sed -E 's/[[:space:]]+#.*$//' Dockerfile | grep -vE '^[[:space:]]*#' || true)
+          if printf '%s\n' "$DOCKERFILE_CODE" | grep -qF "$PKG_PNPM_VER" \
+             || printf '%s\n' "$DOCKERFILE_CODE" | grep -qE 'pnpm@[0-9]'; then
+            echo "::error::El Dockerfile fija una version literal de pnpm; debe derivarla de packageManager"
+            printf '%s\n' "$DOCKERFILE_CODE" | grep -nE 'pnpm@[0-9]' || true
+            exit 1
+          fi
+          if ! printf '%s\n' "$DOCKERFILE_CODE" | grep -q 'packageManager'; then
+            echo "::error::El Dockerfile debe derivar la version de pnpm de packageManager (frontend/package.json)"
+            exit 1
+          fi
       - name: Set up pnpm
         uses: pnpm/action-setup@v5
         with:

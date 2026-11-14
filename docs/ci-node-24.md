@@ -100,6 +100,4 @@ No hay variables de entorno ni secretos nuevos. Para cambiar de LTS en el futuro
 - Los 2 avisos `SC2086` (info) de `actionlint` en `release.yml` (línea ~37) son **preexistentes**
   y ajenos a este cambio (citado de `$GITHUB_ENV` en el paso *Prepare archive*). Se dejan como
   están para no mezclar.
-- El `Dockerfile` fija `pnpm@11.21.0` por duplicado respecto a `packageManager`; candidato a
-  alinearse igual que se ha hecho con Node.
 - `release.yml`/`release-prepare.yml` quedan sin ejercitar hasta el próximo release real.
