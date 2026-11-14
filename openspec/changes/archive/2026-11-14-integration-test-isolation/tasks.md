@@ -29,5 +29,5 @@
 
 - [x] 4.1 `docs/integration-tests.md`: qué cubren, cuándo correrlos, preflight y limitaciones.
 - [x] 4.2 Referencia en `README.md`.
-- [ ] 4.3 Auditar con `@rust-reviewer` (hecho, rechazado → corregido), abrir PR a `develop`,
+- [x] 4.3 Auditar con `@rust-reviewer` (rechazado → corregido), abrir PR #103 a `develop`,
       archivar el change con `openspec archive`.
