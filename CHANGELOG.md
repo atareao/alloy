@@ -1,4 +1,23 @@
 # Changelog
+## [0.24.3] - 2026-11-14
+
+### Bug Fixes
+
+- *(dev)* Corrige el contador del hook pre-commit y lo versiona
+
+### Documentation
+
+- *(openspec)* Archiva change integration-test-fixtures
+- *(openspec)* Archiva change pre-commit-hook-fix
+- *(openspec)* Archiva change release-archive-dead-branch
+
+### Refactor
+
+- *(ci)* Elimina la rama else muerta (7z) de release.yml
+
+### Testing
+
+- *(backend)* Hermiza los tests de integración con fixtures efímeros
 ## [0.24.2] - 2026-11-14
 
 ### Bug Fixes
@@ -18,6 +37,7 @@
 - *(ci)* Sincroniza y vigila el lockfile de Rust
 - *(ci)* Deriva la versión de pnpm del Dockerfile desde packageManager
 - *(ci)* Comilla $GITHUB_ENV en release.yml y vigila actionlint en CI
+- Release v0.24.2
 
 ### Testing
 
