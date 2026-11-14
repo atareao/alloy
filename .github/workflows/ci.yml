@@ -13,6 +13,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Run tests
         run: cargo test --manifest-path backend/Cargo.toml
+      - name: Report ignored integration tests
+        run: |
+          LIST=$(cargo test --manifest-path backend/Cargo.toml -- --ignored --list)
+          echo "$LIST"
+          COUNT=$(echo "$LIST" | grep -cE ': test$' || true)
+          echo "Tests de integración aislados (ignored): $COUNT"
+          if [ "$COUNT" -lt 12 ]; then
+            echo "::error::Se esperaban 12 tests de integración marcados como ignored (encontrados: $COUNT). ¿Se ha eliminado algún #[ignore]?"
+            exit 1
+          fi
       - name: Check formatting
         run: cargo fmt --manifest-path backend/Cargo.toml --all -- --check
       - name: Clippy

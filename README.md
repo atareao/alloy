@@ -426,6 +426,8 @@ cd backend && cargo test
 cd frontend && npx vitest run
 ```
 
+> Los 12 tests de integración (requieren daemon y contenedores locales) están aislados con `#[ignore]`: ver [docs/integration-tests.md](docs/integration-tests.md).
+
 ### Project structure
 
 ```

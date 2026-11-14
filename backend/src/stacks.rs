@@ -498,18 +498,7 @@ pub fn routes() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn is_podman_available() -> bool {
-        std::env::var("DOCKER_HOST").is_ok()
-            || std::path::Path::new("/run/user/1000/podman/podman.sock").exists()
-    }
-
-    async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST")
-            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
-        Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
-            .expect("Failed to connect to Podman socket")
-    }
+    use crate::test_support::podman_client;
 
     // ── Pure helpers (no Docker) ─────────────────────────────
 
@@ -671,13 +660,10 @@ mod tests {
 
     // ── list_stacks_h ────────────────────────────────────────
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_list_stacks_returns_valid_structure() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let result: Json<Vec<StackInfo>> = list_stacks_h(State(docker)).await;
         // May be empty (Quadlets), but structure must be valid
         for stack in &result.0 {
@@ -691,13 +677,10 @@ mod tests {
         }
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_list_stacks_services_have_state() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let result: Json<Vec<StackInfo>> = list_stacks_h(State(docker)).await;
         for stack in &result.0 {
             for svc in &stack.services {
