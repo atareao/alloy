@@ -9,9 +9,9 @@ compatibilidad con el despliegue por defecto.
 
 ### Requirement: La identidad del proceso es configurable en build
 
-El stage de runtime MUST aceptar los `ARG UID` y `ARG GID` (por defecto `1000`)
-y crear el usuario `app` con esa identidad, de modo que la imagen pueda
-construirse con el UID/GID de cualquier host.
+El stage de runtime MUST aceptar los `ARG UID` y `ARG GID` (por defecto `1000`) y crear el usuario
+`app` con esa identidad, de modo que la imagen pueda construirse con el UID/GID de cualquier host.
+Esta es la **única** vía de configuración de identidad: no MUST existir reajuste en runtime.
 
 #### Scenario: Build con la identidad del host
 
@@ -23,47 +23,47 @@ construirse con el UID/GID de cualquier host.
 
 - **Given** un build sin `--build-arg`
 - **When** se construye la imagen
-- **Then** el usuario `app` queda con UID 1000 y GID 1000 (comportamiento previo)
+- **Then** el usuario `app` queda con UID 1000 y GID 1000
 
-### Requirement: La identidad del proceso es configurable en runtime
+#### Scenario: Sin reajuste en runtime
 
-El contenedor MUST leer las variables de entorno `PUID` y `PGID` al arrancar y,
-si se indican, reajustar el usuario `app` a esa identidad y cederle la propiedad
-de `/app/data` antes de iniciar la aplicación.
-
-#### Scenario: Ajuste por PUID/PGID
-
-- **Given** una imagen construida con los defaults (UID/GID 1000)
-- **When** se ejecuta con `PUID=1002 PGID=1002` montando un volumen `data/`
-  propiedad del host 1002
-- **Then** la aplicación arranca y crea/abre `data/alloy.db` sin error
-
-#### Scenario: Sin variables de identidad
-
-- **Given** una ejecución sin `PUID` ni `PGID`
-- **When** arranca el contenedor
-- **Then** se usa la identidad por defecto (1000/1000) y el arranque no cambia
-  respecto al comportamiento anterior
+- **Given** un contenedor arrancado con `PUID`/`PGID` definidos en el entorno
+- **When** arranca
+- **Then** esos valores se ignoran y el proceso corre con la identidad del build
 
 ### Requirement: El proceso final no corre con privilegios
 
-El entrypoint MUST abandonar los privilegios y ejecutar `alloy` con el usuario
-`app`; el proceso servidor MUST NOT correr como `root`.
+El contenedor MUST ejecutar `alloy` directamente como el usuario `app` (`USER app`), sin un
+entrypoint que arranque como `root`; el proceso servidor MUST NOT correr como `root`.
 
 #### Scenario: Proceso servidor sin privilegios
 
 - **Given** un contenedor en ejecución
 - **When** se inspecciona el usuario efectivo del proceso `alloy`
-- **Then** el UID efectivo NO es 0 y coincide con `PUID` (o 1000 por defecto)
+- **Then** el UID efectivo NO es 0
 
-### Requirement: El directorio de datos es escribible por la identidad efectiva
+### Requirement: Los grupos suplementarios del contenedor llegan al proceso
 
-El arranque MUST garantizar que el directorio `/app/data` (o el volumen montado
-en él) sea escribible por el usuario `app` con la identidad configurada, incluso
-si el volumen lo creó el host con otro propietario.
+Al no haber entrypoint, el proceso `alloy` MUST conservar los grupos suplementarios que el
+contenedor reciba en runtime (`--group-add`, `group_add`, `GroupAdd=`), de modo que pueda acceder a
+recursos del host como `/var/run/docker.sock` (habitualmente `root:docker`).
 
-#### Scenario: Volumen preexistente con otro dueño
+#### Scenario: Acceso al socket con group_add
 
-- **Given** un volumen `data/` en el host propiedad de UID/GID 1002 vacío
-- **When** el contenedor arranca con `PUID=1002 PGID=1002`
-- **Then** el proceso puede crear `alloy.db` y la app queda operativa
+- **Given** un contenedor arrancado con el socket de Docker montado y su GID concedido con
+  `--group-add <gid-socket>`
+- **When** arranca la app
+- **Then** el proceso `alloy` tiene `<gid-socket>` entre sus grupos suplementarios
+- **And** puede abrir `/var/run/docker.sock` y listar contenedores
+
+### Requirement: El volumen de datos nuevo es escribible por app
+
+La imagen MUST crear `/app/data` con la propiedad del usuario `app`, de modo que un volumen de datos
+**nuevo** (que hereda la propiedad del directorio de la imagen al montarse) sea escribible por la
+app.
+
+#### Scenario: Volumen nuevo escribible
+
+- **Given** un contenedor arrancado con un volumen de datos vacío montado en `/app/data`
+- **When** la app arranca
+- **Then** puede crear `alloy.db` en `/app/data` sin error

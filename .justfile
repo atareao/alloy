@@ -8,6 +8,10 @@
 check:
     cd backend && cargo fmt -- --check && cargo clippy --locked -- -D warnings
 
+# Verifica la identidad del contenedor y la propagación de grupos (--group-add)
+verify-image:
+    ./scripts/verify-container-identity.sh
+
 user     := "atareao"
 name     := "alloy"
 version  := `vampus show`

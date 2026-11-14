@@ -57,7 +57,6 @@ ARG GID=1000
 
 RUN apk add --no-cache \
     ca-certificates \
-    su-exec \
     && addgroup -g "$GID" app \
     && adduser -D -h /app -u "$UID" -G app app
 
@@ -67,9 +66,6 @@ COPY --from=frontend-builder /build/dist ./dist
 
 RUN mkdir -p /app/data && chown -R app:app /app
 
-COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-ENV PUID=${UID} PGID=${GID}
-USER root
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+USER app
 EXPOSE 3066
 CMD ["./alloy"]
