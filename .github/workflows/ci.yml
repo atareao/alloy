@@ -12,10 +12,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run tests
-        run: cargo test --manifest-path backend/Cargo.toml
+        run: cargo test --manifest-path backend/Cargo.toml --locked
       - name: Report ignored integration tests
         run: |
-          LIST=$(cargo test --manifest-path backend/Cargo.toml -- --ignored --list)
+          LIST=$(cargo test --manifest-path backend/Cargo.toml --locked -- --ignored --list)
           echo "$LIST"
           COUNT=$(echo "$LIST" | grep -cE ': test$' || true)
           echo "Tests de integración aislados (ignored): $COUNT"
@@ -26,7 +26,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --manifest-path backend/Cargo.toml --all -- --check
       - name: Clippy
-        run: cargo clippy --manifest-path backend/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path backend/Cargo.toml --locked -- -D warnings
 
   frontend:
     runs-on: ubuntu-latest

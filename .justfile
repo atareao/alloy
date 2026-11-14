@@ -6,7 +6,7 @@
 # ═══════════════════════════════════════════════════════════════
 
 check:
-    cd backend && cargo fmt -- --check && cargo clippy -- -D warnings
+    cd backend && cargo fmt -- --check && cargo clippy --locked -- -D warnings
 
 user     := "atareao"
 name     := "alloy"
@@ -18,7 +18,7 @@ list:
     @just --list
 
 lint:
-    cd backend && cargo clippy --all-targets --all-features
+    cd backend && cargo clippy --all-targets --all-features --locked
 
 fmt:
     cd backend && cargo fmt -- --check
@@ -89,7 +89,7 @@ gf-release version:
 gf-publish version:
     #!/bin/fish
     # Pre-commit checks
-    cd backend && cargo fmt -- --check; and cargo clippy -- -D warnings
+    cd backend && cargo fmt -- --check; and cargo clippy --locked -- -D warnings
     or begin
         echo "❌ Pre-commit checks failed. Aborting."
         exit 1
@@ -141,7 +141,7 @@ upgrade:
     #!/bin/fish
     vampus upgrade --patch
     set VERSION $(vampus show)
-    cd backend && cargo update
+    cd backend && cargo update -w
     git commit -am "Upgrade to version $VERSION"
     git tag -a "$VERSION" -m "Version $VERSION"
     # clean old podman images

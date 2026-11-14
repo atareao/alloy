@@ -14,6 +14,7 @@ tag dispara el workflow **Release** (binarios + GitHub Release + imagen Docker).
 - `.github/workflows/release.yml` — se dispara con `push: tags: v*`; jobs `build`, `release`
   y `docker`.
 - `.vampus.yml` — `current_version` y el patrón que reescribe `backend/Cargo.toml`.
+- `backend/Cargo.lock` — se sincroniza con el bump; ver `docs/cargo-lock-sync.md`.
 - `.justfile` — `version := \`vampus show\``.
 
 ## Cómo funciona
@@ -21,8 +22,9 @@ tag dispara el workflow **Release** (binarios + GitHub Release + imagen Docker).
 1. Push a `main` (o `workflow_dispatch`) lanza `release-prepare.yml`, salvo que el commit sea
    `chore: release …` (guarda anti-bucle).
 2. Calcula el bump desde los commits: `!: ` ⇒ major · `^feat` ⇒ minor · resto ⇒ patch.
-3. `vampus upgrade <tipo>` actualiza `.vampus.yml` + `backend/Cargo.toml`; `git-cliff` genera
-   `CHANGELOG.md`.
+3. `vampus upgrade <tipo>` actualiza `.vampus.yml` + `backend/Cargo.toml`; el lock se sincroniza
+   (`cargo update -w --manifest-path backend/Cargo.toml`, ver `docs/cargo-lock-sync.md`) y `git-cliff`
+   genera `CHANGELOG.md`.
 4. Commit `chore: release vX`, tag `vX`, push a `main` y del tag — **con `GH_PAT`**, para que
    el push del tag **sí** dispare `release.yml`.
 5. `release.yml` construye binarios, crea la GitHub Release y publica la imagen en GHCR.
