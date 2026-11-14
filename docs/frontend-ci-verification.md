@@ -15,7 +15,10 @@ Change de OpenSpec: `frontend-ci-verification` (archivado en
 - `.github/workflows/ci.yml` — job `frontend` añadido, en paralelo al job `test` del backend
   (que queda intacto).
 
-Nada más. No se toca `backend/`, `frontend/src/`, el `Dockerfile` ni los workflows de release.
+Nada más en aquel change: no se tocó `backend/`, `frontend/src/` ni los workflows de release. El
+job ha ido creciendo con changes posteriores (guard de Node en `ci-node-24`, guard de pnpm en
+`dockerfile-pnpm-single-source`); el `Dockerfile` solo aparece como **objeto** de esos guards, nunca
+como fichero modificado por esta verificación.
 
 ## Cómo funciona
 
@@ -48,6 +51,11 @@ El workflow **no** declara la versión de pnpm: `pnpm/action-setup@v5` la resuel
 `packageManager` (con `package_json_file: frontend/package.json`, porque el manifest no está en la
 raíz). Quien bumpee el gestor solo tiene que tocar `frontend/package.json`.
 
+El `Dockerfile` tampoco declara la versión de pnpm: el stage `frontend-builder` la deriva de
+`packageManager` (`node -p`). Un guard en CI (`Check pnpm version consistency`) falla si el
+`Dockerfile` vuelve a fijar una versión literal de pnpm (p. ej. `pnpm@11.21`, incluso vía una
+variable) o si deja de derivarla de `packageManager`.
+
 Tampoco declara la versión de Node: `actions/setup-node@v5` la lee con
 `node-version-file: frontend/package.json` (`engines.node`). El tag del `Dockerfile` sigue siendo
 una declaración aparte, y un guard en CI (`Check Node version consistency`) falla si divergen.
@@ -70,7 +78,7 @@ cd frontend && pnpm install --frozen-lockfile \
 ## Decisiones
 
 - **Job separado en paralelo** (`design.md` D1): fallos atribuibles y sin sumar tiempo.
-- **`pnpm/action-setup@v4` sin `version`** (D2): el pin vive solo en `packageManager`, que es
+- **`pnpm/action-setup@v5` sin `version`** (D2): el pin vive solo en `packageManager`, que es
   justo el campo que introdujo `pnpm-single-package-manager`. Declarar la versión en el workflow
   la duplicaría.
 - **Node 24** (D3, revisado en `ci-node-24`): LTS vigente, con `engines.node` como fuente única
