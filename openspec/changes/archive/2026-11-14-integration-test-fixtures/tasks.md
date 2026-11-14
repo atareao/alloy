@@ -32,4 +32,4 @@
 
 - [x] 4.1 `docs/integration-tests.md`: retirar el follow-up resuelto; documentar la imagen base y el
       pull de la primera ejecución.
-- [ ] 4.2 Auditar (`rust-reviewer`), abrir PR a `develop`, pasar CI y archivar con `openspec archive`.
+- [x] 4.2 Auditar (`rust-reviewer`), abrir PR a `develop`, pasar CI y archivar con `openspec archive`.
