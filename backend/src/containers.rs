@@ -684,42 +684,23 @@ pub fn routes() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::db::test_pool;
-
-    /// Crea un cliente Bollard conectado al socket de Podman.
-    /// Usa DOCKER_HOST si está configurado, o el socket rootless por defecto.
-    async fn podman_client() -> Docker {
-        let socket = std::env::var("DOCKER_HOST")
-            .unwrap_or_else(|_| "unix:///run/user/1000/podman/podman.sock".to_string());
-        Docker::connect_with_local(&socket, 120, bollard::API_DEFAULT_VERSION)
-            .expect("Failed to connect to Podman socket. Is Podman running?")
-    }
-
-    fn is_podman_available() -> bool {
-        std::env::var("DOCKER_HOST").is_ok()
-            || std::path::Path::new("/run/user/1000/podman/podman.sock").exists()
-    }
+    use crate::test_support::podman_client;
 
     // ── fetch_containers ─────────────────────────────────────
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_returns_list() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let pool = test_pool();
         let result = fetch_containers(&docker, &None, &pool).await;
         assert!(!result.is_empty(), "Should have at least one container");
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_structure() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let pool = test_pool();
         let containers = fetch_containers(&docker, &None, &pool).await;
         let c = containers
@@ -737,13 +718,10 @@ mod tests {
         );
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_fields() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let pool = test_pool();
         let containers = fetch_containers(&docker, &None, &pool).await;
         for c in &containers {
@@ -776,13 +754,10 @@ mod tests {
         }
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_with_allowed_filter() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let pool = test_pool();
         let allowed = Some(vec!["alloy".into(), "oxinbox".into()]);
         let containers = fetch_containers(&docker, &allowed, &pool).await;
@@ -795,13 +770,10 @@ mod tests {
         }
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_with_empty_allowed() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let pool = test_pool();
         let allowed = Some(Vec::new());
         let containers = fetch_containers(&docker, &allowed, &pool).await;
@@ -813,13 +785,10 @@ mod tests {
 
     // ── find_container_by_name ───────────────────────────────
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_find_container_by_name_found() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let container = find_container_by_name(&docker, "alloy")
             .await
             .expect("Container 'alloy' should be found");
@@ -831,13 +800,10 @@ mod tests {
         assert_eq!(name.as_deref(), Some("alloy"));
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_find_container_by_name_not_found() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let result = find_container_by_name(&docker, "this-container-does-not-exist-xyz").await;
         assert!(result.is_err());
         match result {
@@ -846,13 +812,10 @@ mod tests {
         }
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_find_container_by_name_oxinbox() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let container = find_container_by_name(&docker, "oxinbox")
             .await
             .expect("Container 'oxinbox' should be found");
@@ -864,13 +827,10 @@ mod tests {
         assert_eq!(name.as_deref(), Some("oxinbox"));
     }
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_find_container_by_name_postgres() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let container = find_container_by_name(&docker, "preemer-db")
             .await
             .expect("Container 'preemer-db' should be found");
@@ -884,13 +844,10 @@ mod tests {
 
     // ── Port parsing ─────────────────────────────────────────
 
+    #[ignore = "requiere daemon Podman/Docker y los contenedores locales (alloy, oxinbox, preemer-db)"]
     #[tokio::test]
     async fn test_integration_fetch_containers_ports() {
-        if !is_podman_available() {
-            eprintln!("SKIP: Podman socket not available");
-            return;
-        }
-        let docker = podman_client().await;
+        let docker = podman_client();
         let pool = test_pool();
         let containers = fetch_containers(&docker, &None, &pool).await;
 

@@ -46,7 +46,7 @@ gh api repos/atareao/alloy/dependabot/alerts --jq '[.[]|select(.state=="open")]|
 ## Decisiones
 
 - Bumps **solo** en lockfiles para minimizar el diff; no se ampliaron rangos en `package.json`.
-- `pnpm-lock.yaml` se regeneró con `pnpm@11.21.0` (la versión del `Dockerfile`) y se validó
+- `pnpm-lock.yaml` se regeneró con `pnpm@11.21.0` (la versión de `packageManager`) y se validó
   con `pnpm install --frozen-lockfile`; los *specifiers* del importer se mantuvieron en los
   valores del manifest para no romper el build Docker.
 - Se conserva `@testing-library/jest-dom` en `6.9.1` (la `6.10.0` está deprecada por breaking

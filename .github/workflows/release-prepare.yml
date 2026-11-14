@@ -44,6 +44,8 @@ jobs:
           fi
       - name: Bump version with vampus
         run: vampus upgrade ${{ steps.bump.outputs.type }}
+      - name: Sync Cargo.lock with the new version
+        run: cargo update -w --manifest-path backend/Cargo.toml
       - name: Get new version
         id: version
         run: |

@@ -12,6 +12,8 @@ mod models;
 mod notifications;
 mod stacks;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod timezone;
 mod updates;
 mod workers;

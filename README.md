@@ -419,12 +419,16 @@ cd frontend && pnpm run build
 ### Testing
 
 ```sh
-# Backend (44 tests)
+# Backend: tests unitarios (320 tests; 12 de integración quedan aislados con #[ignore])
 cd backend && cargo test
 
-# Frontend (18 tests)
-cd frontend && npx vitest run
+# Frontend (81 tests)
+cd frontend && pnpm run test
 ```
+
+> Los 12 tests de integración del backend (requieren daemon y contenedores locales) están aislados con `#[ignore]`: ver [docs/integration-tests.md](docs/integration-tests.md).
+>
+> La suite del frontend aísla la API estática de antd y el scheduler de React entre tests para evitar errores intermitentes de teardown: ver [docs/frontend-test-isolation.md](docs/frontend-test-isolation.md).
 
 ### Project structure
 

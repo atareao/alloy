@@ -12,11 +12,21 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run tests
-        run: cargo test --manifest-path backend/Cargo.toml
+        run: cargo test --manifest-path backend/Cargo.toml --locked
+      - name: Report ignored integration tests
+        run: |
+          LIST=$(cargo test --manifest-path backend/Cargo.toml --locked -- --ignored --list)
+          echo "$LIST"
+          COUNT=$(echo "$LIST" | grep -cE ': test$' || true)
+          echo "Tests de integración aislados (ignored): $COUNT"
+          if [ "$COUNT" -lt 12 ]; then
+            echo "::error::Se esperaban 12 tests de integración marcados como ignored (encontrados: $COUNT). ¿Se ha eliminado algún #[ignore]?"
+            exit 1
+          fi
       - name: Check formatting
         run: cargo fmt --manifest-path backend/Cargo.toml --all -- --check
       - name: Clippy
-        run: cargo clippy --manifest-path backend/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path backend/Cargo.toml --locked -- -D warnings
 
   frontend:
     runs-on: ubuntu-latest
@@ -34,6 +44,28 @@ jobs:
           fi
           if [ "$PKG_MAJOR" != "$DOCKER_MAJOR" ]; then
             echo "::error::Node desalineado: package.json=$PKG_MAJOR Dockerfile=$DOCKER_MAJOR"
+            exit 1
+          fi
+      - name: Check pnpm version consistency
+        run: |
+          PKG_PNPM=$(grep -oE '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@[0-9][^"]*' frontend/package.json | grep -oE 'pnpm@.*' || true)
+          echo "frontend/package.json packageManager: ${PKG_PNPM:-<vacio>}"
+          if [ -z "$PKG_PNPM" ]; then
+            echo "::error::No se pudo leer packageManager (pnpm@x.y.z) de frontend/package.json"
+            exit 1
+          fi
+          PKG_PNPM_VER=${PKG_PNPM#pnpm@}
+          PKG_PNPM_VER=${PKG_PNPM_VER%%+*}
+          # Codigo del Dockerfile sin comentarios (ni de linea completa ni de cola): no cuentan como deriva.
+          DOCKERFILE_CODE=$(sed -E 's/[[:space:]]+#.*$//' Dockerfile | grep -vE '^[[:space:]]*#' || true)
+          if printf '%s\n' "$DOCKERFILE_CODE" | grep -qF "$PKG_PNPM_VER" \
+             || printf '%s\n' "$DOCKERFILE_CODE" | grep -qE 'pnpm@[0-9]'; then
+            echo "::error::El Dockerfile fija una version literal de pnpm; debe derivarla de packageManager"
+            printf '%s\n' "$DOCKERFILE_CODE" | grep -nE 'pnpm@[0-9]' || true
+            exit 1
+          fi
+          if ! printf '%s\n' "$DOCKERFILE_CODE" | grep -q 'packageManager'; then
+            echo "::error::El Dockerfile debe derivar la version de pnpm de packageManager (frontend/package.json)"
             exit 1
           fi
       - name: Set up pnpm
@@ -63,3 +95,12 @@ jobs:
       - name: Lint
         working-directory: frontend
         run: pnpm run lint
+
+  workflows:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lint GitHub Actions workflows
+        run: docker run --rm --network none -v "$PWD:/mnt:ro" -w /mnt rhysd/actionlint:1.7.12
