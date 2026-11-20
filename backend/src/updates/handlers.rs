@@ -64,6 +64,7 @@ async fn update_progress(
         checked,
         updated,
         errors,
+        ..Default::default()
     });
 }
 
@@ -341,6 +342,7 @@ pub async fn update_container_h(
             checked: 0,
             updated: 0,
             errors: 0,
+            ..Default::default()
         }));
     }
 
@@ -407,6 +409,7 @@ pub async fn update_container_h(
                 checked: 0,
                 updated: 0,
                 errors: 0,
+                ..Default::default()
             }))
         }
         Err(e) => {
@@ -463,6 +466,7 @@ pub async fn update_all_h(
                         checked: 0,
                         updated: 0,
                         errors: 0,
+                        ..Default::default()
                     });
                     continue;
                 }
@@ -478,6 +482,7 @@ pub async fn update_all_h(
                 checked: 0,
                 updated: 0,
                 errors: 0,
+                ..Default::default()
             });
             continue;
         }
@@ -502,6 +507,7 @@ pub async fn update_all_h(
                 checked: 0,
                 updated: 0,
                 errors: 0,
+                ..Default::default()
             });
             let entry = UpdateHistoryEntry {
                 container: name.clone(),
@@ -554,6 +560,7 @@ pub async fn update_all_h(
                     checked: 0,
                     updated: 0,
                     errors: 0,
+                    ..Default::default()
                 });
                 let entry = UpdateHistoryEntry {
                     container: name.clone(),
@@ -594,6 +601,7 @@ pub async fn update_all_h(
                     checked: 0,
                     updated: 0,
                     errors: 0,
+                    ..Default::default()
                 });
             }
         }
@@ -734,6 +742,9 @@ async fn check_and_apply_all(
     let total = containers.len() as u32;
     let mut checked = 0u32;
     let mut updated = 0u32;
+    let mut updatable = 0u32;
+    let mut uptodate = 0u32;
+    let mut failed = 0u32;
     let mut num_errors = 0u32;
 
     for c in &mut containers {
@@ -839,70 +850,73 @@ async fn check_and_apply_all(
                 }
 
                 // If has_update and running → apply policy inline
-                if has_update && c.state == "running" {
-                    let cid = raw.id.as_deref().unwrap_or("").to_string();
-                    let compose_project = raw
-                        .labels
-                        .as_ref()
-                        .and_then(|l| l.get(crate::models::LABEL_COMPOSE_PROJECT))
-                        .cloned();
-                    let pending = PendingUpdate {
-                        name: name.clone(),
-                        image_full: image_full.clone(),
-                        cid,
-                        image_id,
-                        remote_digest: Some(config_digest),
-                        manifest_digest: Some(manifest_digest),
-                        last_pulled_digest: last_pulled_digest_map.get(&name).cloned(),
-                        compose_project,
-                    };
-                    // Resolve policy for this single container
-                    let policies = update_policies.lock().await.clone();
-                    let policy_map: HashMap<String, UpdatePolicy> = policies
-                        .into_iter()
-                        .map(|p| (p.container.clone(), p))
-                        .collect();
-                    let (default_action, default_cleanup, default_rollback) = {
-                        let s = settings.lock().await;
-                        (
-                            s.default_update_action
-                                .clone()
-                                .unwrap_or_else(|| "pull-restart".into()),
-                            s.default_cleanup_old_image.unwrap_or(false),
-                            s.default_rollback_on_failure.unwrap_or(false),
+                if has_update {
+                    updatable += 1;
+                    if c.state == "running" {
+                        let cid = raw.id.as_deref().unwrap_or("").to_string();
+                        let compose_project = raw
+                            .labels
+                            .as_ref()
+                            .and_then(|l| l.get(crate::models::LABEL_COMPOSE_PROJECT))
+                            .cloned();
+                        let pending = PendingUpdate {
+                            name: name.clone(),
+                            image_full: image_full.clone(),
+                            cid,
+                            image_id,
+                            remote_digest: Some(config_digest),
+                            manifest_digest: Some(manifest_digest),
+                            last_pulled_digest: last_pulled_digest_map.get(&name).cloned(),
+                            compose_project,
+                        };
+                        // Resolve policy for this single container
+                        let policies = update_policies.lock().await.clone();
+                        let policy_map: HashMap<String, UpdatePolicy> = policies
+                            .into_iter()
+                            .map(|p| (p.container.clone(), p))
+                            .collect();
+                        let (default_action, default_cleanup, default_rollback) = {
+                            let s = settings.lock().await;
+                            (
+                                s.default_update_action
+                                    .clone()
+                                    .unwrap_or_else(|| "pull-restart".into()),
+                                s.default_cleanup_old_image.unwrap_or(false),
+                                s.default_rollback_on_failure.unwrap_or(false),
+                            )
+                        };
+                        let policy = policy_map.get(&name).cloned().unwrap_or(UpdatePolicy {
+                            container: name.clone(),
+                            action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
+                            cleanup_old_image: default_cleanup,
+                            rollback_on_failure: default_rollback,
+                            notify_events: false,
+                        });
+                        let mut this_ok = false;
+                        let outcome = apply_single_policy(
+                            docker,
+                            settings,
+                            state_notify,
+                            progress_cache,
+                            progress_tx,
+                            update_history,
+                            db_pool,
+                            tx,
+                            &pending,
+                            &policy,
+                            &mut this_ok,
+                            total,
+                            checked,
+                            updated,
+                            num_errors,
                         )
-                    };
-                    let policy = policy_map.get(&name).cloned().unwrap_or(UpdatePolicy {
-                        container: name.clone(),
-                        action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
-                        cleanup_old_image: default_cleanup,
-                        rollback_on_failure: default_rollback,
-                        notify_events: false,
-                    });
-                    let prev_any_success = any_success;
-                    apply_single_policy(
-                        docker,
-                        settings,
-                        state_notify,
-                        progress_cache,
-                        progress_tx,
-                        update_history,
-                        db_pool,
-                        tx,
-                        &pending,
-                        &policy,
-                        &mut any_success,
-                        total,
-                        checked,
-                        updated,
-                        num_errors,
-                    )
-                    .await;
-                    if any_success && !prev_any_success {
-                        updated += 1;
+                        .await;
+                        any_success |= this_ok;
+                        tally_apply_outcome(outcome, &mut updated, &mut failed);
                     }
                 } else {
                     // No update needed — mark check as done
+                    uptodate += 1;
                     update_progress(
                         progress_cache,
                         state_notify,
@@ -1021,16 +1035,18 @@ async fn check_and_apply_all(
         any_success
     );
 
-    // Send final batch-complete progress event
-    update_progress(
+    // Emit the end-of-batch event with the REAL counters (done = true).
+    emit_batch_done(
         progress_cache,
         state_notify,
         progress_tx,
         total,
-        total,
+        checked,
         updated,
         num_errors,
-        String::new(),
+        updatable,
+        uptodate,
+        failed,
     )
     .await;
 
@@ -1079,6 +1095,17 @@ pub async fn cancel_check_all_h(State(cancel_check): State<Arc<AtomicBool>>) -> 
     Json("cancelled")
 }
 
+/// Desenlace de aplicar la política a un contenedor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApplyOutcome {
+    /// La actualización se aplicó con éxito.
+    Applied,
+    /// No procedía aplicar (política `none` o pull ya en caché): no es fallo.
+    Skipped,
+    /// Se intentó aplicar y falló.
+    Failed,
+}
+
 /// Apply a single container's update policy inline.
 /// Contains the same logic as the per-container loop body in `apply_policies_background`.
 #[allow(clippy::too_many_arguments)]
@@ -1098,7 +1125,7 @@ async fn apply_single_policy(
     checked: u32,
     updated: u32,
     errors: u32,
-) {
+) -> ApplyOutcome {
     if policy.action == UpdateAction::None {
         tracing::warn!(
             "apply_single_policy: política None para '{}', saltando",
@@ -1115,7 +1142,7 @@ async fn apply_single_policy(
             p.name.clone(),
         )
         .await;
-        return;
+        return ApplyOutcome::Skipped;
     }
 
     tracing::info!(
@@ -1175,9 +1202,9 @@ async fn apply_single_policy(
                 .await;
                 // D6: el skip es un no-op real. Salir antes del bloque
                 // `if success` para no notificar, ni registrar historial,
-                // ni ejecutar prune. La función devuelve `()` y no hay
-                // limpieza obligatoria para este caso.
-                return;
+                // ni ejecutar prune. El desenlace es `Skipped`: no es
+                // ni éxito ni fallo.
+                return ApplyOutcome::Skipped;
             } else if pull_image(
                 docker,
                 &p.image_full,
@@ -1536,8 +1563,10 @@ async fn apply_single_policy(
             let result = prune_dangling_images(docker).await;
             log_prune_result("policy.cleanup_old_image", &result);
         }
+        ApplyOutcome::Applied
     } else {
         tracing::warn!("apply_single_policy: fallo/no-hubo-éxito '{}'", p.name);
+        ApplyOutcome::Failed
     }
 }
 
@@ -1589,7 +1618,7 @@ async fn apply_policies_background(
                 notify_events: false,
             },
         };
-        apply_single_policy(
+        let _ = apply_single_policy(
             docker,
             settings,
             state_notify,
@@ -1768,6 +1797,55 @@ async fn resolve_container_image_digest(docker: &Docker, name: &str) -> String {
 
 // ── Test helpers (implemented in GREEN phase) ──────────────
 
+/// Emite el evento de fin de batch (`done = true`) con los contadores reales.
+#[allow(clippy::too_many_arguments)]
+async fn emit_batch_done(
+    progress_cache: &Arc<Mutex<BatchProgress>>,
+    state_notify: &Arc<Notify>,
+    progress_tx: &broadcast::Sender<UpdateProgress>,
+    total: u32,
+    checked: u32,
+    updated: u32,
+    errors: u32,
+    updatable: u32,
+    uptodate: u32,
+    failed: u32,
+) {
+    let mut cache = progress_cache.lock().await;
+    cache.total = total;
+    cache.checked = checked;
+    cache.updated = updated;
+    cache.errors = errors;
+    cache.updatable = updatable;
+    cache.uptodate = uptodate;
+    cache.failed = failed;
+    cache.checking = String::new();
+    drop(cache);
+    state_notify.notify_waiters();
+    let _ = progress_tx.send(UpdateProgress {
+        container: String::new(),
+        status: "done".into(),
+        done: true,
+        error: None,
+        total,
+        checked,
+        updated,
+        errors,
+        updatable,
+        uptodate,
+        failed,
+    });
+}
+
+/// Contabiliza el desenlace de UN solo contenedor. `Skipped` no cuenta.
+fn tally_apply_outcome(outcome: ApplyOutcome, updated: &mut u32, failed: &mut u32) {
+    match outcome {
+        ApplyOutcome::Applied => *updated += 1,
+        ApplyOutcome::Failed => *failed += 1,
+        ApplyOutcome::Skipped => {}
+    }
+}
+
 /// Reset the progress cache to default and notify waiting state handlers.
 /// This MUST be called after `check_and_apply_all` completes to clear
 /// the "checking" field and prevent stale batch progress on the frontend.
@@ -1780,16 +1858,17 @@ pub(crate) async fn reset_progress_cache(
     *cache = BatchProgress::default();
     drop(cache);
     state_notify.notify_waiters();
-    // Signal end-of-batch on the SSE stream: `done = true`.
+    // Do NOT signal end-of-batch here: that is `emit_batch_done`'s job.
     let _ = progress_tx.send(UpdateProgress {
         container: String::new(),
         status: "idle".into(),
-        done: true,
+        done: false,
         error: None,
         total: 0,
         checked: 0,
         updated: 0,
         errors: 0,
+        ..Default::default()
     });
 }
 
@@ -1815,6 +1894,7 @@ mod tests {
             updated: 2,
             errors: 0,
             checking: "nginx".into(),
+            ..Default::default()
         }));
         let state_notify = Arc::new(Notify::new());
         let (progress_tx, _rx) = broadcast::channel::<UpdateProgress>(8);
@@ -1981,7 +2061,7 @@ mod tests {
         };
         let mut any_success = false;
 
-        apply_single_policy(
+        let outcome = apply_single_policy(
             &docker,
             &settings,
             &state_notify,
@@ -2000,6 +2080,11 @@ mod tests {
         )
         .await;
 
+        assert_eq!(
+            outcome,
+            super::ApplyOutcome::Skipped,
+            "un skip de pull no es ni éxito ni fallo"
+        );
         assert!(!any_success, "el skip no debe marcar `any_success`");
         assert!(
             update_history.lock().await.is_empty(),
@@ -2041,25 +2126,84 @@ mod tests {
         assert!(!evt.done, "in-flight progress is not the end of a batch");
     }
 
-    /// `reset_progress_cache` MUST emit an `update-progress` event signalling
-    /// the end of the batch (`done = true`) so the frontend needs no heuristics.
+    /// `reset_progress_cache` NO debe señalar fin de batch con ceros; el fin
+    /// lo emite `emit_batch_done` con contadores reales.
     #[tokio::test]
-    async fn test_reset_progress_cache_emits_done_event() {
+    async fn test_reset_progress_cache_does_not_signal_done_with_zeros() {
         let progress_cache: Arc<Mutex<BatchProgress>> = Arc::new(Mutex::new(BatchProgress {
             total: 5,
             checked: 5,
             updated: 2,
             errors: 0,
             checking: "nginx".into(),
+            updatable: 1,
+            uptodate: 4,
+            failed: 0,
         }));
         let state_notify = Arc::new(Notify::new());
         let (progress_tx, mut rx) = broadcast::channel::<UpdateProgress>(8);
 
         reset_progress_cache(&progress_cache, &state_notify, &progress_tx).await;
 
-        let evt = rx.try_recv().expect("reset must emit update-progress");
-        assert!(evt.done, "reset event must signal end of batch");
+        let evt = rx
+            .try_recv()
+            .expect("reset debe emitir un evento update-progress");
+        assert!(
+            !evt.done,
+            "reset no debe emitir done=true (lo hace emit_batch_done)"
+        );
         assert_eq!(evt.total, 0);
         assert_eq!(evt.checked, 0);
+    }
+
+    /// El evento de fin de batch debe llevar los contadores reales y done=true.
+    #[tokio::test]
+    async fn test_emit_batch_done_carries_real_counters() {
+        let progress_cache = Arc::new(Mutex::new(BatchProgress::default()));
+        let state_notify = Arc::new(Notify::new());
+        let (progress_tx, mut rx) = broadcast::channel::<UpdateProgress>(8);
+
+        emit_batch_done(
+            &progress_cache,
+            &state_notify,
+            &progress_tx,
+            10,
+            10,
+            2,
+            1,
+            3,
+            7,
+            1,
+        )
+        .await;
+
+        let evt = rx.try_recv().expect("done event must be emitted");
+        assert!(evt.done, "el evento de fin debe llevar done=true");
+        assert_eq!(evt.total, 10);
+        assert_eq!(evt.checked, 10);
+        assert_eq!(evt.updated, 2);
+        assert_eq!(evt.errors, 1);
+        assert_eq!(evt.updatable, 3);
+        assert_eq!(evt.uptodate, 7);
+        assert_eq!(evt.failed, 1);
+    }
+
+    /// El recuento distingue aplicado / omitido / fallido por contenedor.
+    #[test]
+    fn test_tally_apply_outcome_counts_each_apply_independently() {
+        use super::ApplyOutcome;
+        let mut updated = 0u32;
+        let mut failed = 0u32;
+        for outcome in [
+            ApplyOutcome::Applied,
+            ApplyOutcome::Applied,
+            ApplyOutcome::Skipped,
+            ApplyOutcome::Failed,
+            ApplyOutcome::Applied,
+        ] {
+            tally_apply_outcome(outcome, &mut updated, &mut failed);
+        }
+        assert_eq!(updated, 3, "3 aplicaciones correctas");
+        assert_eq!(failed, 1, "1 aplicación fallida (el skip no cuenta)");
     }
 }
