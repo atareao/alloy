@@ -22,6 +22,7 @@ import type {
   UpdateCheckConfig,
 } from "./types";
 import { apiFetch } from "./api";
+import { mapBatchToResults } from "./batchResults";
 import LoginScreen from "./components/LoginScreen";
 import DashboardPage from "./components/DashboardPage";
 import ConfigPage from "./components/ConfigPage";
@@ -183,6 +184,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       batchPhaseRef.current = "idle";
       setBatchPhase("idle");
       setShowSummary(true);
+      const results = mapBatchToResults(bp);
+      setCheckResults(results.check);
+      setUpdateResults(results.update);
       api("/api/history").then((d) => {
         if (d) setHistory(d);
       });
@@ -228,6 +232,9 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
           updated: p.updated,
           errors: p.errors,
           checking: p.container,
+          updatable: p.updatable ?? 0,
+          uptodate: p.uptodate ?? 0,
+          failed: p.failed ?? 0,
         });
       }
     },

@@ -33,7 +33,7 @@ pub struct StateEvent {
     pub containers: Vec<ContainerInfo>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct UpdateProgress {
     pub container: String,
     pub status: String,
@@ -47,6 +47,12 @@ pub struct UpdateProgress {
     pub updated: u32,
     #[serde(default)]
     pub errors: u32,
+    #[serde(default)]
+    pub updatable: u32,
+    #[serde(default)]
+    pub uptodate: u32,
+    #[serde(default)]
+    pub failed: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -197,7 +203,7 @@ pub struct UpdateHistoryEntry {
     pub duration_ms: u64,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Settings {
     #[serde(default)]
     pub telegram_token: Option<String>,
@@ -456,6 +462,12 @@ pub struct BatchProgress {
     pub updated: u32,
     pub errors: u32,
     pub checking: String,
+    #[serde(default)]
+    pub updatable: u32,
+    #[serde(default)]
+    pub uptodate: u32,
+    #[serde(default)]
+    pub failed: u32,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -725,6 +737,7 @@ mod tests {
             updated: 0,
             errors: 0,
             checking: "".into(),
+            ..Default::default()
         };
         let response = StateResponse {
             containers,

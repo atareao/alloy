@@ -25,6 +25,9 @@ export interface UpdateProgress {
   checked: number;
   updated: number;
   errors: number;
+  updatable?: number;
+  uptodate?: number;
+  failed?: number;
 }
 
 export interface NotifEvent {
@@ -154,6 +157,9 @@ export interface BatchProgress {
   updated: number;
   errors: number;
   checking: string;
+  updatable?: number;
+  uptodate?: number;
+  failed?: number;
 }
 
 export interface StateResponse {
