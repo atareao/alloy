@@ -1,6 +1,6 @@
 [package]
 name = "alloy"
-version = "0.24.4"
+version = "0.24.5"
 edition = "2021"
 
 [dependencies]
@@ -28,6 +28,7 @@ async-stream = "0.3"
 cron = "0.15"
 rusqlite = { version = "0.38", features = ["bundled"] }
 deadpool-sqlite = "0.13"
+percent-encoding = "2"
 
 [dev-dependencies]
 tempfile = "3"
