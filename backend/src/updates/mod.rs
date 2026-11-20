@@ -1,6 +1,7 @@
 pub mod common;
 pub mod digest;
 pub mod handlers;
+pub mod health_guard;
 pub mod history;
 
 use crate::state::AppState;

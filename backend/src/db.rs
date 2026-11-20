@@ -59,7 +59,8 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
             new_digest TEXT NOT NULL DEFAULT '',
             timestamp TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT '',
-            duration_ms INTEGER NOT NULL DEFAULT 0
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            attempts INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS update_policies (
@@ -67,7 +68,9 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
             action TEXT NOT NULL DEFAULT 'none',
             cleanup_old_image INTEGER NOT NULL DEFAULT 0,
             rollback_on_failure INTEGER NOT NULL DEFAULT 0,
-            notify_events INTEGER NOT NULL DEFAULT 0
+            notify_events INTEGER NOT NULL DEFAULT 0,
+            max_start_attempts INTEGER,
+            health_window_secs INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -93,6 +96,14 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
     let _ = conn.execute_batch(
         "ALTER TABLE containers ADD COLUMN last_pulled_digest TEXT NOT NULL DEFAULT '';",
     );
+    // update-rollback-guard: intentos de arranque en el historial y overrides por política.
+    let _ = conn.execute_batch(
+        "ALTER TABLE update_history ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;",
+    );
+    let _ =
+        conn.execute_batch("ALTER TABLE update_policies ADD COLUMN max_start_attempts INTEGER;");
+    let _ =
+        conn.execute_batch("ALTER TABLE update_policies ADD COLUMN health_window_secs INTEGER;");
     Ok(())
 }
 
@@ -332,8 +343,8 @@ pub fn list_updating(conn: &Connection) -> SqlResult<Vec<String>> {
 pub fn save_update_history(conn: &Connection, entries: &[UpdateHistoryEntry]) -> SqlResult<()> {
     conn.execute("DELETE FROM update_history", [])?;
     let mut stmt = conn.prepare(
-        "INSERT INTO update_history (container, image, old_digest, new_digest, timestamp, status, duration_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO update_history (container, image, old_digest, new_digest, timestamp, status, duration_ms, attempts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     )?;
     for e in entries {
         stmt.execute(params![
@@ -344,6 +355,7 @@ pub fn save_update_history(conn: &Connection, entries: &[UpdateHistoryEntry]) ->
             e.timestamp,
             e.status,
             e.duration_ms as i64,
+            e.attempts as i64,
         ])?;
     }
     Ok(())
@@ -351,7 +363,7 @@ pub fn save_update_history(conn: &Connection, entries: &[UpdateHistoryEntry]) ->
 
 pub fn load_update_history(conn: &Connection) -> SqlResult<Vec<UpdateHistoryEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT container, image, old_digest, new_digest, timestamp, status, duration_ms FROM update_history ORDER BY timestamp DESC LIMIT 100",
+        "SELECT container, image, old_digest, new_digest, timestamp, status, duration_ms, attempts FROM update_history ORDER BY timestamp DESC LIMIT 100",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(UpdateHistoryEntry {
@@ -362,6 +374,7 @@ pub fn load_update_history(conn: &Connection) -> SqlResult<Vec<UpdateHistoryEntr
             timestamp: row.get(4)?,
             status: row.get(5)?,
             duration_ms: row.get::<_, i64>(6)? as u64,
+            attempts: row.get::<_, i64>(7)? as u32,
         })
     })?;
     let mut result = Vec::new();
@@ -373,8 +386,8 @@ pub fn load_update_history(conn: &Connection) -> SqlResult<Vec<UpdateHistoryEntr
 
 pub fn append_update_history(conn: &Connection, entry: &UpdateHistoryEntry) -> SqlResult<()> {
     conn.execute(
-        "INSERT INTO update_history (container, image, old_digest, new_digest, timestamp, status, duration_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO update_history (container, image, old_digest, new_digest, timestamp, status, duration_ms, attempts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             entry.container,
             entry.image,
@@ -383,6 +396,7 @@ pub fn append_update_history(conn: &Connection, entry: &UpdateHistoryEntry) -> S
             entry.timestamp,
             entry.status,
             entry.duration_ms as i64,
+            entry.attempts as i64,
         ],
     )?;
     Ok(())
@@ -397,7 +411,7 @@ pub fn clear_update_history(conn: &Connection) -> SqlResult<()> {
 
 pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
     let mut stmt = conn.prepare(
-        "SELECT container, action, cleanup_old_image, rollback_on_failure, notify_events FROM update_policies",
+        "SELECT container, action, cleanup_old_image, rollback_on_failure, notify_events, max_start_attempts, health_window_secs FROM update_policies",
     )?;
     let rows = stmt.query_map([], |row| {
         let action_str: String = row.get(1)?;
@@ -407,6 +421,8 @@ pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
             cleanup_old_image: row.get::<_, i32>(2)? != 0,
             rollback_on_failure: row.get::<_, i32>(3)? != 0,
             notify_events: row.get::<_, i32>(4)? != 0,
+            max_start_attempts: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
+            health_window_secs: row.get::<_, Option<i64>>(6)?.map(|v| v as u64),
         })
     })?;
     let mut result = Vec::new();
@@ -418,14 +434,16 @@ pub fn load_update_policies(conn: &Connection) -> SqlResult<Vec<UpdatePolicy>> {
 
 pub fn save_update_policy(conn: &Connection, policy: &UpdatePolicy) -> SqlResult<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO update_policies (container, action, cleanup_old_image, rollback_on_failure, notify_events)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR REPLACE INTO update_policies (container, action, cleanup_old_image, rollback_on_failure, notify_events, max_start_attempts, health_window_secs)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             policy.container,
             policy.action.to_string(),
             policy.cleanup_old_image as i32,
             policy.rollback_on_failure as i32,
             policy.notify_events as i32,
+            policy.max_start_attempts.map(|v| v as i64),
+            policy.health_window_secs.map(|v| v as i64),
         ],
     )?;
     Ok(())
@@ -496,6 +514,18 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .filter(|s| !s.is_empty()),
         pull_timeout_secs: map.get("pull_timeout_secs").and_then(|v| v.parse().ok()),
         check_interval_ms: map.get("check_interval_ms").and_then(|v| v.parse().ok()),
+        update_max_start_attempts: map
+            .get("update_max_start_attempts")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_UPDATE_MAX_START_ATTEMPTS),
+        update_start_attempt_interval_secs: map
+            .get("update_start_attempt_interval_secs")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS),
+        update_health_window_secs: map
+            .get("update_health_window_secs")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_UPDATE_HEALTH_WINDOW_SECS),
     })
 }
 
@@ -543,6 +573,18 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
             "check_interval_ms",
             settings.check_interval_ms.map(|v| v.to_string()),
         ),
+        (
+            "update_max_start_attempts",
+            Some(settings.update_max_start_attempts.to_string()),
+        ),
+        (
+            "update_start_attempt_interval_secs",
+            Some(settings.update_start_attempt_interval_secs.to_string()),
+        ),
+        (
+            "update_health_window_secs",
+            Some(settings.update_health_window_secs.to_string()),
+        ),
     ];
 
     for (key, value) in pairs {
@@ -578,13 +620,15 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT, container TEXT NOT NULL,
                 image TEXT NOT NULL, old_digest TEXT NOT NULL DEFAULT '',
                 new_digest TEXT NOT NULL DEFAULT '', timestamp TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0
+                status TEXT NOT NULL DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS update_policies (
                 container TEXT PRIMARY KEY, action TEXT NOT NULL DEFAULT 'none',
                 cleanup_old_image INTEGER NOT NULL DEFAULT 0,
                 rollback_on_failure INTEGER NOT NULL DEFAULT 0,
-                notify_events INTEGER NOT NULL DEFAULT 0
+                notify_events INTEGER NOT NULL DEFAULT 0,
+                max_start_attempts INTEGER, health_window_secs INTEGER
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -739,6 +783,7 @@ mod tests {
             timestamp: "2024-01-01T00:00:00".into(),
             status: "success".into(),
             duration_ms: 1000,
+            attempts: 0,
         }];
         save_update_history(&conn, &entries).unwrap();
         let loaded = load_update_history(&conn).unwrap();
@@ -757,6 +802,7 @@ mod tests {
             timestamp: "2024-06-01T00:00:00".into(),
             status: "success".into(),
             duration_ms: 500,
+            attempts: 0,
         };
         append_update_history(&conn, &entry).unwrap();
         let loaded = load_update_history(&conn).unwrap();
@@ -775,6 +821,7 @@ mod tests {
             timestamp: "now".into(),
             status: "ok".into(),
             duration_ms: 0,
+            attempts: 0,
         };
         append_update_history(&conn, &entry).unwrap();
         clear_update_history(&conn).unwrap();
@@ -791,6 +838,8 @@ mod tests {
             cleanup_old_image: true,
             rollback_on_failure: false,
             notify_events: true,
+            max_start_attempts: None,
+            health_window_secs: None,
         };
         save_update_policy(&conn, &policy).unwrap();
         let loaded = load_update_policies(&conn).unwrap();
@@ -808,6 +857,8 @@ mod tests {
             cleanup_old_image: false,
             rollback_on_failure: false,
             notify_events: false,
+            max_start_attempts: None,
+            health_window_secs: None,
         };
         save_update_policy(&conn, &policy).unwrap();
         delete_update_policy(&conn, "nginx").unwrap();
@@ -833,6 +884,91 @@ mod tests {
         let conn = test_conn();
         let settings = load_settings(&conn).unwrap();
         assert_eq!(settings.telegram_token, None);
+    }
+
+    // ── update-rollback-guard: settings / políticas / historial ───
+
+    /// Sin valores persistidos, la guarda cae a los defaults globales (3/10/30).
+    #[test]
+    fn test_load_settings_guard_defaults() {
+        let conn = test_conn();
+        let settings = load_settings(&conn).unwrap();
+        assert_eq!(settings.update_max_start_attempts, 3);
+        assert_eq!(settings.update_start_attempt_interval_secs, 10);
+        assert_eq!(settings.update_health_window_secs, 30);
+    }
+
+    /// Los 3 campos de la guarda hacen round-trip en settings.
+    #[test]
+    fn test_settings_guard_fields_roundtrip() {
+        let conn = test_conn();
+        let settings = Settings {
+            update_max_start_attempts: 4,
+            update_start_attempt_interval_secs: 15,
+            update_health_window_secs: 45,
+            ..Default::default()
+        };
+        save_settings(&conn, &settings).unwrap();
+
+        let loaded = load_settings(&conn).unwrap();
+        assert_eq!(loaded.update_max_start_attempts, 4);
+        assert_eq!(loaded.update_start_attempt_interval_secs, 15);
+        assert_eq!(loaded.update_health_window_secs, 45);
+    }
+
+    /// Los overrides por política (Some) y su ausencia (None) se persisten tal cual.
+    #[test]
+    fn test_update_policy_guard_overrides_roundtrip() {
+        let conn = test_conn();
+        let with_override = UpdatePolicy {
+            container: "nginx".into(),
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: false,
+            rollback_on_failure: true,
+            notify_events: true,
+            max_start_attempts: Some(5),
+            health_window_secs: Some(60),
+        };
+        let without_override = UpdatePolicy {
+            container: "redis".into(),
+            max_start_attempts: None,
+            health_window_secs: None,
+            ..with_override.clone()
+        };
+        save_update_policy(&conn, &with_override).unwrap();
+        save_update_policy(&conn, &without_override).unwrap();
+
+        let loaded = load_update_policies(&conn).unwrap();
+        let nginx = loaded.iter().find(|p| p.container == "nginx").unwrap();
+        assert_eq!(nginx.max_start_attempts, Some(5));
+        assert_eq!(nginx.health_window_secs, Some(60));
+        let redis = loaded.iter().find(|p| p.container == "redis").unwrap();
+        assert_eq!(redis.max_start_attempts, None);
+        assert_eq!(redis.health_window_secs, None);
+    }
+
+    /// El nº de intentos y los digests del rollback persisten en el historial.
+    #[test]
+    fn test_update_history_attempts_roundtrip() {
+        let conn = test_conn();
+        let entry = UpdateHistoryEntry {
+            container: "nginx".into(),
+            image: "nginx:latest".into(),
+            old_digest: "sha256:aaa".into(),
+            new_digest: "sha256:bbb".into(),
+            timestamp: "2026-01-01T00:00:00".into(),
+            status: "rolled-back".into(),
+            duration_ms: 4200,
+            attempts: 3,
+        };
+        append_update_history(&conn, &entry).unwrap();
+
+        let loaded = load_update_history(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].status, "rolled-back");
+        assert_eq!(loaded[0].old_digest, "sha256:aaa");
+        assert_eq!(loaded[0].new_digest, "sha256:bbb");
+        assert_eq!(loaded[0].attempts, 3);
     }
 
     // ── telegram_topic_id round-trip (change: telegram-topic-id) ───

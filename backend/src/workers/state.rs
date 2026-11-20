@@ -323,6 +323,8 @@ mod tests {
             cleanup_old_image: false,
             rollback_on_failure: false,
             notify_events,
+            max_start_attempts: None,
+            health_window_secs: None,
         }
     }
 

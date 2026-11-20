@@ -21,6 +21,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::db::DbPool;
 use crate::models::*;
 use crate::state::AppState;
+use crate::updates::health_guard::{is_stable_running, runtime_health, RuntimeHealth};
 use crate::workers::CachedContainers;
 
 pub async fn find_container_by_name(
@@ -352,6 +353,69 @@ pub async fn remove_old_image(docker: &Docker, old_image_id: &str) {
             );
         }
     }
+}
+
+/// Inspect a container and build a [`RuntimeHealth`] snapshot from its runtime
+/// state: `Status`, `RestartCount` and the HEALTHCHECK result (if any).
+///
+/// `health` is `None` when the image defines no HEALTHCHECK, or when the
+/// daemon reports it as disabled (`none`/empty), so the guard knows it must not
+/// require a `healthy` result.
+pub async fn inspect_runtime_health(
+    docker: &Docker,
+    name: &str,
+) -> Result<RuntimeHealth, AppError> {
+    let resp = docker
+        .inspect_container(name, None::<InspectContainerOptions>)
+        .await
+        .map_err(|e| AppError::Docker(format!("inspect_container '{}': {}", name, e)))?;
+
+    let state = resp
+        .state
+        .as_ref()
+        .and_then(|s| s.status.as_ref())
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let restart_count = resp.restart_count.unwrap_or(0).max(0) as u64;
+    let health = resp
+        .state
+        .as_ref()
+        .and_then(|s| s.health.as_ref())
+        .and_then(|h| h.status.as_ref())
+        .map(|h| h.to_string())
+        .filter(|h| !h.is_empty() && h != "none");
+
+    Ok(runtime_health(&state, restart_count, health.as_deref()))
+}
+
+/// Verify that a container is *stably* healthy across a time window.
+///
+/// Takes ~4 samples spread across `window_secs` (one every `window_secs / 4`)
+/// and delegates the decision to
+/// [`is_stable_running`](crate::updates::health_guard::is_stable_running):
+/// `running` in every sample, `RestartCount` not increasing, and `healthy` at
+/// the end when the image defines a HEALTHCHECK.
+pub async fn verify_stable_running(
+    docker: &Docker,
+    name: &str,
+    window_secs: u64,
+) -> Result<bool, AppError> {
+    const SAMPLES: u64 = 4;
+    let step = (window_secs / SAMPLES).max(1);
+    let mut samples = Vec::with_capacity(SAMPLES as usize);
+    for _ in 0..SAMPLES {
+        tokio::time::sleep(std::time::Duration::from_secs(step)).await;
+        samples.push(inspect_runtime_health(docker, name).await?);
+    }
+    Ok(is_stable_running(&samples))
+}
+
+/// Stop a container by name (terminal `failed-stopped` state of the guard).
+pub async fn stop_container(docker: &Docker, name: &str) -> Result<(), AppError> {
+    docker
+        .stop_container(name, None::<StopContainerOptions>)
+        .await
+        .map_err(|e| AppError::Docker(format!("stop_container '{}': {}", name, e)))
 }
 
 /// Build the `(from_image, tag)` pair used by [`pull_image`].
