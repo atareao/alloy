@@ -1,5 +1,14 @@
 # Changelog
-## [0.24.5] - 2026-11-20
+## [0.24.7] - 2026-11-20
+
+### Bug Fixes
+
+- *(ui)* El resumen del check manual muestra contadores reales (#127)
+
+### Documentation
+
+- *(openspec)* Archiva manual-check-summary en specs
+## [0.24.6] - 2026-11-20
 
 ### Bug Fixes
 
@@ -12,6 +21,7 @@
 ### Miscellaneous Tasks
 
 - Release v0.24.5
+- Release v0.24.6
 
 ### Other
 
