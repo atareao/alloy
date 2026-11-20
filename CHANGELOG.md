@@ -1,4 +1,21 @@
 # Changelog
+## [0.24.5] - 2026-11-20
+
+### Bug Fixes
+
+- *(notifications)* Usa el endpoint v3 de Matrix y codifica el room ID
+
+### Documentation
+
+- *(openspec)* Archiva matrix-v3-endpoint en notifications
+
+### Miscellaneous Tasks
+
+- Release v0.24.5
+
+### Other
+
+- V0.24.5
 ## [0.24.4] - 2026-11-14
 
 ### Bug Fixes
@@ -8,6 +25,10 @@
 ### Documentation
 
 - *(openspec)* Archiva remove-container-entrypoint en build/container-identity
+
+### Miscellaneous Tasks
+
+- Release v0.24.4
 ## [0.24.3] - 2026-11-14
 
 ### Bug Fixes
