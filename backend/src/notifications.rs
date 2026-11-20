@@ -4,6 +4,15 @@ use tokio::sync::Mutex;
 use crate::models::Settings;
 use crate::state::http_client;
 
+/// Set de codificación para el segmento de ruta del room de Matrix: parte de
+/// `NON_ALPHANUMERIC` pero deja los caracteres *unreserved* de RFC 3986
+/// (`-._~`) sin codificar; `!` y `:` sí se codifican.
+const MATRIX_ROOM_PATH: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
 /// Resolve telegram token from settings
 fn tg_token(settings: &Settings) -> Option<&str> {
     settings.telegram_token.as_deref()
@@ -120,10 +129,11 @@ pub async fn notify_matrix(
     };
     let body =
         serde_json::json!({"msgtype": "m.notice", "body": format!("🐳 {}: {}", container, status)});
+    let room_id = percent_encoding::utf8_percent_encode(room, MATRIX_ROOM_PATH);
     let url = format!(
-        "{}/_matrix/client/r0/rooms/{}/send/m.room.message/{}",
+        "{}/_matrix/client/v3/rooms/{}/send/m.room.message/{}",
         hs.trim_end_matches('/'),
-        room,
+        room_id,
         uuid::Uuid::new_v4()
     );
     match http_client()
@@ -853,6 +863,251 @@ mod tests {
         assert!(
             err.to_lowercase().contains("topic"),
             "topic inválido ⇒ Err antes de emitir HTTP (no un error de red): {err}"
+        );
+    }
+
+    // ── notify_matrix: endpoint v3 + room encoded (change: matrix-v3-endpoint) ──
+
+    /// Servidor HTTP local de un solo uso: captura la petición (cabeceras +
+    /// cuerpo según `Content-Length`) y responde con `status_line`/`body`.
+    async fn spawn_capture_server_with(
+        status_line: &'static str,
+        body: &'static str,
+    ) -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let port = listener.local_addr().expect("local_addr").port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf: Vec<u8> = Vec::new();
+                let mut tmp = [0u8; 4096];
+                let header_end = loop {
+                    match tokio::time::timeout(Duration::from_millis(200), socket.read(&mut tmp))
+                        .await
+                    {
+                        Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break None,
+                        Ok(Ok(n)) => {
+                            buf.extend_from_slice(&tmp[..n]);
+                            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                                break Some(pos + 4);
+                            }
+                        }
+                    }
+                };
+                if let Some(header_end) = header_end {
+                    let content_length = String::from_utf8_lossy(&buf[..header_end])
+                        .lines()
+                        .find_map(|line| {
+                            let (k, v) = line.split_once(':')?;
+                            if k.eq_ignore_ascii_case("content-length") {
+                                v.trim().parse::<usize>().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+                    while buf.len() < header_end + content_length {
+                        match tokio::time::timeout(
+                            Duration::from_millis(200),
+                            socket.read(&mut tmp),
+                        )
+                        .await
+                        {
+                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+            }
+        });
+
+        (port, rx)
+    }
+
+    /// Variante de éxito (`200 OK`, cuerpo `{}`).
+    async fn spawn_capture_server() -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        spawn_capture_server_with("200 OK", "{}").await
+    }
+
+    /// Escenario (spec `notifications`): envío correcto con el endpoint v3.
+    #[tokio::test]
+    async fn test_notify_matrix_uses_v3_and_encodes_room() {
+        let (port, rx) = spawn_capture_server().await;
+        let s = Settings {
+            matrix_homeserver: Some(format!("http://127.0.0.1:{port}/")),
+            matrix_token: Some("tok".into()),
+            matrix_room: Some("!abc:matrix.org".into()),
+            ..Default::default()
+        };
+
+        let res = notify_matrix(&s, "app", "running").await;
+        assert!(res.is_ok(), "notify_matrix debió ir bien: {res:?}");
+
+        let req = rx.await.expect("captura de petición");
+        let request_line = req.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("PUT "),
+            "método != PUT: {request_line}"
+        );
+        assert!(
+            request_line
+                .contains("/_matrix/client/v3/rooms/%21abc%3Amatrix.org/send/m.room.message/"),
+            "URL sin v3 ni room codificado: {request_line}"
+        );
+        assert!(!req.contains("/r0/"), "sigue usando r0: {request_line}");
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("authorization: bearer tok"),
+            "falta el Bearer: {req}"
+        );
+        assert!(
+            req.to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "falta Content-Type: {req}"
+        );
+        assert!(req.contains("m.notice"), "cuerpo sin m.notice: {req}");
+        assert!(
+            req.contains("🐳 app: running"),
+            "cuerpo sin el texto esperado: {req}"
+        );
+    }
+
+    /// Escenario (spec `notifications`): el ID de sala va codificado y sin `r0`.
+    #[tokio::test]
+    async fn test_notify_matrix_does_not_use_r0() {
+        let (port, rx) = spawn_capture_server().await;
+        let s = Settings {
+            matrix_homeserver: Some(format!("http://127.0.0.1:{port}")),
+            matrix_token: Some("tok".into()),
+            matrix_room: Some("!abc:matrix.org".into()),
+            ..Default::default()
+        };
+
+        let _ = notify_matrix(&s, "app", "running").await;
+
+        let req = rx.await.expect("captura de petición");
+        let request_line = req.lines().next().unwrap_or_default();
+        assert!(
+            !request_line.contains("/r0/"),
+            "no debe usar r0: {request_line}"
+        );
+        assert!(
+            !request_line.contains("!abc:matrix.org"),
+            "room sin codificar: {request_line}"
+        );
+    }
+
+    /// Escenario (spec): homeserver con barras finales no produce dobles barras.
+    #[tokio::test]
+    async fn test_notify_matrix_trims_trailing_slash() {
+        let (port, rx) = spawn_capture_server().await;
+        let s = Settings {
+            matrix_homeserver: Some(format!("http://127.0.0.1:{port}/")),
+            matrix_token: Some("tok".into()),
+            matrix_room: Some("!room:hs.test".into()),
+            ..Default::default()
+        };
+
+        assert!(notify_matrix(&s, "app", "running").await.is_ok());
+
+        let req = rx.await.expect("captura de petición");
+        let request_line = req.lines().next().unwrap_or_default();
+        assert!(
+            request_line.starts_with("PUT /_matrix/client/v3/"),
+            "URL con doble barra o prefijo incorrecto: {request_line}"
+        );
+    }
+
+    /// Escenario (spec): `txn_id` único por envío.
+    #[tokio::test]
+    async fn test_notify_matrix_txn_id_is_unique_per_send() {
+        let s = |port: u16| Settings {
+            matrix_homeserver: Some(format!("http://127.0.0.1:{port}")),
+            matrix_token: Some("tok".into()),
+            matrix_room: Some("!room:hs.test".into()),
+            ..Default::default()
+        };
+
+        let (p1, rx1) = spawn_capture_server().await;
+        assert!(notify_matrix(&s(p1), "app", "running").await.is_ok());
+        let req1 = rx1.await.expect("captura 1");
+
+        let (p2, rx2) = spawn_capture_server().await;
+        assert!(notify_matrix(&s(p2), "app", "running").await.is_ok());
+        let req2 = rx2.await.expect("captura 2");
+
+        let txn = |req: &str| {
+            req.lines()
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_ne!(txn(&req1), txn(&req2), "txn_id repetido entre envíos");
+    }
+
+    /// Escenario (spec): Matrix rechaza con HTTP 500.
+    #[tokio::test]
+    async fn test_notify_matrix_http_500_returns_err_with_body() {
+        let (port, _rx) = spawn_capture_server_with(
+            "500 Internal Server Error",
+            r#"{"errcode":"M_UNKNOWN","error":"boom"}"#,
+        )
+        .await;
+        let s = Settings {
+            matrix_homeserver: Some(format!("http://127.0.0.1:{port}")),
+            matrix_token: Some("tok".into()),
+            matrix_room: Some("!room:hs.test".into()),
+            ..Default::default()
+        };
+
+        let err = notify_matrix(&s, "app", "running")
+            .await
+            .expect_err("debe fallar con 500");
+        assert!(err.contains("HTTP 500"), "sin código HTTP: {err}");
+        assert!(err.contains("M_UNKNOWN"), "sin cuerpo de respuesta: {err}");
+    }
+
+    /// Escenario (spec): error de conexión con Matrix.
+    #[tokio::test]
+    async fn test_notify_matrix_connection_error_returns_err() {
+        let port = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            l.local_addr().expect("addr").port()
+        };
+        let s = Settings {
+            matrix_homeserver: Some(format!("http://127.0.0.1:{port}")),
+            matrix_token: Some("tok".into()),
+            matrix_room: Some("!room:hs.test".into()),
+            ..Default::default()
+        };
+
+        let err = notify_matrix(&s, "app", "running")
+            .await
+            .expect_err("debe fallar la conexión");
+        assert!(
+            err.contains("error de conexión"),
+            "mensaje inesperado: {err}"
         );
     }
 }

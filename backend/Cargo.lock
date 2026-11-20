@@ -26,6 +26,7 @@ dependencies = [
  "deadpool-sqlite",
  "futures",
  "jsonwebtoken",
+ "percent-encoding",
  "reqwest",
  "rusqlite",
  "serde",
