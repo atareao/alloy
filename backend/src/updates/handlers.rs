@@ -602,6 +602,27 @@ pub(crate) async fn record_guard_outcome(
     }
 }
 
+/// Limpia la supresión (D9/D10) de un contenedor ante una intervención manual
+/// del operador: sale del estado terminal `failed-stopped` (`terminal_failed`) y
+/// reinicia el anti-churn de rollback (`rolled_back`), de modo que el contenedor
+/// vuelve a ser candidato a update.
+///
+/// Es la operación inversa de [`record_guard_outcome`] y el punto único de
+/// limpieza manual compartido por [`update_container_h`], [`update_all_h`] y
+/// `stacks::update_stack_h`, para que los tres flujos sean idénticos (D9/D10).
+///
+/// NOTA: los contenedores `failed-stopped` están **parados** y por eso NO
+/// aparecen en el listado de `update_all_h` (`docker_list_running`, `all: false`);
+/// su reintento se realiza vía [`update_container_h`] (`POST /api/update/{name}`).
+pub(crate) async fn clear_suppression(
+    name: &str,
+    terminal_failed: &TerminalFailed,
+    rolled_back: &RolledBackGuard,
+) {
+    terminal_failed.0.lock().await.remove(name);
+    rolled_back.0.lock().await.remove(name);
+}
+
 struct PendingUpdate {
     name: String,
     image_full: String,
@@ -625,8 +646,7 @@ pub async fn update_container_h(
     // Intervención explícita del operador (D9/D10): reanuda la gestión
     // automática del contenedor saliendo del estado terminal `failed-stopped` y
     // limpiando la supresión anti-churn tras un rollback.
-    terminal_failed.0.lock().await.remove(&name);
-    rolled_back.0.lock().await.remove(&name);
+    clear_suppression(&name, &terminal_failed, &rolled_back).await;
 
     let container = find_container_by_name(&docker, &name).await?;
     let image = container.image.as_deref().unwrap_or("");
@@ -872,6 +892,12 @@ pub async fn update_all_h(
     };
     let mut results = vec![];
     for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
+        // Intervención manual (D9/D10): limpiar la supresión de cada contenedor
+        // iterado antes de aplicar, igual que `update_container_h`. Los
+        // contenedores `failed-stopped` están **parados** y por eso no entran en
+        // este listado (`docker_list_running` usa `all: false`): su reintento se
+        // hace vía `update_container_h` (`POST /api/update/{name}`).
+        clear_suppression(&name, &terminal_failed, &rolled_back).await;
         // Verificar digest remoto antes de hacer pull
         let (needs_pull, remote_digest, manifest_digest) =
             match crate::updates::digest::check_remote_digest_with_docker(&image, &docker).await {
@@ -2764,5 +2790,112 @@ mod tests {
         let settings = Settings::default();
         let policy = guard_test_policy(Some(0), None);
         assert_eq!(guard_params(&policy, &settings).0, 1);
+    }
+
+    // ── clear_suppression (D9/D10, intervención manual) ──────
+
+    /// El helper compartido por los flujos manuales MUST limpiar ambos guards:
+    /// el estado terminal `failed-stopped` (`terminal_failed`) y el anti-churn de
+    /// rollback (`rolled_back`).
+    #[tokio::test]
+    async fn clear_suppression_clears_both_guards() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+        terminal_failed.0.lock().await.insert("app".into());
+        rolled_back
+            .0
+            .lock()
+            .await
+            .insert("app".into(), "sha256:deadbeef".into());
+
+        clear_suppression("app", &terminal_failed, &rolled_back).await;
+
+        assert!(
+            !terminal_failed.0.lock().await.contains("app"),
+            "terminal_failed debe quedar limpio tras la intervención manual"
+        );
+        assert!(
+            !rolled_back.0.lock().await.contains_key("app"),
+            "rolled_back debe quedar limpio tras la intervención manual"
+        );
+    }
+
+    /// La limpieza MUST estar acotada al contenedor intervenido: no debe tocar la
+    /// supresión de otros contenedores.
+    #[tokio::test]
+    async fn clear_suppression_is_scoped_per_container() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+        terminal_failed.0.lock().await.insert("app".into());
+        terminal_failed.0.lock().await.insert("db".into());
+        rolled_back
+            .0
+            .lock()
+            .await
+            .insert("app".into(), "sha256:new".into());
+        rolled_back
+            .0
+            .lock()
+            .await
+            .insert("db".into(), "sha256:new".into());
+
+        clear_suppression("app", &terminal_failed, &rolled_back).await;
+
+        let tf = terminal_failed.0.lock().await;
+        let rb = rolled_back.0.lock().await;
+        assert!(tf.contains("db"), "db sigue suprimido (no intervenido)");
+        assert!(rb.contains_key("db"), "db sigue suprimido (no intervenido)");
+        assert!(!tf.contains("app"));
+        assert!(!rb.contains_key("app"));
+    }
+
+    /// Limpiar una supresión inexistente es un no-op (idempotente): los flujos
+    /// masivos llaman al helper para cada contenedor iterado, haya supresión o no.
+    #[tokio::test]
+    async fn clear_suppression_is_noop_when_absent() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+
+        clear_suppression("ghost", &terminal_failed, &rolled_back).await;
+
+        assert!(terminal_failed.0.lock().await.is_empty());
+        assert!(rolled_back.0.lock().await.is_empty());
+    }
+
+    /// Contrato de bucle de `update_all_h` / `update_stack_h`: cada contenedor
+    /// iterado pasa por `clear_suppression` antes de aplicar, así que una tanda
+    /// completa deja la supresión de todos ellos limpia.
+    ///
+    /// Los handlers completos requieren un daemon de contenedores
+    /// (`docker_list_running` / `docker.list_containers`), que el repo sólo
+    /// ejercita en tests `#[ignore]` con `podman_client`; este test cubre el
+    /// contrato de limpieza por contenedor sin daemon.
+    #[tokio::test]
+    async fn clear_suppression_clears_every_iterated_container() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+        let iterated = ["app", "db", "cache"];
+        for name in iterated {
+            terminal_failed.0.lock().await.insert(name.to_string());
+            rolled_back
+                .0
+                .lock()
+                .await
+                .insert(name.to_string(), "sha256:remote".into());
+        }
+
+        // Espejo del bucle de los handlers: limpiar por contenedor iterado.
+        for name in iterated {
+            clear_suppression(name, &terminal_failed, &rolled_back).await;
+        }
+
+        assert!(
+            terminal_failed.0.lock().await.is_empty(),
+            "ningún contenedor iterado debe quedar en terminal_failed"
+        );
+        assert!(
+            rolled_back.0.lock().await.is_empty(),
+            "ningún contenedor iterado debe quedar suprimido por rollback"
+        );
     }
 }
