@@ -104,6 +104,13 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
         conn.execute_batch("ALTER TABLE update_policies ADD COLUMN max_start_attempts INTEGER;");
     let _ =
         conn.execute_batch("ALTER TABLE update_policies ADD COLUMN health_window_secs INTEGER;");
+    // persist-terminal-update-state: acelera la consulta del último estado por
+    // contenedor (`load_latest_history_per_container`) usada al restaurar los
+    // guards en el arranque.
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_update_history_container_ts
+         ON update_history(container, timestamp DESC, id DESC);",
+    );
     Ok(())
 }
 
@@ -364,6 +371,43 @@ pub fn save_update_history(conn: &Connection, entries: &[UpdateHistoryEntry]) ->
 pub fn load_update_history(conn: &Connection) -> SqlResult<Vec<UpdateHistoryEntry>> {
     let mut stmt = conn.prepare(
         "SELECT container, image, old_digest, new_digest, timestamp, status, duration_ms, attempts FROM update_history ORDER BY timestamp DESC LIMIT 100",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(UpdateHistoryEntry {
+            container: row.get(0)?,
+            image: row.get(1)?,
+            old_digest: row.get(2)?,
+            new_digest: row.get(3)?,
+            timestamp: row.get(4)?,
+            status: row.get(5)?,
+            duration_ms: row.get::<_, i64>(6)? as u64,
+            attempts: row.get::<_, i64>(7)? as u32,
+        })
+    })?;
+    let mut result = Vec::new();
+    for r in rows {
+        result.push(r?);
+    }
+    Ok(result)
+}
+
+/// Último registro de historial por contenedor.
+///
+/// A diferencia de [`load_update_history`] (truncado a 100 filas), devuelve
+/// exactamente una fila por contenedor —la más reciente— para reconstruir los
+/// guards de arranque sin depender del truncado. El desempate por `id DESC`
+/// desambigua filas con el mismo `timestamp`.
+pub fn load_latest_history_per_container(conn: &Connection) -> SqlResult<Vec<UpdateHistoryEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT container, image, old_digest, new_digest, timestamp, status, duration_ms, attempts
+         FROM update_history h
+         WHERE h.id = (
+             SELECT h2.id
+             FROM update_history h2
+             WHERE h2.container = h.container
+             ORDER BY h2.timestamp DESC, h2.id DESC
+             LIMIT 1
+         )",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(UpdateHistoryEntry {
@@ -969,6 +1013,145 @@ mod tests {
         assert_eq!(loaded[0].old_digest, "sha256:aaa");
         assert_eq!(loaded[0].new_digest, "sha256:bbb");
         assert_eq!(loaded[0].attempts, 3);
+    }
+
+    // ── Replay del último estado por contenedor (change:
+    // persist-terminal-update-state) ─────────────────────────────────
+
+    fn hist(
+        container: &str,
+        status: &str,
+        new_digest: &str,
+        timestamp: &str,
+    ) -> UpdateHistoryEntry {
+        UpdateHistoryEntry {
+            container: container.into(),
+            image: "img:latest".into(),
+            old_digest: "sha256:old".into(),
+            new_digest: new_digest.into(),
+            timestamp: timestamp.into(),
+            status: status.into(),
+            duration_ms: 0,
+            attempts: 0,
+        }
+    }
+
+    /// `load_latest_history_per_container` devuelve exactamente una fila por
+    /// contenedor —la más reciente— con semántica "último gana".
+    #[test]
+    fn test_load_latest_history_per_container_last_wins() {
+        let conn = test_conn();
+        append_update_history(
+            &conn,
+            &hist("app", "failed-stopped", "", "2026-01-01T00:00:00+00:00"),
+        )
+        .unwrap();
+        append_update_history(
+            &conn,
+            &hist("app", "updated", "", "2026-01-02T00:00:00+00:00"),
+        )
+        .unwrap();
+        append_update_history(
+            &conn,
+            &hist(
+                "db",
+                "rolled-back",
+                "sha256:abc",
+                "2026-01-01T12:00:00+00:00",
+            ),
+        )
+        .unwrap();
+
+        let latest = load_latest_history_per_container(&conn).unwrap();
+        assert_eq!(latest.len(), 2, "una fila por contenedor");
+
+        let app = latest.iter().find(|e| e.container == "app").unwrap();
+        assert_eq!(app.status, "updated", "la fila posterior anula la terminal");
+
+        let db = latest.iter().find(|e| e.container == "db").unwrap();
+        assert_eq!(db.status, "rolled-back");
+        assert_eq!(db.new_digest, "sha256:abc");
+    }
+
+    /// El replay resiste el truncado `LIMIT 100`: un estado terminal fuera de las
+    /// 100 filas más recientes sigue recuperándose.
+    #[test]
+    fn test_load_latest_history_per_container_resists_limit_100() {
+        let conn = test_conn();
+        append_update_history(
+            &conn,
+            &hist("buried", "failed-stopped", "", "2020-01-01T00:00:00+00:00"),
+        )
+        .unwrap();
+        for i in 0..120 {
+            append_update_history(
+                &conn,
+                &hist(&format!("c{i}"), "updated", "", "2026-01-01T00:00:00+00:00"),
+            )
+            .unwrap();
+        }
+
+        // La lista truncada a 100 NO contiene al contenedor enterrado…
+        let truncated = load_update_history(&conn).unwrap();
+        assert_eq!(truncated.len(), 100);
+        assert!(!truncated.iter().any(|e| e.container == "buried"));
+
+        // …pero la consulta por-contenedor SÍ lo recupera.
+        let latest = load_latest_history_per_container(&conn).unwrap();
+        let buried = latest
+            .iter()
+            .find(|e| e.container == "buried")
+            .expect("la fila terminal debe recuperarse");
+        assert_eq!(buried.status, "failed-stopped");
+    }
+
+    /// Flujo completo: la consulta por-contenedor alimenta el replay y
+    /// reconstruye el guard aunque la fila terminal quede fuera del LIMIT 100.
+    #[test]
+    fn test_restore_from_replayed_history_resists_truncation() {
+        use crate::updates::health_guard::{restore_guards_from_history, STATUS_FAILED_STOPPED};
+
+        let conn = test_conn();
+        append_update_history(
+            &conn,
+            &hist(
+                "buried",
+                STATUS_FAILED_STOPPED,
+                "",
+                "2020-01-01T00:00:00+00:00",
+            ),
+        )
+        .unwrap();
+        for i in 0..120 {
+            append_update_history(
+                &conn,
+                &hist(&format!("c{i}"), "updated", "", "2026-01-01T00:00:00+00:00"),
+            )
+            .unwrap();
+        }
+
+        let latest = load_latest_history_per_container(&conn).unwrap();
+        let present: std::collections::HashSet<String> =
+            std::collections::HashSet::from(["buried".to_string()]);
+        let (terminal, _) = restore_guards_from_history(&latest, &present);
+        assert!(terminal.contains("buried"));
+    }
+
+    /// A igual `timestamp`, el desempate por `id DESC` hace ganar la fila
+    /// insertada más tarde (los timestamps tienen granularidad de segundo).
+    #[test]
+    fn test_load_latest_history_per_container_tie_break_by_id() {
+        let conn = test_conn();
+        let ts = "2026-01-01T00:00:00+00:00";
+        append_update_history(&conn, &hist("app", "failed-stopped", "", ts)).unwrap();
+        append_update_history(&conn, &hist("app", "updated", "", ts)).unwrap();
+
+        let latest = load_latest_history_per_container(&conn).unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(
+            latest[0].status, "updated",
+            "a igual timestamp, gana el id mayor (fila insertada más tarde)"
+        );
     }
 
     // ── telegram_topic_id round-trip (change: telegram-topic-id) ───

@@ -30,6 +30,7 @@ use crate::models::*;
 use crate::state::{
     http_client, AppState, JwtValidator, OidcMetadata, OidcStates, RolledBackGuard, TerminalFailed,
 };
+use crate::updates::health_guard::restore_guards_from_history;
 use crate::workers::{cleanup_worker, state_worker, update_check_worker, CachedContainers};
 
 use axum::serve::ListenerExt;
@@ -174,6 +175,62 @@ async fn main() {
 
     let state_notify: Arc<Notify> = Arc::new(Notify::new());
 
+    // Reconstruir los guards de la guarda de arranque desde el historial
+    // persistido (change: persist-terminal-update-state): un reinicio NO debe
+    // perder la supresión terminal (`failed-stopped`, D9) ni la memoria
+    // anti-churn de rollback (D10).
+    //
+    // Se restaura con **poda por presencia** (contenedores presentes en el
+    // daemon) y NO se usa la tabla `containers`/`has_update` como fuente de
+    // elegibilidad: esa tabla no se rellena en producción. Las supresiones
+    // obsoletas (sin update pendiente) las reconcilia el scheduler en su primer
+    // ciclo con el `has_update` en vivo. Ante cualquier fallo de lectura es
+    // **fail-open** (guards vacíos) y emite `tracing::warn!`, para no bloquear
+    // updates por un error transitorio ni dejar la persistencia muda.
+    let (terminal_failed, rolled_back) = {
+        // 1. Último estado de historial por contenedor (independiente del
+        // LIMIT 100 de la lista en memoria).
+        let latest = {
+            let obj = db_pool.get().await.expect("db pool get");
+            let conn = obj.lock().unwrap();
+            match database::load_latest_history_per_container(&conn) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!(
+                        "no se pudo reconstruir guards desde historial: {e}; arrancando con guards vacíos"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+        // 2. Contenedores presentes en el daemon. Se listan TODOS (`all: true`)
+        // porque un contenedor `failed-stopped` está parado pero sigue existiendo.
+        let present: HashSet<String> = match docker
+            .list_containers(Some(bollard::container::ListContainersOptions::<String> {
+                all: true,
+                ..Default::default()
+            }))
+            .await
+        {
+            Ok(list) => list
+                .iter()
+                .filter_map(|c| {
+                    c.names
+                        .as_ref()
+                        .and_then(|n| n.first())
+                        .map(|n| strip_name(n))
+                })
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    "no se pudo listar contenedores para restaurar guards: {e}; no se restaura supresión"
+                );
+                HashSet::new()
+            }
+        };
+        restore_guards_from_history(&latest, &present)
+    };
+
     let state = AppState {
         docker: docker.clone(),
         config: config.clone(),
@@ -187,8 +244,8 @@ async fn main() {
         settings: settings.clone(),
         db: db_pool.clone(),
         update_in_progress: Arc::new(Mutex::new(HashSet::new())),
-        terminal_failed: TerminalFailed::default(),
-        rolled_back: RolledBackGuard::default(),
+        terminal_failed: TerminalFailed(Arc::new(Mutex::new(terminal_failed))),
+        rolled_back: RolledBackGuard(Arc::new(Mutex::new(rolled_back))),
         progress_cache: progress_cache.clone(),
         cancel_check: Arc::new(AtomicBool::new(false)),
         state_notify: state_notify.clone(),

@@ -3,6 +3,7 @@ use tokio::sync::Mutex;
 
 use crate::models::Settings;
 use crate::state::http_client;
+use crate::updates::health_guard::{STATUS_FAILED_STOPPED, STATUS_ROLLED_BACK};
 
 /// Set de codificación para el segmento de ruta del room de Matrix: parte de
 /// `NON_ALPHANUMERIC` pero deja los caracteres *unreserved* de RFC 3986
@@ -262,9 +263,9 @@ async fn fan_out(settings: &Arc<Mutex<Settings>>, container: &str, status: &str,
 /// - `info` otherwise.
 pub fn valet_level(status: &str) -> &'static str {
     let s = status.to_lowercase();
-    if s.contains("failed-stopped") {
+    if s.contains(STATUS_FAILED_STOPPED) {
         "critical"
-    } else if s.contains("rolled-back") {
+    } else if s.contains(STATUS_ROLLED_BACK) {
         "warning"
     } else if s.contains("died") || s.contains("dead") || s.contains("error") {
         "critical"
