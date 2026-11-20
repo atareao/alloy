@@ -80,6 +80,12 @@ export default function ConfigPage({
 
   // Pull timeout
   const [pullTimeout, setPullTimeout] = useState(600);
+
+  // Guarda de arranque (update-rollback-guard) — settings globales
+  const [ucMaxStartAttempts, setUcMaxStartAttempts] = useState(3);
+  const [ucStartAttemptInterval, setUcStartAttemptInterval] = useState(10);
+  const [ucHealthWindow, setUcHealthWindow] = useState(30);
+
   useEffect(() => {
     apiFetch("/api/update-check/config")
       .then((res) => res.json())
@@ -90,6 +96,12 @@ export default function ConfigPage({
         setUcNotify(data.notify);
         if (data.pull_timeout_secs != null)
           setPullTimeout(data.pull_timeout_secs);
+        if (data.update_max_start_attempts != null)
+          setUcMaxStartAttempts(data.update_max_start_attempts);
+        if (data.update_start_attempt_interval_secs != null)
+          setUcStartAttemptInterval(data.update_start_attempt_interval_secs);
+        if (data.update_health_window_secs != null)
+          setUcHealthWindow(data.update_health_window_secs);
       })
       .catch(() => {});
   }, []);
@@ -98,6 +110,12 @@ export default function ConfigPage({
   const [defAction, setDefAction] = useState<string>("pull-restart");
   const [defCleanup, setDefCleanup] = useState(false);
   const [defRollback, setDefRollback] = useState(false);
+  // Overrides opcionales de la guarda para la política por defecto.
+  // `null` = sin override (se usa el valor global).
+  const [defMaxStartAttempts, setDefMaxStartAttempts] = useState<number | null>(
+    null,
+  );
+  const [defHealthWindow, setDefHealthWindow] = useState<number | null>(null);
   useEffect(() => {
     apiFetch("/api/update-policies/default")
       .then((res) => res.json())
@@ -105,6 +123,8 @@ export default function ConfigPage({
         setDefAction(data.action);
         setDefCleanup(data.cleanup_old_image);
         setDefRollback(data.rollback_on_failure);
+        setDefMaxStartAttempts(data.max_start_attempts ?? null);
+        setDefHealthWindow(data.health_window_secs ?? null);
       })
       .catch(() => {});
   }, []);
@@ -277,6 +297,9 @@ export default function ConfigPage({
           enabled: ucEnabled,
           notify: ucNotify,
           pull_timeout_secs: pullTimeout,
+          update_max_start_attempts: ucMaxStartAttempts,
+          update_start_attempt_interval_secs: ucStartAttemptInterval,
+          update_health_window_secs: ucHealthWindow,
         }),
       });
       if (res.ok) {
@@ -287,6 +310,12 @@ export default function ConfigPage({
         setUcNotify(data.notify);
         if (data.pull_timeout_secs != null)
           setPullTimeout(data.pull_timeout_secs);
+        if (data.update_max_start_attempts != null)
+          setUcMaxStartAttempts(data.update_max_start_attempts);
+        if (data.update_start_attempt_interval_secs != null)
+          setUcStartAttemptInterval(data.update_start_attempt_interval_secs);
+        if (data.update_health_window_secs != null)
+          setUcHealthWindow(data.update_health_window_secs);
         showSuccess(
           ucEnabled
             ? "✅ Revisión programada activada"
@@ -312,6 +341,9 @@ export default function ConfigPage({
           action: defAction,
           cleanup_old_image: defCleanup,
           rollback_on_failure: defRollback,
+          // Siempre presentes para no resetear overrides existentes (null = sin override).
+          max_start_attempts: defMaxStartAttempts,
+          health_window_secs: defHealthWindow,
         }),
       });
       if (res.ok) {
@@ -954,6 +986,84 @@ export default function ConfigPage({
                           style={{ width: "100%" }}
                         />
                       </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          🛡️ Guarda de arranque
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Tras aplicar una actualización se verifica que el
+                          contenedor arranque bien; si no, se reintenta y, si
+                          finalmente falla, se hace rollback a la imagen
+                          anterior.
+                        </Typography.Text>
+                        <Flex gap={8} wrap="wrap">
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              Máximo de intentos de arranque
+                            </Typography.Text>
+                            <InputNumber
+                              aria-label="Máximo de intentos de arranque"
+                              value={ucMaxStartAttempts}
+                              onChange={(v) =>
+                                setUcMaxStartAttempts(
+                                  v == null ? 3 : Number(v),
+                                )
+                              }
+                              min={1}
+                              max={10}
+                              style={{ width: 140 }}
+                            />
+                          </Space>
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              Intervalo entre intentos (s)
+                            </Typography.Text>
+                            <InputNumber
+                              aria-label="Intervalo entre intentos (s)"
+                              value={ucStartAttemptInterval}
+                              onChange={(v) =>
+                                setUcStartAttemptInterval(
+                                  v == null ? 10 : Number(v),
+                                )
+                              }
+                              min={1}
+                              max={120}
+                              style={{ width: 140 }}
+                            />
+                          </Space>
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              Ventana de salud (s)
+                            </Typography.Text>
+                            <InputNumber
+                              aria-label="Ventana de salud (s)"
+                              value={ucHealthWindow}
+                              onChange={(v) =>
+                                setUcHealthWindow(v == null ? 30 : Number(v))
+                              }
+                              min={5}
+                              max={600}
+                              style={{ width: 140 }}
+                            />
+                          </Space>
+                        </Flex>
+                      </Space>
                     </Space>
                   )}
                   <Flex justify="flex-end" style={{ marginTop: 16 }}>
@@ -1045,6 +1155,58 @@ export default function ConfigPage({
                       >
                         Si el contenedor no arranca, restaura la imagen anterior
                       </Typography.Text>
+                    </Space>
+                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Typography.Text strong>
+                        🛡️ Overrides de la guarda (opcional)
+                      </Typography.Text>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12 }}
+                      >
+                        Vacío = usar el valor global definido en la pestaña
+                        Actualizaciones.
+                      </Typography.Text>
+                      <Flex gap={8} wrap="wrap">
+                        <Space direction="vertical" size={2}>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ fontSize: 12 }}
+                          >
+                            Máximo de intentos de arranque
+                          </Typography.Text>
+                          <InputNumber
+                            aria-label="Override máximo de intentos de arranque"
+                            value={defMaxStartAttempts}
+                            onChange={(v) =>
+                              setDefMaxStartAttempts(v == null ? null : Number(v))
+                            }
+                            min={1}
+                            max={10}
+                            placeholder="Global"
+                            style={{ width: 140 }}
+                          />
+                        </Space>
+                        <Space direction="vertical" size={2}>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ fontSize: 12 }}
+                          >
+                            Ventana de salud (s)
+                          </Typography.Text>
+                          <InputNumber
+                            aria-label="Override ventana de salud (s)"
+                            value={defHealthWindow}
+                            onChange={(v) =>
+                              setDefHealthWindow(v == null ? null : Number(v))
+                            }
+                            min={5}
+                            max={600}
+                            placeholder="Global"
+                            style={{ width: 140 }}
+                          />
+                        </Space>
+                      </Flex>
                     </Space>
                   </Space>
                   <Flex justify="flex-end" style={{ marginTop: 16 }}>

@@ -232,6 +232,9 @@ export default function ContainerActions({
                       rollback_on_failure:
                         current?.rollback_on_failure || false,
                       notify_events: newVal,
+                      // Preservar overrides de la guarda (null = sin override).
+                      max_start_attempts: current?.max_start_attempts ?? null,
+                      health_window_secs: current?.health_window_secs ?? null,
                     }),
                   },
                 );
