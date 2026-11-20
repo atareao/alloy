@@ -5,7 +5,9 @@
 //! cuándo hacer rollback y qué resultado final registrar. La parte de I/O
 //! (inspect/healthcheck/rollback) vive en `containers` y `updates::handlers`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use crate::models::UpdateHistoryEntry;
 
 /// Estado del contenedor que cuenta como "arrancado".
 const RUNNING: &str = "running";
@@ -130,12 +132,27 @@ pub fn guard_notify_level(outcome: GuardOutcome) -> &'static str {
     }
 }
 
+/// Strings de estado terminal del historial de updates.
+///
+/// Definidos **una sola vez** y reutilizados por todos los puntos de
+/// escritura/lectura (scheduler, guarda y replay del arranque), evitando
+/// literales duplicados que puedan divergir.
+///
+/// - [`STATUS_UPDATED`]: el update se aplicó y el contenedor arrancó sano.
+/// - [`STATUS_ROLLED_BACK`]: el update se revirtió al digest anterior
+///   (anti-churn, design D10).
+/// - [`STATUS_FAILED_STOPPED`]: el rollback tampoco arrancó y el contenedor
+///   quedó parado (terminal, design D9).
+pub const STATUS_UPDATED: &str = "updated";
+pub const STATUS_ROLLED_BACK: &str = "rolled-back";
+pub const STATUS_FAILED_STOPPED: &str = "failed-stopped";
+
 /// Estado de historial asociado a un desenlace de la guarda.
 pub fn guard_history_status(outcome: GuardOutcome) -> &'static str {
     match outcome {
-        GuardOutcome::Updated => "updated",
-        GuardOutcome::RolledBack => "rolled-back",
-        GuardOutcome::FailedStopped => "failed-stopped",
+        GuardOutcome::Updated => STATUS_UPDATED,
+        GuardOutcome::RolledBack => STATUS_ROLLED_BACK,
+        GuardOutcome::FailedStopped => STATUS_FAILED_STOPPED,
     }
 }
 
@@ -250,6 +267,77 @@ pub fn record_rolled_back(
     } else {
         rolled_back.remove(name);
     }
+}
+
+/// Predicado compartido de presencia: `name` está en el conjunto de
+/// contenedores presentes en el daemon.
+///
+/// Lo usan la poda del runtime (`retain_present_terminal` /
+/// `retain_present_rolled_back` en el scheduler) y la restauración al arrancar,
+/// para que ambos apliquen exactamente la misma semántica y no diverjan.
+pub fn is_present(name: &str, present: &HashSet<String>) -> bool {
+    present.contains(name)
+}
+
+/// Reconstruye los guards de la guarda de arranque desde el historial
+/// persistido en `update_history`.
+///
+/// Sin esta restauración, un reinicio del proceso pierde la supresión terminal
+/// (`failed-stopped`, D9) y la memoria anti-churn de rollback (D10), y el
+/// scheduler reintentaría updates que ya habían fallado.
+///
+/// Reglas:
+/// - Se usa el **último registro por contenedor** (semántica «último gana»: una
+///   fila terminal antigua anulada por otra posterior NO suprime). A igual
+///   `timestamp`, gana la última de la iteración (el desempate fino por `id`
+///   lo garantiza la consulta SQL que alimenta `entries`).
+/// - **Poda por presencia**: espeja la poda del runtime y sólo conserva
+///   contenedores presentes en el daemon (`present_names`), descartando los ya
+///   inexistentes. NO se usa la tabla `containers`/`has_update` como fuente de
+///   elegibilidad (esa tabla no se rellena en producción); la reconciliación de
+///   supresiones obsoletas la hace el scheduler en su primer ciclo con el
+///   `has_update` **en vivo**.
+///
+/// Es una función pura (sin I/O) para poder testearla de forma aislada y para
+/// no depender del truncado de 100 filas de [`crate::db::load_update_history`]:
+/// el llamador le pasa el resultado de una consulta del último estado por
+/// contenedor.
+///
+/// Devuelve `(terminal_failed, rolled_back)` como estructuras llanas; el
+/// llamador las envuelve en los newtypes [`crate::state::TerminalFailed`] y
+/// [`crate::state::RolledBackGuard`].
+pub fn restore_guards_from_history(
+    entries: &[UpdateHistoryEntry],
+    present_names: &HashSet<String>,
+) -> (HashSet<String>, HashMap<String, String>) {
+    // Último registro por contenedor ("último gana").
+    let mut latest: HashMap<&str, &UpdateHistoryEntry> = HashMap::new();
+    for entry in entries {
+        let slot = latest.entry(entry.container.as_str()).or_insert(entry);
+        if entry.timestamp >= slot.timestamp {
+            *slot = entry;
+        }
+    }
+
+    let mut terminal_failed = HashSet::new();
+    let mut rolled_back = HashMap::new();
+    for (name, entry) in latest {
+        // Poda por presencia, con el mismo predicado que la poda del runtime.
+        if !is_present(name, present_names) {
+            continue;
+        }
+        match entry.status.as_str() {
+            STATUS_FAILED_STOPPED => {
+                terminal_failed.insert(name.to_string());
+            }
+            STATUS_ROLLED_BACK => {
+                rolled_back.insert(name.to_string(), entry.new_digest.clone());
+            }
+            _ => {}
+        }
+    }
+
+    (terminal_failed, rolled_back)
 }
 
 #[cfg(test)]
@@ -645,5 +733,186 @@ mod tests {
         record_rolled_back(&mut map, "a", "", false);
         assert!(!map.contains_key("a"));
         assert_eq!(map.get("b").map(|d| d.as_str()), Some("sha256:B"));
+    }
+
+    // --- Restauración de guards desde el historial (change:
+    // persist-terminal-update-state) ---------------------------------------
+    //
+    // `restore_guards_from_history` asume entradas ya **deduplicadas por
+    // contenedor** (una fila por contenedor). El desempate por `id DESC` para
+    // filas con el mismo `timestamp` lo garantiza la consulta SQL
+    // `load_latest_history_per_container`; `UpdateHistoryEntry` no expone `id`,
+    // por eso el desempate no se reimplementa aquí (a igual timestamp gana la
+    // última de la iteración).
+    //
+    // La única poda es **por presencia**; NO se usa `containers.has_update`
+    // (esa tabla no se rellena en producción). La reconciliación de supresiones
+    // obsoletas la hace el scheduler en su primer ciclo con el `has_update` en
+    // vivo (ver tests de reconciliación en `workers::scheduler`).
+
+    fn hist(
+        container: &str,
+        status: &str,
+        new_digest: &str,
+        timestamp: &str,
+    ) -> UpdateHistoryEntry {
+        UpdateHistoryEntry {
+            container: container.to_string(),
+            image: "img:latest".to_string(),
+            old_digest: "sha256:old".to_string(),
+            new_digest: new_digest.to_string(),
+            timestamp: timestamp.to_string(),
+            status: status.to_string(),
+            duration_ms: 0,
+            attempts: 0,
+        }
+    }
+
+    fn present(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// Replay: el último registro `failed-stopped` de un contenedor presente
+    /// vuelve a suprimir sus updates tras reiniciar.
+    #[test]
+    fn restore_last_failed_stopped_is_suppressed() {
+        let entries = vec![hist(
+            "app",
+            STATUS_FAILED_STOPPED,
+            "sha256:new",
+            "2026-01-01T00:00:00+00:00",
+        )];
+        let (terminal, rolled_back) = restore_guards_from_history(&entries, &present(&["app"]));
+        assert!(terminal.contains("app"));
+        assert!(rolled_back.is_empty());
+    }
+
+    /// Replay: el último registro `rolled-back` conserva el digest intentado, de
+    /// modo que el mismo digest remoto sigue suprimido (anti-churn, D10).
+    #[test]
+    fn restore_last_rolled_back_keeps_attempted_digest() {
+        let entries = vec![hist(
+            "db",
+            STATUS_ROLLED_BACK,
+            "sha256:abc",
+            "2026-01-01T00:00:00+00:00",
+        )];
+        let (terminal, rolled_back) = restore_guards_from_history(&entries, &present(&["db"]));
+        assert!(terminal.is_empty());
+        assert_eq!(
+            rolled_back.get("db").map(String::as_str),
+            Some("sha256:abc")
+        );
+        assert!(is_rolled_back_suppressed("db", "sha256:abc", &rolled_back));
+    }
+
+    /// "Último gana": una fila terminal antigua anulada por otra posterior
+    /// (`updated`) NO suprime al arrancar.
+    #[test]
+    fn restore_older_terminal_overridden_by_newer_updated() {
+        let entries = vec![
+            hist(
+                "app",
+                STATUS_FAILED_STOPPED,
+                "",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            hist("app", STATUS_UPDATED, "", "2026-02-01T00:00:00+00:00"),
+        ];
+        let (terminal, rolled_back) = restore_guards_from_history(&entries, &present(&["app"]));
+        assert!(!terminal.contains("app"));
+        assert!(rolled_back.is_empty());
+    }
+
+    /// "Último gana" también para el anti-churn: un `rolled-back` anulado por un
+    /// `updated` posterior NO restaura la supresión de rollback.
+    #[test]
+    fn restore_older_rolled_back_overridden_by_newer_updated() {
+        let entries = vec![
+            hist(
+                "db",
+                STATUS_ROLLED_BACK,
+                "sha256:x",
+                "2026-01-01T00:00:00+00:00",
+            ),
+            hist("db", STATUS_UPDATED, "", "2026-02-01T00:00:00+00:00"),
+        ];
+        let (_, rolled_back) = restore_guards_from_history(&entries, &present(&["db"]));
+        assert!(!rolled_back.contains_key("db"));
+    }
+
+    /// Un `rolled-back` sin `new_digest` no rompe el replay: se restaura con
+    /// digest vacío (sólo suprime si el digest remoto resuelto también es "").
+    #[test]
+    fn restore_rolled_back_with_empty_digest_does_not_break_replay() {
+        let entries = vec![hist(
+            "db",
+            STATUS_ROLLED_BACK,
+            "",
+            "2026-01-01T00:00:00+00:00",
+        )];
+        let (_, rolled_back) = restore_guards_from_history(&entries, &present(&["db"]));
+        assert_eq!(rolled_back.get("db").map(String::as_str), Some(""));
+    }
+
+    /// Historial vacío (p. ej. fallo de carga en el bootstrap) ⇒ guards vacíos:
+    /// fail-open, sin regresión del arranque actual.
+    #[test]
+    fn restore_empty_history_yields_empty_guards() {
+        let (terminal, rolled_back) = restore_guards_from_history(&[], &present(&["app"]));
+        assert!(terminal.is_empty());
+        assert!(rolled_back.is_empty());
+    }
+
+    /// Poda por presencia: un contenedor `failed-stopped` que ya no está en el
+    /// daemon se descarta al restaurar.
+    #[test]
+    fn restore_prunes_absent_terminal_container() {
+        let entries = vec![hist(
+            "ghost",
+            STATUS_FAILED_STOPPED,
+            "",
+            "2026-01-01T00:00:00+00:00",
+        )];
+        let (terminal, _) = restore_guards_from_history(&entries, &present(&["app"]));
+        assert!(!terminal.contains("ghost"));
+    }
+
+    /// La misma poda por presencia aplica al anti-churn de rollback.
+    #[test]
+    fn restore_prunes_absent_rolled_back_container() {
+        let entries = vec![hist(
+            "ghost",
+            STATUS_ROLLED_BACK,
+            "sha256:x",
+            "2026-01-01T00:00:00+00:00",
+        )];
+        let (_, rolled_back) = restore_guards_from_history(&entries, &present(&["app"]));
+        assert!(rolled_back.is_empty());
+    }
+
+    /// El predicado `is_present` comparte la semántica de la poda del runtime.
+    #[test]
+    fn is_present_predicate_matches_set_membership() {
+        let set = present(&["app"]);
+        assert!(is_present("app", &set));
+        assert!(!is_present("ghost", &set));
+    }
+
+    /// Los estados terminales se leen vía constante centralizada: un único
+    /// origen para `guard_history_status` y el replay.
+    #[test]
+    fn terminal_status_constants_are_single_source() {
+        assert_eq!(guard_history_status(GuardOutcome::Updated), STATUS_UPDATED);
+        assert_eq!(
+            guard_history_status(GuardOutcome::RolledBack),
+            STATUS_ROLLED_BACK
+        );
+        assert_eq!(
+            guard_history_status(GuardOutcome::FailedStopped),
+            STATUS_FAILED_STOPPED
+        );
+        assert_eq!(STATUS_ROLLED_BACK, "rolled-back");
+        assert_eq!(STATUS_FAILED_STOPPED, "failed-stopped");
     }
 }

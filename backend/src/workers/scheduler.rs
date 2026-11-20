@@ -18,7 +18,8 @@ use crate::updates::handlers::{
     apply_with_guard, guard_params, log_prune_result, prune_dangling_images, GuardRun,
 };
 use crate::updates::health_guard::{
-    guard_notify_level, is_rolled_back_suppressed, record_rolled_back, GuardOutcome,
+    guard_notify_level, is_present, is_rolled_back_suppressed, record_rolled_back, GuardOutcome,
+    STATUS_FAILED_STOPPED, STATUS_ROLLED_BACK,
 };
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
@@ -365,7 +366,7 @@ pub async fn update_check_worker(
                                         &image_full,
                                         &image_id,
                                         &config_digest,
-                                        "rolled-back",
+                                        STATUS_ROLLED_BACK,
                                         start.elapsed().as_millis() as u64,
                                         guard.attempts,
                                     )
@@ -392,7 +393,7 @@ pub async fn update_check_worker(
                                         &image_full,
                                         &image_id,
                                         &config_digest,
-                                        "failed-stopped",
+                                        STATUS_FAILED_STOPPED,
                                         start.elapsed().as_millis() as u64,
                                         guard.attempts,
                                     )
@@ -522,7 +523,7 @@ pub async fn update_check_worker(
                                     &image_full,
                                     &image_id,
                                     &config_digest,
-                                    "rolled-back",
+                                    STATUS_ROLLED_BACK,
                                     start.elapsed().as_millis() as u64,
                                     guard.attempts,
                                 )
@@ -549,7 +550,7 @@ pub async fn update_check_worker(
                                     &image_full,
                                     &image_id,
                                     &config_digest,
-                                    "failed-stopped",
+                                    STATUS_FAILED_STOPPED,
                                     start.elapsed().as_millis() as u64,
                                     guard.attempts,
                                 )
@@ -794,7 +795,7 @@ fn record_degraded_applied(
 /// están presentes en el ciclo (renombrado/recreación con nombre nuevo), para
 /// evitar que el mapa crezca sin límite.
 fn retain_present_containers(map: &mut HashMap<String, String>, present: &HashSet<String>) {
-    map.retain(|name, _| present.contains(name));
+    map.retain(|name, _| is_present(name, present));
 }
 
 /// ¿Está el contenedor en estado terminal `failed-stopped`? Un contenedor así
@@ -819,13 +820,13 @@ fn record_terminal_failed(set: &mut HashSet<String>, name: &str, terminal: bool)
 /// Poda del estado terminal: descarta entradas de contenedores que ya no
 /// existen (renombrado/recreación) para evitar crecimiento ilimitado.
 fn retain_present_terminal(set: &mut HashSet<String>, present: &HashSet<String>) {
-    set.retain(|name| present.contains(name));
+    set.retain(|name| is_present(name, present));
 }
 
 /// Poda del anti-churn de rollback (D10): descarta entradas de contenedores que
 /// ya no existen (renombrado/recreación) para evitar crecimiento ilimitado.
 fn retain_present_rolled_back(map: &mut HashMap<String, String>, present: &HashSet<String>) {
-    map.retain(|name, _| present.contains(name));
+    map.retain(|name, _| is_present(name, present));
 }
 
 /// Compute the update decision for a container from a resolved remote digest.
@@ -1538,6 +1539,58 @@ mod tests {
         let mut set = HashSet::new();
         record_terminal_failed(&mut set, "app", true);
         assert!(!is_terminal_suppressed("other", &set));
+    }
+
+    /// Escenario «Supresión obsoleta se reconcilia en el primer ciclo»: una
+    /// supresión restaurada desde el historial se elimina cuando la decisión en
+    /// vivo ya no reporta update pendiente (`!decision.has_update`), replicando
+    /// la limpieza de runtime del primer ciclo del worker (no queda suprimida
+    /// indefinidamente).
+    #[test]
+    fn test_terminal_failed_first_cycle_cleanup_removes_stale_suppression() {
+        // Estado restaurado desde el historial: `app` suprimido.
+        let mut set = HashSet::new();
+        record_terminal_failed(&mut set, "app", true);
+
+        // Decisión en vivo SIN update pendiente (registry ya al día).
+        let ok: Result<RemoteDigest, String> = Ok(remote("sha256:M", "sha256:M", "latest", false));
+        let decision = compute_update_decision(&ok, Some("sha256:M"), "sha256:img", None)
+            .expect("resolución correcta");
+        assert!(!decision.has_update, "no hay update pendiente en vivo");
+
+        // Limpieza de runtime del primer ciclo (condición `!decision.has_update`).
+        if !decision.has_update {
+            record_terminal_failed(&mut set, "app", false);
+        }
+        assert!(
+            !is_terminal_suppressed("app", &set),
+            "la supresión obsoleta converge en el primer ciclo"
+        );
+    }
+
+    /// Escenario «Supresión vigente se mantiene (D9)»: si la decisión en vivo
+    /// sigue reportando update pendiente, el primer ciclo NO limpia.
+    #[test]
+    fn test_terminal_failed_first_cycle_keeps_suppression_when_update_pending() {
+        let mut set = HashSet::new();
+        record_terminal_failed(&mut set, "app", true);
+
+        let ok: Result<RemoteDigest, String> =
+            Ok(remote("sha256:M", "sha256:newconfig", "latest", false));
+        let decision = compute_update_decision(&ok, Some("sha256:old"), "sha256:img", None)
+            .expect("resolución correcta");
+        assert!(
+            decision.has_update,
+            "el registry sigue reportando update pendiente"
+        );
+
+        if !decision.has_update {
+            record_terminal_failed(&mut set, "app", false);
+        }
+        assert!(
+            is_terminal_suppressed("app", &set),
+            "se mantiene la supresión (D9) hasta intervención manual"
+        );
     }
 
     /// Test de forma: la fuente del worker no debe paniquear sobre el pool ni
