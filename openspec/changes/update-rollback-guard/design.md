@@ -119,3 +119,47 @@ estados nuevos (`rolled-back`, `failed-stopped`) con color/tooltip propios.
 - Mantener el tag `rollback-<ts>`: frágil y no garantiza el digest exacto.
 - `HEALTHCHECK` implícito por tiempo fijo: no cubre crash-loop sin healthcheck.
 - Estado terminal como `exited` genérico: se prefiere `failed-stopped` explícito y accionable.
+
+## D9 — Supresión de reintentos tras `failed-stopped`
+
+El scenario «No hay reintentos infinitos tras el fallo terminal» exige que un contenedor en
+`failed-stopped` NO se reintente en ciclos posteriores del worker hasta intervención explícita
+del operador. Mecanismo (mínimo y testable):
+
+- Estado en memoria del scheduler análogo a `degraded_applied_manifest`: un conjunto
+  `terminal_failed: HashSet<String>` (por nombre de contenedor) en el estado de updates.
+- Al alcanzar `GuardOutcome::FailedStopped`, se inserta el contenedor en `terminal_failed`.
+- `compute_update_decision` (o el filtro previo del ciclo) MUST saltar los contenedores
+  presentes en `terminal_failed` aunque `has_update` sea `true`.
+- La entrada se limpia ante **intervención explícita**: update/start manual del contenedor
+  (`update_container_h`) o al detectarse cambio de imagen/`has_update=false`.
+
+Persistencia: en memoria en esta iteración (se pierde al reiniciar el proceso, igual que otras
+cachés del worker). La persistencia en disco queda como follow-up si se requiere.
+
+## D10 — Anti-churn tras `rolled-back`
+
+Tras un `RolledBack`, el contenedor queda corriendo la imagen antigua con `has_update=true`, por lo
+que el siguiente ciclo volvería a `pull` + N intentos (~90 s) + rollback + `warn`, indefinidamente.
+Mecanismo (mismo patrón que D9 pero con clave de digest):
+- Mapa `rolled_back: HashMap<String /*container*/, String /*attempted_digest*/>` en el estado de updates.
+- Tras `RolledBack`, insertar `(name, new_digest)`.
+- El ciclo MUST saltar el contenedor mientras el digest remoto resuelto coincida con el registrado;
+  si el digest remoto cambia (nueva versión publicada), MUST reintentar.
+- Limpieza ante intervención manual (`update_container_h`/`update_all_h`) o `has_update=false`.
+
+## D11 — Los flujos manuales heredan la guarda
+
+El scenario «Imagen antigua retenida hasta confirmar la nueva sana» es un MUST. Hoy
+`update_container_h`, `update_all_h` y `update_stack_h` recrean y **eliminan la imagen antigua sin
+verificación**. Se extrae un helper compartido `apply_with_guard` (recrear → `verify_stable_running`
+→ reintentos → rollback por digest → terminal) y lo usan **tanto el worker como los handlers
+manuales**, de modo que la imagen anterior solo se elimina tras confirmar la nueva sana. Esto
+elimina además la duplicación del bloque decisión→historial→notificación (hallazgo 8 del reviewer).
+
+## D12 — Error de inspección ≠ contenedor no sano
+
+`verify_stable_running` devuelve `Result<bool, AppError>`. Un fallo de `inspect_container`
+(Docker API) es **inconcluso**, no un «no arrancó sano». En la guarda, ante error de inspección
+persistente se registra `ERROR` con la causa y se **omite el teardown** (ni rollback ni stop) y no
+se elimina la imagen anterior, evitando rollbacks/paradas espurios por fallos transitorios.

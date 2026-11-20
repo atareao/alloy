@@ -8,7 +8,7 @@ Al ejecutar la política `PullRestartStack`, Alloy MUST aplicar el `pull` de la 
 recreación del servicio de compose **vía la API de Docker (Bollard)**, sin depender del
 binario `docker` ni de un fichero de compose visible en el contenedor. El éxito MUST
 considerarse tal **solo si el contenedor pasa la verificación de arranque sano**
-(update-health-guard). Cualquier fallo MUST quedar registrado con nivel `ERROR` (nunca en
+(update-health-guard) **cuando la política tiene `rollback_on_failure` activo**; con `rollback_on_failure=false` se conserva el comportamiento previo (sin verificación ampliada ni rollback), por decisión explícita de diseño. Cualquier fallo MUST quedar registrado con nivel `ERROR` (nunca en
 silencio). El éxito MUST emitir notificación, persistir el digest de la imagen en ejecución,
 marcar `has_update=false` e incrementar el contador de actualizaciones.
 
