@@ -22,7 +22,8 @@ use crate::models::*;
 use crate::notifications::notify_all;
 use crate::state::{AppState, RolledBackGuard, TerminalFailed};
 use crate::updates::handlers::{
-    apply_with_guard, guard_outcome_message, record_guard_outcome, GuardOutcomeReport,
+    apply_with_guard, clear_suppression, guard_outcome_message, record_guard_outcome,
+    GuardOutcomeReport,
 };
 use crate::updates::health_guard::{guard_history_status, may_remove_old_image};
 
@@ -220,6 +221,10 @@ async fn update_stack_h(
                 .unwrap_or_default();
             let image = c.image.clone().unwrap_or_default();
             let cid = c.id.clone().unwrap_or_default();
+            // Intervención manual (D9/D10): limpiar la supresión de cada
+            // contenedor del stack antes de aplicar, igual que
+            // `update_container_h`.
+            clear_suppression(&name, &terminal_failed, &rolled_back).await;
             if cid.is_empty() || image.is_empty() {
                 error = Some(format!("contenedor '{}' sin id/imagen", name));
                 continue;
