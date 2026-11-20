@@ -11,11 +11,14 @@ use crate::containers::pull_image;
 use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
-use crate::notifications::notify_all;
+use crate::notifications::{notify_all, notify_all_level};
+use crate::state::{RolledBackGuard, TerminalFailed};
 use crate::updates::digest::RemoteDigest;
 use crate::updates::handlers::{
-    log_prune_result, prune_dangling_images, recreate_container, rollback_container,
-    tag_backup_image, verify_container_healthy,
+    apply_with_guard, guard_params, log_prune_result, prune_dangling_images, GuardRun,
+};
+use crate::updates::health_guard::{
+    guard_notify_level, is_rolled_back_suppressed, record_rolled_back, GuardOutcome,
 };
 
 /// Worker que ejecuta revisiones de actualizaciones según el cron configurado.
@@ -29,6 +32,8 @@ pub async fn update_check_worker(
     update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: DbPool,
     update_in_progress: Arc<Mutex<HashSet<String>>>,
+    terminal_failed: TerminalFailed,
+    rolled_back: RolledBackGuard,
 ) {
     // Manifiestos degradados ya aplicados por contenedor. Evita reaplicar una
     // actualización degradada para el mismo manifest en ciclos sucesivos
@@ -137,6 +142,14 @@ pub async fn update_check_worker(
         // consultar el registry una vez por contenedor cuando la imagen se repite.
         let mut digest_cache: HashMap<String, Result<RemoteDigest, String>> = HashMap::new();
 
+        // Snapshot del estado terminal `failed-stopped` para este ciclo (D9).
+        // Se relee al inicio de cada ciclo, de modo que una intervención manual
+        // (`update_container_h`) reanuda la gestión automática de inmediato.
+        let terminal_snapshot: HashSet<String> = terminal_failed.0.lock().await.clone();
+        // Snapshot del anti-churn de rollback para este ciclo (D10): contenedor
+        // → digest remoto que acabó en rollback.
+        let rolled_back_snapshot: HashMap<String, String> = rolled_back.0.lock().await.clone();
+
         for c in &containers {
             let name = c
                 .names
@@ -175,33 +188,70 @@ pub async fn update_check_worker(
             })
             .await;
 
-            let (has_update, old_digest, config_digest, manifest_digest, degraded) =
-                match compute_update_decision(
-                    &digest_result,
-                    last_remote_digest_map.get(&name).map(|s| s.as_str()),
-                    &image_id,
-                    degraded_applied.get(&name).map(|s| s.as_str()),
-                ) {
-                    Some(decision) => (
-                        decision.has_update,
-                        decision.old_digest,
-                        decision.config_digest,
-                        decision.manifest_digest,
-                        decision.degraded,
-                    ),
-                    None => {
-                        let reason = digest_result.err().unwrap_or_default();
-                        tracing::warn!(
-                            "update_check [{}]: error resolviendo digest remoto de '{}': {} (se conserva el estado previo, NO se marca has_update=false)",
-                            name,
-                            image_full,
-                            reason
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms))
-                            .await;
-                        continue;
-                    }
-                };
+            let decision = match compute_update_decision(
+                &digest_result,
+                last_remote_digest_map.get(&name).map(|s| s.as_str()),
+                &image_id,
+                degraded_applied.get(&name).map(|s| s.as_str()),
+            ) {
+                Some(decision) => decision,
+                None => {
+                    let reason = digest_result.err().unwrap_or_default();
+                    tracing::warn!(
+                        "update_check [{}]: error resolviendo digest remoto de '{}': {} (se conserva el estado previo, NO se marca has_update=false)",
+                        name,
+                        image_full,
+                        reason
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+                    continue;
+                }
+            };
+
+            // Limpieza del estado terminal (D9): si el registry deja de reportar
+            // un update pendiente, la entrada `failed-stopped` deja de aplicar.
+            if !decision.has_update {
+                let mut set = terminal_failed.0.lock().await;
+                record_terminal_failed(&mut set, &name, false);
+            }
+            // Limpieza del anti-churn de rollback (D10): sin update pendiente el
+            // digest registrado deja de aplicar.
+            if !decision.has_update {
+                let mut map = rolled_back.0.lock().await;
+                record_rolled_back(&mut map, &name, "", false);
+            }
+
+            // Escenario «No hay reintentos infinitos tras el fallo terminal»
+            // (D9): un contenedor en `terminal_failed` se salta aunque
+            // `has_update` sea `true`, hasta intervención explícita.
+            if is_terminal_suppressed(&name, &terminal_snapshot) {
+                tracing::info!(
+                    "update_check: '{}' en estado terminal failed-stopped; se omite hasta intervención manual",
+                    name
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+                continue;
+            }
+
+            // Anti-churn tras rollback (D10): se salta el contenedor mientras el
+            // digest remoto resuelto coincida con el que se intentó y acabó en
+            // rollback; si el registry publica una versión nueva (digest
+            // distinto) el ciclo MUST reintentar.
+            if is_rolled_back_suppressed(&name, &decision.config_digest, &rolled_back_snapshot) {
+                tracing::info!(
+                    "update_check: '{}' se omite; su último intento acabó en rollback para el mismo digest ({})",
+                    name,
+                    crate::updates::digest::short_digest(&decision.config_digest)
+                );
+                tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;
+                continue;
+            }
+
+            let has_update = decision.has_update;
+            let old_digest = decision.old_digest;
+            let config_digest = decision.config_digest;
+            let manifest_digest = decision.manifest_digest;
+            let degraded = decision.degraded;
 
             let _ = sqlite_update_has_update(&db_pool, &name, has_update).await;
             if !has_update || name.is_empty() {
@@ -218,6 +268,8 @@ pub async fn update_check_worker(
                     cleanup_old_image: policies.1 .1,
                     rollback_on_failure: policies.1 .2,
                     notify_events: false,
+                    max_start_attempts: None,
+                    health_window_secs: None,
                 },
             };
             if policy.action == UpdateAction::None {
@@ -257,6 +309,7 @@ pub async fn update_check_worker(
                             &config_digest,
                             "update-check-pull",
                             start.elapsed().as_millis() as u64,
+                            0,
                         )
                         .await;
                         if policy.cleanup_old_image {
@@ -276,39 +329,85 @@ pub async fn update_check_worker(
                     let _in_progress =
                         InProgressGuard::acquire(update_in_progress.clone(), name.clone()).await;
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
-                    let backup = if policy.rollback_on_failure {
-                        tag_backup_image(&docker, &image_full).await
-                    } else {
-                        None
+                    let (max_attempts, interval_secs, health_window) = {
+                        let s = settings.lock().await;
+                        guard_params(&policy, &s)
                     };
                     if pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout).await
                     {
-                        match recreate_container(
+                        // Recrear + guarda de arranque sano a través del helper
+                        // compartido con los flujos manuales (D11). La imagen
+                        // anterior sólo se descarta tras confirmar la nueva sana.
+                        let guard = apply_with_guard(
                             &docker,
                             &name,
                             &cid,
                             &image_full,
                             Some(&manifest_digest),
+                            &image_id,
+                            max_attempts,
+                            interval_secs,
+                            health_window,
+                            policy.rollback_on_failure,
                         )
-                        .await
-                        {
-                            Ok(_) => {
-                                if policy.rollback_on_failure
-                                    && !verify_container_healthy(&docker, &name).await
-                                {
-                                    tracing::warn!("update_check: rollback '{}'", name);
-                                    if let Some((backup_full, base, orig_tag)) = backup {
-                                        rollback_container(
-                                            &docker,
-                                            &cid,
-                                            &base,
-                                            &orig_tag,
-                                            &backup_full,
-                                            &image_full,
+                        .await;
+                        match guard {
+                            Ok(guard) => match guard.outcome {
+                                GuardOutcome::RolledBack => {
+                                    {
+                                        let mut map = rolled_back.0.lock().await;
+                                        record_rolled_back(&mut map, &name, &config_digest, true);
+                                    }
+                                    sqlite_append_update(
+                                        &db_pool,
+                                        &update_history,
+                                        &name,
+                                        &image_full,
+                                        &image_id,
+                                        &config_digest,
+                                        "rolled-back",
+                                        start.elapsed().as_millis() as u64,
+                                        guard.attempts,
+                                    )
+                                    .await;
+                                    if notify {
+                                        notify_all_level(
+                                            &settings,
+                                            &name,
+                                            "⚠️ rollback vía update-check: imagen anterior restaurada",
+                                            guard_notify_level(GuardOutcome::RolledBack),
                                         )
                                         .await;
                                     }
-                                } else {
+                                }
+                                GuardOutcome::FailedStopped => {
+                                    {
+                                        let mut set = terminal_failed.0.lock().await;
+                                        record_terminal_failed(&mut set, &name, true);
+                                    }
+                                    sqlite_append_update(
+                                        &db_pool,
+                                        &update_history,
+                                        &name,
+                                        &image_full,
+                                        &image_id,
+                                        &config_digest,
+                                        "failed-stopped",
+                                        start.elapsed().as_millis() as u64,
+                                        guard.attempts,
+                                    )
+                                    .await;
+                                    if notify {
+                                        notify_all_level(
+                                            &settings,
+                                            &name,
+                                            "⛔ fallo terminal vía update-check: contenedor detenido",
+                                            guard_notify_level(GuardOutcome::FailedStopped),
+                                        )
+                                        .await;
+                                    }
+                                }
+                                GuardOutcome::Updated => {
                                     if notify {
                                         notify_all(
                                             &settings,
@@ -344,6 +443,7 @@ pub async fn update_check_worker(
                                         &config_digest,
                                         "update-check-restart",
                                         start.elapsed().as_millis() as u64,
+                                        guard.attempts,
                                     )
                                     .await;
                                     if policy.cleanup_old_image {
@@ -352,11 +452,15 @@ pub async fn update_check_worker(
                                     }
                                     updated_count += 1;
                                 }
-                            }
+                            },
                             Err(e) => {
+                                // Recreación fallida o verificación inconclusa
+                                // (D12): se registra con ERROR y NO se hace
+                                // teardown; la imagen anterior se conserva.
                                 tracing::error!(
-                                    "update_check: recreate_container failed for '{}': {}",
+                                    "update_check: la guarda de '{}' (image={}) no confirmó arranque sano: {}",
                                     name,
+                                    image_full,
                                     e
                                 );
                             }
@@ -373,50 +477,94 @@ pub async fn update_check_worker(
                     let _in_progress =
                         InProgressGuard::acquire(update_in_progress.clone(), name.clone()).await;
                     let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
-                    let backup = if policy.rollback_on_failure {
-                        tag_backup_image(&docker, &image_full).await
-                    } else {
-                        None
+                    let (max_attempts, interval_secs, health_window) = {
+                        let s = settings.lock().await;
+                        guard_params(&policy, &s)
                     };
 
                     // Recreación del servicio vía API Bollard (sin CLI docker
-                    // ni compose file accesible dentro del contenedor).
-                    let applied: Result<(), String> = async {
+                    // ni compose file accesible dentro del contenedor) más la
+                    // guarda compartida (D11).
+                    let applied: Result<GuardRun, String> = async {
                         if !pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout)
                             .await
                         {
                             return Err("pull de la imagen falló".to_string());
                         }
-                        recreate_container(
+                        apply_with_guard(
                             &docker,
                             &name,
                             &cid,
                             &image_full,
                             Some(&manifest_digest),
+                            &image_id,
+                            max_attempts,
+                            interval_secs,
+                            health_window,
+                            policy.rollback_on_failure,
                         )
                         .await
-                        .map_err(|e| format!("recreate del servicio falló: {}", e))
+                        .map_err(|e| e.to_string())
                     }
                     .await;
 
                     match applied {
-                        Ok(()) => {
-                            if policy.rollback_on_failure
-                                && !verify_container_healthy(&docker, &name).await
-                            {
-                                tracing::warn!("update_check: rollback stack '{}'", name);
-                                if let Some((backup_full, base, orig_tag)) = backup {
-                                    rollback_container(
-                                        &docker,
-                                        &cid,
-                                        &base,
-                                        &orig_tag,
-                                        &backup_full,
-                                        &image_full,
+                        Ok(guard) => match guard.outcome {
+                            GuardOutcome::RolledBack => {
+                                {
+                                    let mut map = rolled_back.0.lock().await;
+                                    record_rolled_back(&mut map, &name, &config_digest, true);
+                                }
+                                sqlite_append_update(
+                                    &db_pool,
+                                    &update_history,
+                                    &name,
+                                    &image_full,
+                                    &image_id,
+                                    &config_digest,
+                                    "rolled-back",
+                                    start.elapsed().as_millis() as u64,
+                                    guard.attempts,
+                                )
+                                .await;
+                                if notify {
+                                    notify_all_level(
+                                        &settings,
+                                        &name,
+                                        "⚠️ rollback vía stack (update-check): imagen anterior restaurada",
+                                        guard_notify_level(GuardOutcome::RolledBack),
                                     )
                                     .await;
                                 }
-                            } else {
+                            }
+                            GuardOutcome::FailedStopped => {
+                                {
+                                    let mut set = terminal_failed.0.lock().await;
+                                    record_terminal_failed(&mut set, &name, true);
+                                }
+                                sqlite_append_update(
+                                    &db_pool,
+                                    &update_history,
+                                    &name,
+                                    &image_full,
+                                    &image_id,
+                                    &config_digest,
+                                    "failed-stopped",
+                                    start.elapsed().as_millis() as u64,
+                                    guard.attempts,
+                                )
+                                .await;
+                                if notify {
+                                    notify_all_level(
+                                        &settings,
+                                        &name,
+                                        "⛔ fallo terminal vía stack (update-check): contenedor detenido",
+                                        guard_notify_level(GuardOutcome::FailedStopped),
+                                    )
+                                    .await;
+                                }
+                            }
+                            GuardOutcome::Updated => {
                                 if notify {
                                     notify_all(
                                         &settings,
@@ -452,6 +600,7 @@ pub async fn update_check_worker(
                                     &config_digest,
                                     "update-check-stack",
                                     start.elapsed().as_millis() as u64,
+                                    guard.attempts,
                                 )
                                 .await;
                                 if policy.cleanup_old_image {
@@ -465,7 +614,7 @@ pub async fn update_check_worker(
                                     image_full
                                 );
                             }
-                        }
+                        },
                         Err(e) => {
                             tracing::error!(
                                 "update_check: PullRestartStack falló para '{}' (image={}): {}",
@@ -536,6 +685,20 @@ pub async fn update_check_worker(
             .filter(|n| !n.is_empty())
             .collect();
         retain_present_containers(&mut degraded_applied, &present_names);
+
+        // Poda del estado terminal `failed-stopped`: olvida contenedores ya
+        // inexistentes para evitar crecimiento ilimitado del conjunto.
+        {
+            let mut set = terminal_failed.0.lock().await;
+            retain_present_terminal(&mut set, &present_names);
+        }
+
+        // Poda del anti-churn de rollback (D10): olvida contenedores ya
+        // inexistentes para evitar crecimiento ilimitado del mapa.
+        {
+            let mut map = rolled_back.0.lock().await;
+            retain_present_rolled_back(&mut map, &present_names);
+        }
 
         // Persistir last_run_at en settings para que el endpoint API lo exponga
         {
@@ -631,6 +794,37 @@ fn record_degraded_applied(
 /// están presentes en el ciclo (renombrado/recreación con nombre nuevo), para
 /// evitar que el mapa crezca sin límite.
 fn retain_present_containers(map: &mut HashMap<String, String>, present: &HashSet<String>) {
+    map.retain(|name, _| present.contains(name));
+}
+
+/// ¿Está el contenedor en estado terminal `failed-stopped`? Un contenedor así
+/// MUST saltarse aunque `has_update == true`, hasta intervención explícita del
+/// operador (design D9).
+fn is_terminal_suppressed(name: &str, terminal_failed: &HashSet<String>) -> bool {
+    terminal_failed.contains(name)
+}
+
+/// Marca (`terminal = true`) o limpia (`terminal = false`) un contenedor en el
+/// conjunto `terminal_failed`. Simétrico: se inserta al alcanzar
+/// [`GuardOutcome::FailedStopped`] y se elimina al resolverse el update o tras
+/// una intervención explícita.
+fn record_terminal_failed(set: &mut HashSet<String>, name: &str, terminal: bool) {
+    if terminal {
+        set.insert(name.to_string());
+    } else {
+        set.remove(name);
+    }
+}
+
+/// Poda del estado terminal: descarta entradas de contenedores que ya no
+/// existen (renombrado/recreación) para evitar crecimiento ilimitado.
+fn retain_present_terminal(set: &mut HashSet<String>, present: &HashSet<String>) {
+    set.retain(|name| present.contains(name));
+}
+
+/// Poda del anti-churn de rollback (D10): descarta entradas de contenedores que
+/// ya no existen (renombrado/recreación) para evitar crecimiento ilimitado.
+fn retain_present_rolled_back(map: &mut HashMap<String, String>, present: &HashSet<String>) {
     map.retain(|name, _| present.contains(name));
 }
 
@@ -834,6 +1028,7 @@ async fn sqlite_append_update(
     new_digest: &str,
     status: &str,
     duration_ms: u64,
+    attempts: u32,
 ) {
     let entry = UpdateHistoryEntry {
         container: name.to_string(),
@@ -843,6 +1038,7 @@ async fn sqlite_append_update(
         timestamp: crate::timezone::now_formatted(),
         status: status.to_string(),
         duration_ms,
+        attempts,
     };
     // Publicar en memoria y soltar el guard ANTES del await de DB, para no
     // retener el mutex del historial durante la E/S.
@@ -1276,6 +1472,72 @@ mod tests {
         let present: HashSet<String> = std::iter::once("a".to_string()).collect();
         retain_present_containers(&mut map, &present);
         assert_eq!(map.len(), 1);
+    }
+
+    // ── Supresión de reintentos tras `failed-stopped` (design D9) ──
+
+    #[test]
+    fn test_is_terminal_suppressed_true_when_present() {
+        let mut set = HashSet::new();
+        set.insert("app".to_string());
+        assert!(is_terminal_suppressed("app", &set));
+    }
+
+    #[test]
+    fn test_is_terminal_suppressed_false_when_absent() {
+        let set = HashSet::new();
+        assert!(!is_terminal_suppressed("app", &set));
+    }
+
+    #[test]
+    fn test_record_terminal_failed_is_symmetric() {
+        let mut set = HashSet::new();
+        record_terminal_failed(&mut set, "app", true);
+        assert!(set.contains("app"), "FailedStopped inserta el contenedor");
+        record_terminal_failed(&mut set, "app", false);
+        assert!(
+            !set.contains("app"),
+            "la limpieza (has_update=false / intervención) elimina la entrada"
+        );
+    }
+
+    #[test]
+    fn test_record_terminal_failed_scoped_per_container() {
+        let mut set = HashSet::new();
+        record_terminal_failed(&mut set, "a", true);
+        record_terminal_failed(&mut set, "b", true);
+        record_terminal_failed(&mut set, "a", false);
+        assert!(!set.contains("a"));
+        assert!(set.contains("b"));
+    }
+
+    /// Escenario «No hay reintentos infinitos tras el fallo terminal»: aunque
+    /// el digest remoto siga reportando un update pendiente (`has_update`),
+    /// un contenedor en `terminal_failed` NO produce decisión de update.
+    #[test]
+    fn test_terminal_failed_suppresses_decision_despite_has_update() {
+        let mut set = HashSet::new();
+        record_terminal_failed(&mut set, "app", true);
+
+        let ok: Result<RemoteDigest, String> =
+            Ok(remote("sha256:M", "sha256:newconfig", "latest", false));
+        let decision = compute_update_decision(&ok, Some("sha256:old"), "sha256:img", None)
+            .expect("resolución correcta");
+        assert!(
+            decision.has_update,
+            "el registry sí reporta un update pendiente"
+        );
+        assert!(
+            is_terminal_suppressed("app", &set),
+            "en estado terminal el worker descarta la decisión de update"
+        );
+    }
+
+    #[test]
+    fn test_terminal_failed_does_not_suppress_other_container() {
+        let mut set = HashSet::new();
+        record_terminal_failed(&mut set, "app", true);
+        assert!(!is_terminal_suppressed("other", &set));
     }
 
     /// Test de forma: la fuente del worker no debe paniquear sobre el pool ni

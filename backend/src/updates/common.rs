@@ -25,6 +25,7 @@ pub async fn record_update_entry(
         timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         status: status.to_string(),
         duration_ms,
+        attempts: 0,
     };
     let mut hist = update_history.lock().await;
     hist.push(entry);

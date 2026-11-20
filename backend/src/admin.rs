@@ -32,6 +32,9 @@ async fn get_update_check_config_h(
         next_run_at,
         pull_timeout_secs: s.pull_timeout_secs,
         check_interval_ms: s.check_interval_ms,
+        update_max_start_attempts: s.update_max_start_attempts,
+        update_start_attempt_interval_secs: s.update_start_attempt_interval_secs,
+        update_health_window_secs: s.update_health_window_secs,
     })
 }
 
@@ -65,6 +68,10 @@ async fn put_update_check_config_h(
     if body.check_interval_ms.is_some() {
         s.check_interval_ms = body.check_interval_ms;
     }
+    // Guarda de actualización: persistir los 3 parámetros globales.
+    s.update_max_start_attempts = body.update_max_start_attempts;
+    s.update_start_attempt_interval_secs = body.update_start_attempt_interval_secs;
+    s.update_health_window_secs = body.update_health_window_secs;
     let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
     let next_run_at = compute_next_run(&body.cron);
@@ -76,6 +83,9 @@ async fn put_update_check_config_h(
         next_run_at,
         pull_timeout_secs: s.pull_timeout_secs,
         check_interval_ms: s.check_interval_ms,
+        update_max_start_attempts: s.update_max_start_attempts,
+        update_start_attempt_interval_secs: s.update_start_attempt_interval_secs,
+        update_health_window_secs: s.update_health_window_secs,
     })
 }
 
@@ -100,6 +110,9 @@ async fn put_update_policy_h(
         cleanup_old_image: body.cleanup_old_image,
         rollback_on_failure: body.rollback_on_failure,
         notify_events: body.notify_events,
+        // Overrides de la guarda de arranque sano (opcionales).
+        max_start_attempts: body.max_start_attempts,
+        health_window_secs: body.health_window_secs,
     };
     {
         let mut list = policies.lock().await;
@@ -108,6 +121,8 @@ async fn put_update_policy_h(
             existing.cleanup_old_image = policy.cleanup_old_image;
             existing.rollback_on_failure = policy.rollback_on_failure;
             existing.notify_events = policy.notify_events;
+            existing.max_start_attempts = policy.max_start_attempts;
+            existing.health_window_secs = policy.health_window_secs;
         } else {
             list.push(policy.clone());
         }
@@ -259,6 +274,9 @@ mod tests {
             next_run_at: None,
             pull_timeout_secs: None,
             check_interval_ms: None,
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
         };
         let result: Json<UpdateCheckConfig> =
             put_update_check_config_h(State(settings.clone()), State(db_pool), Json(config)).await;
@@ -271,6 +289,82 @@ mod tests {
     }
 
     // ── Update Policies ─────────────────────────────────────
+
+    /// update-rollback-guard: PUT/GET del config global persiste y sirve los 3
+    /// campos de la guarda (memoria + settings en DB).
+    #[tokio::test]
+    async fn test_update_check_config_guard_roundtrip() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let config = UpdateCheckConfig {
+            cron: "0 */6 * * *".into(),
+            enabled: true,
+            notify: false,
+            last_run_at: None,
+            next_run_at: None,
+            pull_timeout_secs: None,
+            check_interval_ms: None,
+            update_max_start_attempts: 4,
+            update_start_attempt_interval_secs: 15,
+            update_health_window_secs: 45,
+        };
+        let _: Json<UpdateCheckConfig> = put_update_check_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(config),
+        )
+        .await;
+
+        // Persistido en el estado en memoria.
+        {
+            let s = settings.lock().await;
+            assert_eq!(s.update_max_start_attempts, 4);
+            assert_eq!(s.update_start_attempt_interval_secs, 15);
+            assert_eq!(s.update_health_window_secs, 45);
+        }
+
+        // Servido por el GET.
+        let got: Json<UpdateCheckConfig> = get_update_check_config_h(State(settings)).await;
+        assert_eq!(got.0.update_max_start_attempts, 4);
+        assert_eq!(got.0.update_start_attempt_interval_secs, 15);
+        assert_eq!(got.0.update_health_window_secs, 45);
+
+        // Persistido en la tabla `settings`.
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        let loaded = db::load_settings(&guard).unwrap();
+        assert_eq!(loaded.update_max_start_attempts, 4);
+        assert_eq!(loaded.update_start_attempt_interval_secs, 15);
+        assert_eq!(loaded.update_health_window_secs, 45);
+    }
+
+    /// update-rollback-guard: la política acepta y guarda los overrides de la guarda.
+    #[tokio::test]
+    async fn test_put_update_policy_persists_guard_overrides() {
+        let db_pool = db::test_pool();
+        let policies = Arc::new(Mutex::new(Vec::new()));
+        let req = UpdatePolicyReq {
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: false,
+            rollback_on_failure: true,
+            notify_events: true,
+            max_start_attempts: Some(5),
+            health_window_secs: Some(60),
+        };
+        let result: Json<UpdatePolicy> = put_update_policy_h(
+            State(policies.clone()),
+            State(db_pool),
+            axum::extract::Path("nginx".into()),
+            Json(req),
+        )
+        .await;
+        assert_eq!(result.0.max_start_attempts, Some(5));
+        assert_eq!(result.0.health_window_secs, Some(60));
+        let list = policies.lock().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].max_start_attempts, Some(5));
+        assert_eq!(list[0].health_window_secs, Some(60));
+    }
 
     #[tokio::test]
     async fn test_get_update_policies_empty() {
@@ -288,6 +382,8 @@ mod tests {
             cleanup_old_image: true,
             rollback_on_failure: true,
             notify_events: false,
+            max_start_attempts: None,
+            health_window_secs: None,
         };
         let result: Json<UpdatePolicy> = put_update_policy_h(
             State(policies.clone()),
@@ -314,12 +410,16 @@ mod tests {
             cleanup_old_image: false,
             rollback_on_failure: false,
             notify_events: false,
+            max_start_attempts: None,
+            health_window_secs: None,
         }]));
         let req = UpdatePolicyReq {
             action: UpdateAction::Pull,
             cleanup_old_image: false,
             rollback_on_failure: false,
             notify_events: false,
+            max_start_attempts: None,
+            health_window_secs: None,
         };
         let result: Json<UpdatePolicy> = put_update_policy_h(
             State(policies.clone()),
@@ -343,6 +443,8 @@ mod tests {
             cleanup_old_image: true,
             rollback_on_failure: false,
             notify_events: false,
+            max_start_attempts: None,
+            health_window_secs: None,
         }]));
         let result: Json<serde_json::Value> = delete_update_policy_h(
             State(policies.clone()),
@@ -377,6 +479,8 @@ mod tests {
                 cleanup_old_image: false,
                 rollback_on_failure: false,
                 notify_events: false,
+                max_start_attempts: None,
+                health_window_secs: None,
             },
             UpdatePolicy {
                 container: "redis".into(),
@@ -384,6 +488,8 @@ mod tests {
                 cleanup_old_image: false,
                 rollback_on_failure: false,
                 notify_events: false,
+                max_start_attempts: None,
+                health_window_secs: None,
             },
         ]));
         let result: Json<Vec<UpdatePolicy>> = get_update_policies_h(State(policies)).await;
@@ -430,6 +536,7 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00".into(),
                 status: "success".into(),
                 duration_ms: 10,
+                attempts: 0,
             }]));
 
         let result: Json<serde_json::Value> =

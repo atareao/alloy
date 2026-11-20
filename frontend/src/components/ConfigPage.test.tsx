@@ -1024,3 +1024,266 @@ describe("ConfigPage — tarjeta Exportar / Importar", () => {
     ).toBeInTheDocument();
   });
 });
+
+/**
+ * RED (task 1.14) — guarda de arranque (update-rollback-guard).
+ *
+ * Contrato que deben cumplir estos tests (aún NO implementado):
+ *  - ConfigPage renderiza los tres settings globales de la guarda con `aria-label`:
+ *      "Máximo de intentos de arranque"        → `update_max_start_attempts`
+ *      "Intervalo entre intentos (s)"          → `update_start_attempt_interval_secs`
+ *      "Ventana de salud (s)"                  → `update_health_window_secs`
+ *  - Los valores del `GET /api/update-check/config` se precargan en los campos.
+ *  - Al guardar la revisión, el `PUT /api/update-check/config` incluye los tres campos.
+ *
+ * En RED fallan porque los campos no existen en ConfigPage.
+ */
+describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function installGuardFetchMock(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "0 */6 * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 600,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 5,
+              update_health_window_secs: 30,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "0 */6 * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+    return calls;
+  }
+
+  function renderGuardPage() {
+    const config = makeConfig();
+    const setConfig = vi.fn();
+    const calls = installGuardFetchMock();
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={config}
+          setConfig={setConfig}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return { calls };
+  }
+
+  it("renderiza los tres campos globales de la guarda en la pestaña de actualizaciones", async () => {
+    renderGuardPage();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    expect(
+      await screen.findByLabelText("Máximo de intentos de arranque"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Intervalo entre intentos (s)"),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Ventana de salud (s)")).toBeInTheDocument();
+  });
+
+  it("precarga en los campos los valores del GET /api/update-check/config", async () => {
+    renderGuardPage();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    expect(
+      await screen.findByLabelText("Máximo de intentos de arranque"),
+    ).toHaveValue("3");
+    expect(screen.getByLabelText("Intervalo entre intentos (s)")).toHaveValue(
+      "5",
+    );
+    expect(screen.getByLabelText("Ventana de salud (s)")).toHaveValue("30");
+  });
+
+  it("incluye los tres campos en el PUT al guardar la revisión", async () => {
+    const { calls } = renderGuardPage();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    fireEvent.change(
+      await screen.findByLabelText("Máximo de intentos de arranque"),
+      { target: { value: "5" } },
+    );
+    fireEvent.change(screen.getByLabelText("Intervalo entre intentos (s)"), {
+      target: { value: "10" },
+    });
+    fireEvent.change(screen.getByLabelText("Ventana de salud (s)"), {
+      target: { value: "45" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({
+        update_max_start_attempts: 5,
+        update_start_attempt_interval_secs: 10,
+        update_health_window_secs: 45,
+      });
+    });
+  });
+});
+
+/**
+ * Auditoría (Hallazgo 2): faltaban los overrides por política
+ * (`max_start_attempts`, `health_window_secs`) en la tarjeta de política por
+ * defecto. Deben renderizarse, precargarse desde el GET y enviarse SIEMPRE en
+ * el PUT para no resetear overrides existentes.
+ */
+describe("ConfigPage — overrides de la guarda en la política por defecto", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function installDefaultPolicyMock(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "0 */6 * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+              max_start_attempts: 4,
+              health_window_secs: 20,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default" && method === "PUT") {
+        return Promise.resolve(new Response(JSON.stringify({ ...body })));
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+    return calls;
+  }
+
+  function renderDefaultPolicyPage() {
+    const calls = installDefaultPolicyMock();
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return { calls };
+  }
+
+  it("renderiza los overrides y precarga sus valores desde GET /api/update-policies/default", async () => {
+    renderDefaultPolicyPage();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    expect(
+      await screen.findByLabelText("Override máximo de intentos de arranque"),
+    ).toHaveValue("4");
+    expect(screen.getByLabelText("Override ventana de salud (s)")).toHaveValue(
+      "20",
+    );
+  });
+
+  it("incluye max_start_attempts y health_window_secs en el PUT de la política por defecto", async () => {
+    const { calls } = renderDefaultPolicyPage();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    fireEvent.change(
+      await screen.findByLabelText("Override máximo de intentos de arranque"),
+      { target: { value: "6" } },
+    );
+    fireEvent.change(screen.getByLabelText("Override ventana de salud (s)"), {
+      target: { value: "15" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar política por defecto/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-policies/default" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({
+        max_start_attempts: 6,
+        health_window_secs: 15,
+      });
+    });
+  });
+});

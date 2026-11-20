@@ -201,9 +201,13 @@ pub struct UpdateHistoryEntry {
     pub timestamp: String,
     pub status: String,
     pub duration_ms: u64,
+    /// Nº de intentos de arranque sano realizados por la guarda de actualización.
+    /// 0 cuando la entrada no pasa por la guarda (entradas antiguas o acciones `pull`).
+    #[serde(default)]
+    pub attempts: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub telegram_token: Option<String>,
@@ -250,6 +254,65 @@ pub struct Settings {
     /// Aumentar para evitar rate limiting en registries públicos.
     #[serde(default)]
     pub check_interval_ms: Option<u64>,
+
+    /// Nº máximo de intentos de arranque sano antes de hacer rollback. Default: 3.
+    #[serde(default = "default_update_max_start_attempts")]
+    pub update_max_start_attempts: u32,
+
+    /// Segundos de espera entre intentos de arranque. Default: 10.
+    #[serde(default = "default_update_start_attempt_interval_secs")]
+    pub update_start_attempt_interval_secs: u64,
+
+    /// Segundos de ventana estable para considerar sano un arranque. Default: 30.
+    #[serde(default = "default_update_health_window_secs")]
+    pub update_health_window_secs: u64,
+}
+
+/// Default global: nº máximo de intentos de arranque sano antes del rollback.
+pub const DEFAULT_UPDATE_MAX_START_ATTEMPTS: u32 = 3;
+/// Default global: segundos de espera entre intentos de arranque.
+pub const DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS: u64 = 10;
+/// Default global: segundos de ventana estable para considerar un arranque sano.
+pub const DEFAULT_UPDATE_HEALTH_WINDOW_SECS: u64 = 30;
+
+pub(crate) const fn default_update_max_start_attempts() -> u32 {
+    DEFAULT_UPDATE_MAX_START_ATTEMPTS
+}
+
+pub(crate) const fn default_update_start_attempt_interval_secs() -> u64 {
+    DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS
+}
+
+pub(crate) const fn default_update_health_window_secs() -> u64 {
+    DEFAULT_UPDATE_HEALTH_WINDOW_SECS
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            telegram_token: None,
+            telegram_chat_id: None,
+            telegram_topic_id: None,
+            matrix_homeserver: None,
+            matrix_token: None,
+            matrix_room: None,
+            webhook_url: None,
+            valet_url: None,
+            valet_token: None,
+            update_check_cron: None,
+            update_check_enabled: None,
+            update_check_notify: None,
+            default_update_action: None,
+            default_cleanup_old_image: None,
+            default_rollback_on_failure: None,
+            update_check_last_run_at: None,
+            pull_timeout_secs: None,
+            check_interval_ms: None,
+            update_max_start_attempts: DEFAULT_UPDATE_MAX_START_ATTEMPTS,
+            update_start_attempt_interval_secs: DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS,
+            update_health_window_secs: DEFAULT_UPDATE_HEALTH_WINDOW_SECS,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -260,6 +323,12 @@ pub struct UpdatePolicy {
     pub rollback_on_failure: bool,
     #[serde(default = "default_notify_events")]
     pub notify_events: bool,
+    /// Override por política del nº máximo de intentos de arranque sano.
+    #[serde(default)]
+    pub max_start_attempts: Option<u32>,
+    /// Override por política de la ventana estable de salud (segundos).
+    #[serde(default)]
+    pub health_window_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,6 +338,12 @@ pub struct UpdatePolicyReq {
     pub rollback_on_failure: bool,
     #[serde(default = "default_notify_events")]
     pub notify_events: bool,
+    /// Override por política del nº máximo de intentos de arranque sano.
+    #[serde(default)]
+    pub max_start_attempts: Option<u32>,
+    /// Override por política de la ventana estable de salud (segundos).
+    #[serde(default)]
+    pub health_window_secs: Option<u64>,
 }
 
 const fn default_notify_events() -> bool {
@@ -321,6 +396,15 @@ pub struct UpdateCheckConfig {
     /// Intervalo en ms entre verificaciones de cada contenedor.
     #[serde(default)]
     pub check_interval_ms: Option<u64>,
+    /// Nº máximo de intentos de arranque sano antes del rollback. Default: 3.
+    #[serde(default = "default_update_max_start_attempts")]
+    pub update_max_start_attempts: u32,
+    /// Segundos de espera entre intentos de arranque. Default: 10.
+    #[serde(default = "default_update_start_attempt_interval_secs")]
+    pub update_start_attempt_interval_secs: u64,
+    /// Segundos de ventana estable de salud. Default: 30.
+    #[serde(default = "default_update_health_window_secs")]
+    pub update_health_window_secs: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -859,5 +943,94 @@ mod tests {
         };
         let value = serde_json::to_value(&cfg).expect("PublicConfig must serialize");
         assert_eq!(value["telegram_topic_id"], "42");
+    }
+
+    // ── update-rollback-guard: modelos ───────────────────────
+
+    /// Entradas de historial antiguas (sin `attempts`) deserializan con 0.
+    #[test]
+    fn test_update_history_entry_attempts_defaults_to_zero() {
+        let entry: UpdateHistoryEntry = serde_json::from_str(
+            r#"{"container":"c","image":"i","old_digest":"o","new_digest":"n","timestamp":"t","status":"updated","duration_ms":1}"#,
+        )
+        .expect("entry without attempts must deserialize");
+        assert_eq!(entry.attempts, 0);
+    }
+
+    /// Un `attempts` explícito se conserva.
+    #[test]
+    fn test_update_history_entry_keeps_attempts() {
+        let entry: UpdateHistoryEntry = serde_json::from_str(
+            r#"{"container":"c","image":"i","old_digest":"o","new_digest":"n","timestamp":"t","status":"rolled-back","duration_ms":1,"attempts":3}"#,
+        )
+        .expect("entry with attempts must deserialize");
+        assert_eq!(entry.attempts, 3);
+    }
+
+    /// Settings antiguos (sin los campos de la guarda) usan los defaults globales.
+    #[test]
+    fn test_settings_guard_defaults_when_fields_missing() {
+        let s: Settings = serde_json::from_str("{}").expect("empty settings is valid");
+        assert_eq!(s.update_max_start_attempts, 3);
+        assert_eq!(s.update_start_attempt_interval_secs, 10);
+        assert_eq!(s.update_health_window_secs, 30);
+    }
+
+    /// `Settings::default()` coincide con los defaults de serde.
+    #[test]
+    fn test_settings_default_matches_guard_defaults() {
+        let s = Settings::default();
+        assert_eq!(
+            s.update_max_start_attempts,
+            DEFAULT_UPDATE_MAX_START_ATTEMPTS
+        );
+        assert_eq!(
+            s.update_start_attempt_interval_secs,
+            DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS
+        );
+        assert_eq!(
+            s.update_health_window_secs,
+            DEFAULT_UPDATE_HEALTH_WINDOW_SECS
+        );
+    }
+
+    /// Los overrides de `UpdatePolicyReq` son opcionales y se mapean a `Option`.
+    #[test]
+    fn test_update_policy_req_guard_overrides() {
+        let without: UpdatePolicyReq = serde_json::from_str(
+            r#"{"action":"pull-restart","cleanup_old_image":true,"rollback_on_failure":true}"#,
+        )
+        .expect("req without overrides must deserialize");
+        assert_eq!(without.max_start_attempts, None);
+        assert_eq!(without.health_window_secs, None);
+
+        let with: UpdatePolicyReq = serde_json::from_str(
+            r#"{"action":"pull-restart","cleanup_old_image":true,"rollback_on_failure":true,"max_start_attempts":5,"health_window_secs":60}"#,
+        )
+        .expect("req with overrides must deserialize");
+        assert_eq!(with.max_start_attempts, Some(5));
+        assert_eq!(with.health_window_secs, Some(60));
+    }
+
+    /// Los 3 campos de la guarda hacen roundtrip en `UpdateCheckConfig`.
+    #[test]
+    fn test_update_check_config_guard_roundtrip() {
+        let config = UpdateCheckConfig {
+            cron: "0 */6 * * *".into(),
+            enabled: true,
+            notify: false,
+            last_run_at: None,
+            next_run_at: None,
+            pull_timeout_secs: None,
+            check_interval_ms: None,
+            update_max_start_attempts: 4,
+            update_start_attempt_interval_secs: 12,
+            update_health_window_secs: 45,
+        };
+        let json = serde_json::to_string(&config).expect("config must serialize");
+        let back: UpdateCheckConfig = serde_json::from_str(&json).expect("config must deserialize");
+        assert_eq!(back.update_max_start_attempts, 4);
+        assert_eq!(back.update_start_attempt_interval_secs, 12);
+        assert_eq!(back.update_health_window_secs, 45);
     }
 }

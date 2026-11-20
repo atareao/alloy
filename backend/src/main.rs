@@ -27,7 +27,9 @@ use crate::auth::auth_middleware;
 use crate::config::Config;
 use crate::db as database;
 use crate::models::*;
-use crate::state::{http_client, AppState, JwtValidator, OidcMetadata, OidcStates};
+use crate::state::{
+    http_client, AppState, JwtValidator, OidcMetadata, OidcStates, RolledBackGuard, TerminalFailed,
+};
 use crate::workers::{cleanup_worker, state_worker, update_check_worker, CachedContainers};
 
 use axum::serve::ListenerExt;
@@ -185,6 +187,8 @@ async fn main() {
         settings: settings.clone(),
         db: db_pool.clone(),
         update_in_progress: Arc::new(Mutex::new(HashSet::new())),
+        terminal_failed: TerminalFailed::default(),
+        rolled_back: RolledBackGuard::default(),
         progress_cache: progress_cache.clone(),
         cancel_check: Arc::new(AtomicBool::new(false)),
         state_notify: state_notify.clone(),
@@ -213,6 +217,8 @@ async fn main() {
         update_history.clone(),
         db_pool.clone(),
         state.update_in_progress.clone(),
+        state.terminal_failed.clone(),
+        state.rolled_back.clone(),
     ));
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
     tokio::spawn(cleanup_worker(docker.clone()));

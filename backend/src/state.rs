@@ -11,6 +11,27 @@ use crate::workers::CachedContainers;
 
 pub type OidcStates = Arc<Mutex<HashMap<String, (String, std::time::Instant)>>>;
 
+/// Contenedores en estado terminal `failed-stopped` (rollback que tampoco
+/// arrancó). El worker de updates los salta aunque `has_update` siga siendo
+/// `true`, hasta una intervención explícita del operador (design D9).
+///
+/// Newtype sobre el set para poder extraerlo con `State<TerminalFailed>` sin
+/// ambigüedad con otros `Arc<Mutex<HashSet<String>>>` del `AppState`
+/// (p. ej. `update_in_progress`).
+#[derive(Clone, Default)]
+pub struct TerminalFailed(pub Arc<Mutex<HashSet<String>>>);
+
+/// Contenedores cuyo último intento de update acabó en rollback para un digest
+/// remoto concreto (anti-churn, design D10). El worker los salta mientras el
+/// digest remoto resuelto coincida con el registrado; si el digest cambia
+/// (nueva versión publicada) vuelve a intentarlo.
+///
+/// Newtype sobre el mapa `nombre → digest intentado` para poder extraerlo con
+/// `State<RolledBackGuard>` sin ambigüedad con otros
+/// `Arc<Mutex<HashMap<String, String>>>` del `AppState`.
+#[derive(Clone, Default)]
+pub struct RolledBackGuard(pub Arc<Mutex<HashMap<String, String>>>);
+
 pub fn http_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -138,6 +159,13 @@ pub struct AppState {
     /// The state worker checks this set and skips notifications for these
     /// containers to avoid duplicate alerts during scheduled updates.
     pub update_in_progress: Arc<Mutex<HashSet<String>>>,
+    /// Contenedores en estado terminal `failed-stopped` que el worker de
+    /// updates debe saltar hasta intervención explícita del operador.
+    pub terminal_failed: TerminalFailed,
+    /// Contenedores cuyo último update acabó en rollback para un digest remoto
+    /// concreto: el worker los salta hasta que cambie la versión remota o haya
+    /// intervención explícita del operador (anti-churn, design D10).
+    pub rolled_back: RolledBackGuard,
     /// Progress cache for batch check/update operations.
     /// Stores the latest BatchProgress counters.
     pub progress_cache: Arc<Mutex<BatchProgress>>,
@@ -203,6 +231,18 @@ impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<UpdateHistoryEntry>>> {
 impl axum::extract::FromRef<AppState> for Arc<Mutex<Vec<UpdatePolicy>>> {
     fn from_ref(state: &AppState) -> Self {
         state.update_policies.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for TerminalFailed {
+    fn from_ref(state: &AppState) -> Self {
+        state.terminal_failed.clone()
+    }
+}
+
+impl axum::extract::FromRef<AppState> for RolledBackGuard {
+    fn from_ref(state: &AppState) -> Self {
+        state.rolled_back.clone()
     }
 }
 

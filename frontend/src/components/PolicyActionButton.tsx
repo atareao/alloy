@@ -1,5 +1,14 @@
 import { useState } from "react";
-import { Button, Flex, Modal, Select, Space, Switch, Typography } from "antd";
+import {
+  Button,
+  Flex,
+  InputNumber,
+  Modal,
+  Select,
+  Space,
+  Switch,
+  Typography,
+} from "antd";
 import type { ButtonProps } from "antd";
 import { SettingOutlined } from "@ant-design/icons";
 import { apiFetch } from "../api";
@@ -27,6 +36,11 @@ export default function PolicyActionButton({
   const [editCleanup, setEditCleanup] = useState(false);
   const [editRollback, setEditRollback] = useState(false);
   const [editNotifyEvents, setEditNotifyEvents] = useState(true);
+  // Overrides opcionales de la guarda (null = usar el valor global).
+  const [editMaxStartAttempts, setEditMaxStartAttempts] = useState<number | null>(
+    null,
+  );
+  const [editHealthWindow, setEditHealthWindow] = useState<number | null>(null);
   const [savingPolicy, setSavingPolicy] = useState(false);
 
   const policy = getPolicy(containerName);
@@ -36,6 +50,8 @@ export default function PolicyActionButton({
     setEditCleanup(policy?.cleanup_old_image || false);
     setEditRollback(policy?.rollback_on_failure || false);
     setEditNotifyEvents(policy?.notify_events ?? true);
+    setEditMaxStartAttempts(policy?.max_start_attempts ?? null);
+    setEditHealthWindow(policy?.health_window_secs ?? null);
     setShowPolicyModal(true);
   };
 
@@ -52,6 +68,9 @@ export default function PolicyActionButton({
             cleanup_old_image: editCleanup,
             rollback_on_failure: editRollback,
             notify_events: editNotifyEvents,
+            // Siempre presentes para no resetear overrides existentes (null = sin override).
+            max_start_attempts: editMaxStartAttempts,
+            health_window_secs: editHealthWindow,
           }),
         },
       );
@@ -174,6 +193,53 @@ export default function PolicyActionButton({
               Envía notificación (Telegram/Matrix) cuando el contenedor cambie
               de estado
             </Typography.Text>
+          </div>
+          <div>
+            <Typography.Text style={{ fontSize: 14, display: "block", marginBottom: 4 }}>
+              🛡️ Overrides de la guarda (opcional)
+            </Typography.Text>
+            <Typography.Text
+              type="secondary"
+              style={{ display: "block", fontSize: 12, marginBottom: 8 }}
+            >
+              Vacío = usar el valor global definido en Configuración.
+            </Typography.Text>
+            <Space direction="vertical" size={8} style={{ width: "100%" }}>
+              <Flex gap={8} wrap="wrap">
+                <Space direction="vertical" size={2}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    Máximo de intentos de arranque
+                  </Typography.Text>
+                  <InputNumber
+                    aria-label="Máximo de intentos de arranque"
+                    value={editMaxStartAttempts}
+                    onChange={(v) =>
+                      setEditMaxStartAttempts(v == null ? null : Number(v))
+                    }
+                    min={1}
+                    max={10}
+                    placeholder="Global"
+                    style={{ width: 180 }}
+                  />
+                </Space>
+                <Space direction="vertical" size={2}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    Ventana de salud (s)
+                  </Typography.Text>
+                  <InputNumber
+                    aria-label="Ventana de salud (s)"
+                    value={editHealthWindow}
+                    onChange={(v) =>
+                      setEditHealthWindow(v == null ? null : Number(v))
+                    }
+                    min={5}
+                    max={600}
+                    placeholder="Global"
+                    style={{ width: 180 }}
+                  />
+                </Space>
+              </Flex>
+            </Space>
           </div>
           <Flex justify="flex-end" style={{ marginTop: 16 }}>
             <Button

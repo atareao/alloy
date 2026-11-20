@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { forwardRef, useState } from "react";
 import { useMediaQuery } from "./useMediaQuery";
 import {
   Button,
@@ -14,24 +14,92 @@ import {
 } from "antd";
 import { DeleteOutlined, FileTextOutlined } from "@ant-design/icons";
 import { apiFetch } from "./api";
-
-// ═══════════════════════════════════════════════════════════════
-// Types
-// ═══════════════════════════════════════════════════════════════
-
-interface HistoryEntry {
-  container: string;
-  image: string;
-  old_digest: string;
-  new_digest: string;
-  timestamp: string;
-  status: string;
-  duration_ms: number;
-}
+import type { HistoryEntry } from "./types";
 
 // ═══════════════════════════════════════════════════════════════
 // Page: History (histórico de updates)
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * `<table>` a ancho natural (max-content) con un mínimo del 100%.
+ *
+ * La tabla se renderiza sin `scroll.x` (que forzaría a rc-table a inyectar una
+ * fila oculta `ant-table-measure-row` duplicando el texto de las cabeceras) y el
+ * scroll horizontal se delega a un contenedor con `overflow-x: auto`.
+ */
+const ContentTable = forwardRef<
+  HTMLTableElement,
+  React.ComponentPropsWithoutRef<"table">
+>(({ style, ...rest }, ref) => (
+  <table
+    ref={ref}
+    {...rest}
+    style={{ ...style, width: "max-content", minWidth: "100%" }}
+  />
+));
+ContentTable.displayName = "ContentTable";
+
+type StatusLevel = "success" | "warning" | "error" | "default";
+
+/**
+ * Nivel de severidad explícito por estado: **fuente única de verdad** de la que
+ * se derivan el color del tag, el fondo de la tarjeta móvil y el resto de
+ * estados (vía la heurística `isSuccess`). Tenerlo en un único mapa evita que
+ * tag y fondo diverjan (p. ej. `rolled-back` con fondo de error pero tag de
+ * aviso — ver D5: `rolled-back` ⇒ warning, `failed-stopped` ⇒ error).
+ */
+const STATUS_LEVEL: Record<string, StatusLevel> = {
+  "rolled-back": "warning",
+  "failed-stopped": "error",
+  skipped: "warning",
+};
+
+const TAG_TYPE: Record<StatusLevel, string> = {
+  success: "success",
+  warning: "warning",
+  error: "error",
+  default: "default",
+};
+
+const STATUS_BG: Record<StatusLevel, string | undefined> = {
+  success: "var(--ant-color-success-bg)",
+  warning: "var(--ant-color-warning-bg)",
+  error: "var(--ant-color-error-bg)",
+  default: undefined,
+};
+
+function isSuccess(status: string): boolean {
+  const s = status.toLowerCase();
+  return (
+    s === "success" ||
+    s === "ok" ||
+    s === "done" ||
+    s.startsWith("✅") ||
+    s.startsWith("✔️") ||
+    s.startsWith("🤖 auto-updated") ||
+    s.includes("actualizado") ||
+    s.includes("descargado") ||
+    s.includes("pulled") ||
+    s.includes("ya actualizado") ||
+    s.includes("updated") ||
+    s.includes("update-check")
+  );
+}
+
+function statusLevel(status: string): StatusLevel {
+  return (
+    STATUS_LEVEL[status.toLowerCase()] ??
+    (isSuccess(status) ? "success" : "error")
+  );
+}
+
+function statusTagType(status: string): string {
+  return TAG_TYPE[statusLevel(status)];
+}
+
+function statusBg(status: string): string | undefined {
+  return STATUS_BG[statusLevel(status)];
+}
 
 interface HistoryPageProps {
   history: HistoryEntry[];
@@ -59,52 +127,11 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
     const map: Record<string, string> = {
       "update-check-restart": "🔄 update-check",
       "update-check-pull": "📥 update-check",
+      "update-check-stack": "📦 update-check",
+      "rolled-back": "↩️ Rollback aplicado",
+      "failed-stopped": "🛑 Fallo terminal",
     };
     return map[status] || status;
-  };
-
-  const isSuccess = (status: string) => {
-    const s = status.toLowerCase();
-    if (
-      s === "success" ||
-      s === "ok" ||
-      s === "done" ||
-      s.startsWith("✅") ||
-      s.startsWith("✔️") ||
-      s.startsWith("🤖 auto-updated") ||
-      s.includes("actualizado") ||
-      s.includes("descargado") ||
-      s.includes("pulled") ||
-      s.includes("ya actualizado") ||
-      s.includes("updated") ||
-      s.includes("update-check")
-    ) {
-      return true;
-    }
-    if (
-      s === "failed" ||
-      s === "error" ||
-      s.startsWith("❌") ||
-      s.includes("error") ||
-      s.includes("falló") ||
-      s.includes("err")
-    ) {
-      return false;
-    }
-    return false;
-  };
-
-  const statusColor = (status: string) => {
-    const s = status.toLowerCase();
-    if (s === "skipped") return "yellow";
-    return isSuccess(status) ? "green" : "red";
-  };
-
-  const statusBg = (status: string) => {
-    if (status.toLowerCase() === "skipped") return undefined;
-    return isSuccess(status)
-      ? "var(--ant-color-success-bg)"
-      : "var(--ant-color-error-bg)";
   };
 
   const statusTooltipLabel = (entry: HistoryEntry): string => {
@@ -116,6 +143,10 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
       parts.push("✅ Actualización completada con éxito");
     } else if (s === "failed" || s === "❌ failed") {
       parts.push("❌ La actualización falló");
+    } else if (s === "rolled-back") {
+      parts.push("↩️ Rollback aplicado: se restauró la imagen anterior");
+    } else if (s === "failed-stopped") {
+      parts.push("🛑 Fallo terminal: el contenedor quedó parado");
     } else if (s.startsWith("update-check-restart")) {
       parts.push("🔄 Comprobación: reinicio necesario");
     } else if (s.startsWith("update-check-pull")) {
@@ -173,12 +204,6 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
   const shortDigest = (d: string | undefined) => {
     if (!d) return "-";
     return d.length > 20 ? d.substring(0, 20) + "..." : d;
-  };
-
-  const tagColorMap: Record<string, string> = {
-    green: "success",
-    red: "error",
-    yellow: "warning",
   };
 
   // ── Table columns ────────────────────────────────────────────
@@ -242,21 +267,27 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
       title: "Estado",
       key: "status",
       render: (_: unknown, record: HistoryEntry) => {
-        const c = statusColor(record.status);
         return (
           <Tooltip
             title={statusTooltipLabel(record)}
             overlayStyle={{ maxWidth: 320 }}
           >
-            <Tag
-              color={tagColorMap[c] || "default"}
-              style={{ cursor: "pointer" }}
-            >
+            <Tag color={statusTagType(record.status)} style={{ cursor: "pointer" }}>
               {formatStatus(record.status)}
             </Tag>
           </Tooltip>
         );
       },
+    },
+    {
+      title: "Intentos",
+      dataIndex: "attempts",
+      key: "attempts",
+      render: (text: number) => (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {text}
+        </Typography.Text>
+      ),
     },
     {
       title: "Duración",
@@ -303,7 +334,7 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             title={statusTooltipLabel(entry)}
             overlayStyle={{ maxWidth: 320 }}
           >
-            <Tag color={tagColorMap[statusColor(entry.status)] || "default"}>
+            <Tag color={statusTagType(entry.status)}>
               {formatStatus(entry.status)}
             </Tag>
           </Tooltip>
@@ -332,6 +363,14 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
             </Typography.Text>
             <Typography.Text style={{ fontFamily: "monospace", fontSize: 12 }}>
               {shortDigest(entry.new_digest)}
+            </Typography.Text>
+          </Flex>
+          <Flex gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              Intentos:
+            </Typography.Text>
+            <Typography.Text style={{ fontSize: 12 }}>
+              {entry.attempts}
             </Typography.Text>
           </Flex>
           <Flex gap={4}>
@@ -422,12 +461,19 @@ export default function HistoryPage({ history, setHistory }: HistoryPageProps) {
         </Space>
       ) : (
         <Card bordered styles={{ body: { padding: 0 } }}>
-          <Table
-            columns={columns}
-            dataSource={dataSource}
-            scroll={{ x: "max-content" }}
-            pagination={false}
-          />
+          <div
+            tabIndex={0}
+            role="region"
+            aria-label="Histórico de actualizaciones (desplazable)"
+            style={{ overflowX: "auto" }}
+          >
+            <Table
+              columns={columns}
+              dataSource={dataSource}
+              components={{ table: ContentTable }}
+              pagination={false}
+            />
+          </div>
         </Card>
       )}
     </Space>
