@@ -322,7 +322,10 @@ export default function ConfigPage({
             : "❌ Revisión programada desactivada",
         );
       } else {
-        setError("Error al guardar la revisión de actualizaciones");
+        const data = await res
+          .json()
+          .catch(() => ({ error: "Error desconocido" }));
+        setError(data.error || `Error HTTP ${res.status}`);
       }
     } catch {
       setError("Error de conexión");

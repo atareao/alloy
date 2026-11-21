@@ -54,7 +54,14 @@ async fn put_update_check_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(db_pool): State<DbPool>,
     Json(body): Json<UpdateCheckConfig>,
-) -> Json<UpdateCheckConfig> {
+) -> Result<Json<UpdateCheckConfig>, AppError> {
+    // validate-cron-on-put: rechazar un cron inválido ANTES de mutar el estado
+    // en memoria o persistirlo.
+    if !crate::timezone::is_valid_cron(&body.cron) {
+        return Err(AppError::BadRequest(
+            "expresión cron inválida (se esperan 5 campos, p. ej. \"0 6 * * *\")".into(),
+        ));
+    }
     let mut s = settings.lock().await;
     s.update_check_cron = Some(body.cron.clone());
     s.update_check_enabled = Some(body.enabled);
@@ -72,7 +79,7 @@ async fn put_update_check_config_h(
     let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
     let next_run_at = compute_next_run(&body.cron);
-    Json(UpdateCheckConfig {
+    Ok(Json(UpdateCheckConfig {
         cron: body.cron,
         enabled: body.enabled,
         notify: body.notify,
@@ -83,7 +90,7 @@ async fn put_update_check_config_h(
         update_max_start_attempts: s.update_max_start_attempts,
         update_start_attempt_interval_secs: s.update_start_attempt_interval_secs,
         update_health_window_secs: s.update_health_window_secs,
-    })
+    }))
 }
 
 // ── Update Policies ─────────────────────────────────────────
@@ -212,14 +219,25 @@ async fn import_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(db_pool): State<DbPool>,
     Json(body): Json<ImportPayload>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, AppError> {
+    // validate-cron-on-put: un cron presente y no vacío debe ser válido ANTES de
+    // mutar el estado en memoria o persistirlo. `None` o `""` = sin override;
+    // cualquier otro valor (p. ej. solo espacios) se valida igual que el PUT.
+    if let Some(cron) = body.settings.update_check_cron.as_deref() {
+        if !cron.is_empty() && !crate::timezone::is_valid_cron(cron) {
+            return Err(AppError::BadRequest(
+                "expresión cron inválida en la configuración importada (se esperan 5 campos, p. ej. \"0 6 * * *\")"
+                    .into(),
+            ));
+        }
+    }
     {
         let mut st = settings.lock().await;
         *st = body.settings;
         let conn = db_pool.get().await.unwrap();
         let _ = db::save_settings(&conn.lock().unwrap(), &st);
     }
-    Json(serde_json::json!({"status": "imported"}))
+    Ok(Json(serde_json::json!({"status": "imported"})))
 }
 
 pub fn routes() -> Router<AppState> {
@@ -279,13 +297,189 @@ mod tests {
             update_health_window_secs: 30,
         };
         let result: Json<UpdateCheckConfig> =
-            put_update_check_config_h(State(settings.clone()), State(db_pool), Json(config)).await;
+            put_update_check_config_h(State(settings.clone()), State(db_pool), Json(config))
+                .await
+                .expect("un cron válido debe aceptarse");
         assert_eq!(result.0.cron, "0 0 * * *");
         assert!(result.0.enabled);
         assert!(result.0.notify);
         let s = settings.lock().await;
         assert_eq!(s.update_check_cron.as_deref(), Some("0 0 * * *"));
         assert_eq!(s.update_check_enabled, Some(true));
+    }
+
+    /// Construye un `UpdateCheckConfig` de prueba con el cron indicado.
+    fn test_update_check_config(cron: &str) -> UpdateCheckConfig {
+        UpdateCheckConfig {
+            cron: cron.into(),
+            enabled: true,
+            notify: false,
+            last_run_at: None,
+            next_run_at: None,
+            pull_timeout_secs: None,
+            check_interval_ms: None,
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+        }
+    }
+
+    /// Siembra la tabla `settings` con un cron previo persistido, para poder
+    /// comprobar que un PUT rechazado no la sobrescribe.
+    async fn seed_persisted_cron(db_pool: &DbPool, cron: &str) {
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        let mut s = db::load_settings(&guard).unwrap();
+        s.update_check_cron = Some(cron.into());
+        db::save_settings(&guard, &s).unwrap();
+    }
+
+    /// Lee el cron guardado en la tabla `settings` (fuente de verdad en disco).
+    async fn persisted_cron(db_pool: &DbPool) -> Option<String> {
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        db::load_settings(&guard).unwrap().update_check_cron
+    }
+
+    /// validate-cron-on-put: un cron inválido ⇒ 400 y ni la memoria ni los
+    /// settings persistidos cambian.
+    #[tokio::test]
+    async fn test_put_update_check_config_invalid_cron_rejected() {
+        let db_pool = db::test_pool();
+        // Valor previo persistido: el PUT fallido no debe tocarlo.
+        seed_persisted_cron(&db_pool, "0 6 * * *").await;
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        {
+            let mut s = settings.lock().await;
+            s.update_check_cron = Some("0 6 * * *".into());
+            s.update_check_enabled = Some(true);
+        }
+        let before = {
+            let s = settings.lock().await;
+            (s.update_check_cron.clone(), s.update_check_enabled)
+        };
+        let before_db = persisted_cron(&db_pool).await;
+
+        let result = put_update_check_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(test_update_check_config("not a cron")),
+        )
+        .await;
+        match result {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("se esperaba 400 (BadRequest), obtenido: {:?}", other),
+        }
+
+        let after = {
+            let s = settings.lock().await;
+            (s.update_check_cron.clone(), s.update_check_enabled)
+        };
+        assert_eq!(
+            before, after,
+            "el estado en memoria no debe mutarse al rechazar"
+        );
+        let after_db = persisted_cron(&db_pool).await;
+        assert_eq!(
+            before_db, after_db,
+            "no debe escribirse en la base tras un PUT rechazado"
+        );
+        assert_eq!(
+            after_db.as_deref(),
+            Some("0 6 * * *"),
+            "el cron previo persistido debe quedar intacto"
+        );
+    }
+
+    /// validate-cron-on-put: cron vacío ⇒ 400, sin tocar memoria ni disco.
+    #[tokio::test]
+    async fn test_put_update_check_config_empty_cron_rejected() {
+        let db_pool = db::test_pool();
+        seed_persisted_cron(&db_pool, "0 6 * * *").await;
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let before_db = persisted_cron(&db_pool).await;
+
+        let result = put_update_check_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(test_update_check_config("")),
+        )
+        .await;
+        match result {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("se esperaba 400 (BadRequest), obtenido: {:?}", other),
+        }
+        {
+            let s = settings.lock().await;
+            assert_eq!(
+                s.update_check_cron, None,
+                "no debe mutar la memoria con cron vacío"
+            );
+        }
+        let after_db = persisted_cron(&db_pool).await;
+        assert_eq!(before_db, after_db, "no debe escribirse en la base");
+        assert_eq!(
+            after_db.as_deref(),
+            Some("0 6 * * *"),
+            "el cron previo persistido debe quedar intacto"
+        );
+    }
+
+    /// validate-cron-on-put: cron con 6 campos ⇒ 400 (solo formato canónico de
+    /// 5), sin tocar memoria ni disco.
+    #[tokio::test]
+    async fn test_put_update_check_config_six_field_cron_rejected() {
+        let db_pool = db::test_pool();
+        seed_persisted_cron(&db_pool, "*/15 * * * *").await;
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let before_db = persisted_cron(&db_pool).await;
+
+        let result = put_update_check_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(test_update_check_config("0 0 6 * * *")),
+        )
+        .await;
+        match result {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("se esperaba 400 (BadRequest), obtenido: {:?}", other),
+        }
+        {
+            let s = settings.lock().await;
+            assert_eq!(
+                s.update_check_cron, None,
+                "no debe mutar la memoria con 6 campos"
+            );
+        }
+        let after_db = persisted_cron(&db_pool).await;
+        assert_eq!(before_db, after_db, "no debe escribirse en la base");
+        assert_eq!(
+            after_db.as_deref(),
+            Some("*/15 * * * *"),
+            "el cron previo persistido debe quedar intacto"
+        );
+    }
+
+    /// validate-cron-on-put: cron válido de 5 campos ⇒ 200 y persiste.
+    #[tokio::test]
+    async fn test_put_update_check_config_valid_five_field_cron_accepted() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+
+        let result = put_update_check_config_h(
+            State(settings.clone()),
+            State(db_pool),
+            Json(test_update_check_config("0 6 * * *")),
+        )
+        .await
+        .expect("un cron válido debe aceptarse");
+        assert_eq!(result.0.cron, "0 6 * * *");
+        assert!(
+            result.0.next_run_at.is_some(),
+            "next_run_at debe calcularse"
+        );
+        let s = settings.lock().await;
+        assert_eq!(s.update_check_cron.as_deref(), Some("0 6 * * *"));
     }
 
     // ── Update Policies ─────────────────────────────────────
@@ -313,7 +507,8 @@ mod tests {
             State(db_pool.clone()),
             Json(config),
         )
-        .await;
+        .await
+        .expect("cron válido debe aceptarse");
 
         // Persistido en el estado en memoria.
         {
@@ -570,8 +765,10 @@ mod tests {
             },
         };
 
-        let _: Json<serde_json::Value> =
-            import_config_h(State(settings.clone()), State(db_pool), Json(payload)).await;
+        let result = import_config_h(State(settings.clone()), State(db_pool), Json(payload))
+            .await
+            .expect("un settings sin cron debe aceptarse");
+        assert_eq!(result.0["status"], "imported");
 
         let st = settings.lock().await;
         assert!(st.telegram_token.is_none());
@@ -587,7 +784,239 @@ mod tests {
             settings: Settings::default(),
         };
 
-        let _: Json<serde_json::Value> =
-            import_config_h(State(settings.clone()), State(db_pool), Json(payload)).await;
+        let _ = import_config_h(State(settings.clone()), State(db_pool), Json(payload))
+            .await
+            .expect("un settings por defecto debe aceptarse");
+    }
+
+    /// validate-cron-on-put (ampliación): importar un settings con un cron
+    /// inválido ⇒ 400 y ni la memoria ni el estado persistido cambian.
+    #[tokio::test]
+    async fn test_import_config_invalid_cron_rejected() {
+        let db_pool = db::test_pool();
+        seed_persisted_cron(&db_pool, "0 6 * * *").await;
+        let settings = Arc::new(Mutex::new(Settings {
+            update_check_cron: Some("0 6 * * *".into()),
+            telegram_chat_id: Some("keep".into()),
+            ..Default::default()
+        }));
+        let before_db = persisted_cron(&db_pool).await;
+
+        let payload = ImportPayload {
+            settings: Settings {
+                update_check_cron: Some("not a cron".into()),
+                telegram_chat_id: Some("imported".into()),
+                ..Default::default()
+            },
+        };
+
+        let result = import_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(payload),
+        )
+        .await;
+        match result {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("se esperaba 400 (BadRequest), obtenido: {other:?}"),
+        }
+
+        // El estado en memoria no debe mutarse al rechazar.
+        {
+            let s = settings.lock().await;
+            assert_eq!(
+                s.update_check_cron.as_deref(),
+                Some("0 6 * * *"),
+                "el cron en memoria debe quedar intacto"
+            );
+            assert_eq!(
+                s.telegram_chat_id.as_deref(),
+                Some("keep"),
+                "ningún campo debe importarse si el cron es inválido"
+            );
+        }
+        let after_db = persisted_cron(&db_pool).await;
+        assert_eq!(before_db, after_db, "no debe escribirse en la base");
+        assert_eq!(
+            after_db.as_deref(),
+            Some("0 6 * * *"),
+            "el cron previo persistido debe quedar intacto"
+        );
+    }
+
+    /// validate-cron-on-put (ampliación): importar un settings con un cron de 6
+    /// campos ⇒ 400, sin tocar memoria ni disco.
+    #[tokio::test]
+    async fn test_import_config_six_field_cron_rejected() {
+        let db_pool = db::test_pool();
+        seed_persisted_cron(&db_pool, "*/15 * * * *").await;
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let before_db = persisted_cron(&db_pool).await;
+
+        let payload = ImportPayload {
+            settings: Settings {
+                update_check_cron: Some("0 0 6 * * *".into()),
+                ..Default::default()
+            },
+        };
+
+        let result = import_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(payload),
+        )
+        .await;
+        match result {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("se esperaba 400 (BadRequest), obtenido: {other:?}"),
+        }
+
+        {
+            let s = settings.lock().await;
+            assert_eq!(
+                s.update_check_cron, None,
+                "no debe mutar la memoria con 6 campos"
+            );
+        }
+        let after_db = persisted_cron(&db_pool).await;
+        assert_eq!(before_db, after_db, "no debe escribirse en la base");
+        assert_eq!(
+            after_db.as_deref(),
+            Some("*/15 * * * *"),
+            "el cron previo persistido debe quedar intacto"
+        );
+    }
+
+    /// validate-cron-on-put (ampliación): importar un settings con un cron de
+    /// solo espacios (`Some("   ")`) ⇒ 400, sin tocar memoria ni disco. Alinea
+    /// el import con el PUT: un cron presente y no vacío debe ser válido.
+    #[tokio::test]
+    async fn test_import_config_whitespace_cron_rejected() {
+        let db_pool = db::test_pool();
+        seed_persisted_cron(&db_pool, "0 6 * * *").await;
+        let settings = Arc::new(Mutex::new(Settings {
+            update_check_cron: Some("0 6 * * *".into()),
+            telegram_chat_id: Some("keep".into()),
+            ..Default::default()
+        }));
+        let before_db = persisted_cron(&db_pool).await;
+
+        let payload = ImportPayload {
+            settings: Settings {
+                update_check_cron: Some("   ".into()),
+                telegram_chat_id: Some("imported".into()),
+                ..Default::default()
+            },
+        };
+
+        let result = import_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(payload),
+        )
+        .await;
+        match result {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("se esperaba 400 (BadRequest), obtenido: {other:?}"),
+        }
+
+        {
+            let s = settings.lock().await;
+            assert_eq!(
+                s.update_check_cron.as_deref(),
+                Some("0 6 * * *"),
+                "el cron en memoria debe quedar intacto"
+            );
+            assert_eq!(
+                s.telegram_chat_id.as_deref(),
+                Some("keep"),
+                "ningún campo debe importarse con un cron solo-espacios"
+            );
+        }
+        let after_db = persisted_cron(&db_pool).await;
+        assert_eq!(before_db, after_db, "no debe escribirse en la base");
+        assert_eq!(
+            after_db.as_deref(),
+            Some("0 6 * * *"),
+            "el cron previo persistido debe quedar intacto"
+        );
+    }
+
+    /// validate-cron-on-put (ampliación): importar un settings sin cron (None)
+    /// ⇒ 200 y el settings se aplica (memoria + disco).
+    #[tokio::test]
+    async fn test_import_config_none_cron_accepted() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+
+        let payload = ImportPayload {
+            settings: Settings {
+                update_check_cron: None,
+                telegram_chat_id: Some("imported".into()),
+                ..Default::default()
+            },
+        };
+
+        let result = import_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(payload),
+        )
+        .await
+        .expect("un settings sin cron debe aceptarse");
+        assert_eq!(result.0["status"], "imported");
+
+        {
+            let s = settings.lock().await;
+            assert_eq!(s.update_check_cron, None);
+            assert_eq!(s.telegram_chat_id.as_deref(), Some("imported"));
+        }
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        let loaded = db::load_settings(&guard).unwrap();
+        assert_eq!(loaded.update_check_cron, None);
+        assert_eq!(loaded.telegram_chat_id.as_deref(), Some("imported"));
+    }
+
+    /// validate-cron-on-put (ampliación): importar un settings con cron vacío
+    /// (`Some("")`) ⇒ 200 y se aplica (normalizado a `None` en disco).
+    #[tokio::test]
+    async fn test_import_config_empty_cron_accepted() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+
+        let payload = ImportPayload {
+            settings: Settings {
+                update_check_cron: Some(String::new()),
+                telegram_chat_id: Some("imported".into()),
+                ..Default::default()
+            },
+        };
+
+        let result = import_config_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(payload),
+        )
+        .await
+        .expect("un cron vacío debe aceptarse (sin override)");
+        assert_eq!(result.0["status"], "imported");
+
+        {
+            let s = settings.lock().await;
+            assert_eq!(
+                s.update_check_cron,
+                Some(String::new()),
+                "el cron vacío queda como Some(\"\") en memoria (sin normalizar)"
+            );
+            assert_eq!(s.telegram_chat_id.as_deref(), Some("imported"));
+        }
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        let loaded = db::load_settings(&guard).unwrap();
+        assert_eq!(
+            loaded.update_check_cron, None,
+            "el cron vacío se normaliza a None en disco"
+        );
     }
 }

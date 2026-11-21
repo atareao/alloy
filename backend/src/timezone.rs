@@ -57,6 +57,23 @@ pub fn next_cron_time(cron_expr: &str) -> Option<String> {
     Some(next.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
 }
 
+/// Valida una expresión cron en el formato canónico de **5 campos**
+/// (`minuto hora día-del-mes mes día-de-semana`, p. ej. `0 6 * * *`).
+///
+/// Punto único de validación de cron de la aplicación: rechaza vacío/whitespace
+/// y cualquier expresión que no tenga exactamente 5 campos, y exige que el
+/// parseo con la crate `cron` tenga éxito (prefijando `"0 "` para el campo de
+/// segundos, igual que [`next_cron_time`]).
+pub fn is_valid_cron(expr: &str) -> bool {
+    if expr.trim().is_empty() {
+        return false;
+    }
+    if expr.split_whitespace().count() != 5 {
+        return false;
+    }
+    format!("0 {expr}").parse::<cron::Schedule>().is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +145,27 @@ mod tests {
         init("UTC");
         let s = now_time_formatted();
         assert_eq!(s.len(), 8);
+    }
+
+    #[test]
+    fn test_is_valid_cron_accepts_five_field_expressions() {
+        assert!(is_valid_cron("0 6 * * *"));
+        assert!(is_valid_cron("*/15 * * * *"));
+    }
+
+    #[test]
+    fn test_is_valid_cron_rejects_empty_or_whitespace() {
+        assert!(!is_valid_cron(""));
+        assert!(!is_valid_cron("   "));
+    }
+
+    #[test]
+    fn test_is_valid_cron_rejects_free_text() {
+        assert!(!is_valid_cron("not a cron"));
+    }
+
+    #[test]
+    fn test_is_valid_cron_rejects_six_fields() {
+        assert!(!is_valid_cron("0 0 6 * * *"));
     }
 }
