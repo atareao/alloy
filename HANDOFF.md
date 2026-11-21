@@ -43,8 +43,11 @@ Orden acordado: **#156 → #157 → #158 → #159 → #160 → #161 → #162 →
 
 ## Tarea pendiente
 
-- **Siguiente: #156** (deploy co1 reproducible + doc). Change OpenSpec → aprobación → TDD → PR a `develop`.
-  Es docs/procedimiento (probablemente sin código). Luego #157, #158…
+- **#156 en curso**: PR **#168** abierto a `develop` (rama `feature/pin-deploy-co1-version`). Repo hecho:
+  `docs/deploy-co1.md` con imagen pinchada a `:X.Y.Z` + verificación **por tag**, `deploy/co1.compose.example.yaml`,
+  change `pin-deploy-co1-version` (capability `dev/deploy-co1`), `plans/PLAN-012.md`. Pendiente: **merge** +
+  **ops manual** en co1 (`compose.yaml` → `ghcr.io/atareao/alloy:0.26.0`) + `openspec archive`.
+- **Siguiente: #157** (descomponer `ConfigPage.tsx`, 1698 líneas). Luego #158, #159…
 
 ## Entorno
 
