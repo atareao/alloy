@@ -17,6 +17,7 @@ import type {
   AppConfig,
   DefaultUpdatePolicy,
   UpdateCheckConfig,
+  UpdateDefaults,
 } from "../types";
 import { apiFetch } from "../api";
 
@@ -69,7 +70,7 @@ export default function ConfigPage({
   const [valetEnabled, setValetEnabled] = useState(false);
 
   // Update check cron
-  const [ucCron, setUcCron] = useState("0 6 * * *");
+  const [ucCron, setUcCron] = useState("");
   const [ucEnabled, setUcEnabled] = useState(false);
   const [ucNotify, setUcNotify] = useState(false);
 
@@ -78,8 +79,13 @@ export default function ConfigPage({
     null,
   );
 
+  // Defaults canónicos de la revisión (GET /api/update-check/defaults). Se usan
+  // para el placeholder del cron, la etiqueta del timeout y el fallback al
+  // vaciar `pull_timeout_secs`, evitando literales hardcodeados.
+  const [defaults, setDefaults] = useState<UpdateDefaults | null>(null);
+
   // Pull timeout
-  const [pullTimeout, setPullTimeout] = useState(600);
+  const [pullTimeout, setPullTimeout] = useState(0);
 
   // Guarda de arranque (update-rollback-guard) — settings globales
   const [ucMaxStartAttempts, setUcMaxStartAttempts] = useState(3);
@@ -103,6 +109,14 @@ export default function ConfigPage({
         if (data.update_health_window_secs != null)
           setUcHealthWindow(data.update_health_window_secs);
       })
+      .catch(() => {});
+  }, []);
+
+  // Carga los defaults canónicos desde la API (placeholder/etiqueta/fallback).
+  useEffect(() => {
+    apiFetch("/api/update-check/defaults")
+      .then((res) => res.json())
+      .then((data: UpdateDefaults) => setDefaults(data))
       .catch(() => {});
   }, []);
 
@@ -951,7 +965,7 @@ export default function ConfigPage({
                           Edita directamente si los presets no se ajustan
                         </Typography.Text>
                         <Input
-                          placeholder="0 6 * * *"
+                          placeholder={defaults?.cron ?? ""}
                           value={ucCron}
                           onChange={(e) => setUcCron(e.target.value)}
                         />
@@ -978,11 +992,22 @@ export default function ConfigPage({
                           style={{ fontSize: 12 }}
                         >
                           Aumentar para imágenes grandes (&gt;500MB) o
-                          conexiones lentas. Default: 600 (10 min)
+                          conexiones lentas.
+                          {defaults
+                            ? ` Default: ${defaults.pull_timeout_secs} (${Math.round(
+                                defaults.pull_timeout_secs / 60,
+                              )} min)`
+                            : ""}
                         </Typography.Text>
                         <InputNumber
                           value={pullTimeout}
-                          onChange={(v) => setPullTimeout(Number(v) || 600)}
+                          onChange={(v) =>
+                            setPullTimeout((prev) =>
+                              v == null
+                                ? (defaults?.pull_timeout_secs ?? prev)
+                                : Number(v),
+                            )
+                          }
                           min={60}
                           max={7200}
                           step={60}

@@ -282,6 +282,28 @@ pub const DEFAULT_PULL_TIMEOUT_SECS: u64 = 600;
 /// Único origen del intervalo (ms) entre verificaciones de digest de cada contenedor.
 pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 2000;
 
+/// Defaults canónicos de la configuración de updates, expuestos por
+/// `GET /api/update-check/defaults` para que el frontend deje de duplicar los
+/// literales. Se pueblan siempre desde las consts de este módulo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateDefaults {
+    pub cron: String,
+    pub pull_timeout_secs: u64,
+    pub check_interval_ms: u64,
+}
+
+impl UpdateDefaults {
+    /// Construye los defaults canónicos desde las consts (`DEFAULT_UPDATE_CHECK_CRON`,
+    /// `DEFAULT_PULL_TIMEOUT_SECS`, `DEFAULT_CHECK_INTERVAL_MS`). Sin literales.
+    pub fn canonical() -> Self {
+        Self {
+            cron: DEFAULT_UPDATE_CHECK_CRON.to_string(),
+            pull_timeout_secs: DEFAULT_PULL_TIMEOUT_SECS,
+            check_interval_ms: DEFAULT_CHECK_INTERVAL_MS,
+        }
+    }
+}
+
 pub(crate) const fn default_update_max_start_attempts() -> u32 {
     DEFAULT_UPDATE_MAX_START_ATTEMPTS
 }
