@@ -6,13 +6,13 @@
 
   [![Rust](https://img.shields.io/badge/Rust-1.81+-de5842?style=flat-square&logo=rust&logoColor=white)](https://www.rust-lang.org)
   [![Axum](https://img.shields.io/badge/Axum-0.8-7C3AED?style=flat-square&logo=rust&logoColor=white)](https://github.com/tokio-rs/axum)
-  [![React](https://img.shields.io/badge/React-18-58C4DC?style=flat-square&logo=react&logoColor=white)](https://react.dev)
-  [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
-  [![Mantine UI](https://img.shields.io/badge/Mantine_UI-7-339AF0?style=flat-square&logo=mantine&logoColor=white)](https://mantine.dev)
+  [![React](https://img.shields.io/badge/React-19-58C4DC?style=flat-square&logo=react&logoColor=white)](https://react.dev)
+  [![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+  [![Ant Design](https://img.shields.io/badge/Ant_Design-6-1677ff?style=flat-square&logo=antdesign&logoColor=white)](https://ant.design)
   [![Docker](https://img.shields.io/badge/Docker_API-Bollard-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docs.docker.com/engine/api/)
   [![Podman](https://img.shields.io/badge/Podman-Quadlet-892CA0?style=flat-square&logo=podman&logoColor=white)](https://podman.io)
   [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
-  [![Tests](https://img.shields.io/badge/Tests-62_passing-22c55e?style=flat-square)](#testing)
+  [![Tests](https://img.shields.io/badge/Tests-627_passing-22c55e?style=flat-square)](#testing)
 
   ⭐ If you find this useful, consider starring the repo!
 
@@ -23,7 +23,7 @@
 **Alloy** is a real-time Docker management dashboard with a Rust/Axum backend and a React/TypeScript frontend. Monitor, manage, and automate your containers through a clean web interface — with live container state via SSE, automatic updates, configurable alerts, scheduled tasks, and OIDC authentication.
 
 > [!NOTE]
-> Alloy connects to the Docker daemon via the local socket (or Podman socket). No database required — state is persisted to JSON files.
+> Alloy connects to the Docker daemon via the local socket (or Podman socket). State is persisted to a local SQLite database (`data/alloy.db`).
 
 ## Features
 
@@ -84,7 +84,7 @@
 ```
 ┌──────────────────────────────────────────────────┐
 │                   Browser                         │
-│           React + Mantine UI                      │
+│           React + Ant Design                      │
 │           SSE streams / REST calls                │
 └──────────────────────┬───────────────────────────┘
                        │ HTTP / SSE
@@ -108,23 +108,25 @@
 └───────────────────────────────────────────────────┘
 ```
 
-The backend is organized into **13 modules** (~4,235 lines):
+The backend is organized into the following modules:
 
-| Module | Lines | Responsibility |
-|---|---|---|
-| `workers.rs` | 756 | Background workers: state, auto-update, alerts, scheduler |
-| `updates/` (3 files) | 588 | Image pull, update, digest compare, version check, history |
-| `auth.rs` | 480 | OIDC auth code flow, session middleware, SPA fallback |
-| `containers.rs` | 410 | Container CRUD, inspect, fetch, pull |
-| `models.rs` | 402 | Data types, constants, AppError |
-| `stacks.rs` | 374 | Docker Compose stack management |
-| `config.rs` | 338 | Config (YAML + env vars + Podman secrets) |
-| `main.rs` | 289 | Entry point, startup, workers, router |
-| `state.rs` | 216 | AppState, JwtValidator, OidcMetadata |
-| `persistence.rs` | 153 | JSON load/save helpers |
-| `notifications.rs` | 135 | Telegram & Matrix dispatchers |
-| `admin.rs` | 96 | Admin handlers (alerts, settings) |
-| `events.rs` | 62 | SSE event stream handler |
+| Module | Responsibility |
+|---|---|
+| `auth.rs` | OIDC auth flow, session middleware, SSE tickets, static SPA fallback |
+| `db.rs` | SQLite pool, schema and migrations |
+| `updates/` | Image pull, update, digest, health guard, history |
+| `workers/` | State, auto-update, alerts and scheduler workers |
+| `admin.rs` | Admin handlers (alerts, config) |
+| `config.rs` | Config loading and env overrides |
+| `containers.rs` | Container CRUD |
+| `events.rs` | SSE stream |
+| `models.rs` | Types and errors |
+| `notifications.rs` | Telegram/Matrix dispatchers |
+| `stacks.rs` | Docker Compose stacks |
+| `state.rs` | AppState and JwtValidator |
+| `timezone.rs` | Timezone helpers |
+| `test_support.rs` | Test helpers |
+| `main.rs` | Entry point, router and workers |
 
 ### Background Workers
 
@@ -363,7 +365,7 @@ journalctl --user -u alloy -f
 
 The Quadlet automatically handles:
 - Docker socket mounting (switch to Podman socket by uncommenting `DOCKER_HOST`)
-- Persistent JSON storage (alerts, history, schedules, settings)
+- Persistent SQLite storage (alerts, history, schedules, settings)
 - Optional custom config via `~/.config/alloy/config.yaml`
 - Restart on failure
 
@@ -419,10 +421,10 @@ cd frontend && pnpm run build
 ### Testing
 
 ```sh
-# Backend: tests unitarios (321 tests; 12 de integración quedan aislados con #[ignore])
+# Backend: tests unitarios (492 tests; 12 de integración quedan aislados con #[ignore])
 cd backend && cargo test
 
-# Frontend (81 tests)
+# Frontend (135 tests)
 cd frontend && pnpm run test
 ```
 
@@ -445,14 +447,16 @@ cd frontend && pnpm run test
 │       ├── auth.rs          # OIDC auth flow
 │       ├── config.rs        # Config loading
 │       ├── containers.rs    # Container CRUD
+│       ├── db.rs            # SQLite pool, schema, migrations
 │       ├── events.rs        # SSE handlers
 │       ├── models.rs        # Types & errors
 │       ├── notifications.rs # Telegram/Matrix
-│       ├── persistence.rs   # JSON helpers
 │       ├── stacks.rs        # Compose stacks
 │       ├── state.rs         # AppState, JwtValidator
-│       ├── updates.rs       # Image updates
-│       └── workers.rs       # Background workers
+│       ├── timezone.rs      # Timezone helpers
+│       ├── test_support.rs  # Test helpers
+│       ├── updates/         # Image updates
+│       └── workers/         # Background workers
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx          # Shell, tabs, SSE
@@ -469,7 +473,7 @@ cd frontend && pnpm run test
 │   │   │   └── NotifToast.tsx
 │   │   └── api.ts           # API helpers
 │   └── dist/                # Pre-built assets
-├── data/                    # JSON persistence (runtime)
+├── data/                    # SQLite database (runtime)
 ├── Dockerfile               # Multi-stage build
 ├── .justfile                # Task runner
 └── AGENTS.md                # Agent documentation
@@ -478,9 +482,9 @@ cd frontend && pnpm run test
 ### Adding features
 
 - **New route** → Add handler in the corresponding module + `.route()` in `main.rs`
-- **New worker** → Create async fn in `workers.rs` + `tokio::spawn()` in `main()`
+- **New worker** → Create async fn in `workers/` + `tokio::spawn()` in `main()`
 - **New config** → Add field to `Config` + load logic + env override
-- **New persistent state** → `Arc<Mutex<Vec<T>>>` in `AppState` + `load_json`/`json_writer`
+- **New persistent state** → SQLite table + migration in `db.rs` using `deadpool-sqlite`
 - **New SSE event** → Struct + `broadcast::Sender` in `AppState` + SSE route
 - **New module** → `mod name;` in `main.rs` + file `backend/src/name.rs`
 
@@ -489,13 +493,13 @@ cd frontend && pnpm run test
 | Layer | Technology |
 |---|---|
 | **Backend** | Rust, Axum 0.8, Tokio (full), Bollard 0.18 |
-| **Frontend** | React 18, TypeScript, Vite, Mantine UI 7 |
+| **Frontend** | React 19, TypeScript 6, Vite 8, Ant Design 6 |
 | **Real-time** | Server-Sent Events via `tokio::broadcast` + `tokio-stream` |
 | **Auth** | OIDC only (JWKS validation, PocketID-style) |
-| **Persistence** | JSON files (no database) |
+| **Persistence** | SQLite (`rusqlite` + `deadpool-sqlite`), `data/alloy.db` |
 | **Notifications** | Telegram Bot API, Matrix Client-Server API |
 | **Deployment** | Podman, Quadlet, Docker |
-| **Linting** | `cargo clippy` + `cargo fmt` |
+| **Linting** | `cargo clippy`, `cargo fmt`, `oxlint` |
 
 ---
 
