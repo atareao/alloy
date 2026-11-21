@@ -194,8 +194,19 @@ export interface BatchProgress {
   failed?: number;
 }
 
+/** Paginated envelope returned by `GET /api/containers`. */
+export interface PagedContainers {
+  items: ContainerInfo[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface StateResponse {
   containers: ContainerInfo[];
+  total: number;
+  page: number;
+  page_size: number;
   summary: ContainerSummary;
   progress: BatchProgress;
 }
