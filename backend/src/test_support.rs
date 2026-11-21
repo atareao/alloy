@@ -13,8 +13,14 @@ use bollard::models::{HostConfig, PortBinding};
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::OnceCell;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Mutex, OnceCell};
+use tokio::task::JoinHandle;
+
+use crate::models::Settings;
 
 /// Socket del sistema (podman instalado a nivel root).
 const SYSTEM_SOCKET: &str = "/run/podman/podman.sock";
@@ -252,6 +258,95 @@ impl Drop for FixtureContainer {
         })
         .join();
     }
+}
+
+/// Lanza `handler` y cede el control hasta que la tarea ha alcanzado su primer
+/// `await` sobre la pool de BD.
+///
+/// El llamante debe haber saturado la pool (`max_size == 1` con su única conexión
+/// retenida), de modo que ese primer `await` quede pendiente. La cesión es
+/// determinista (`yield_now` repetido) en lugar de un `sleep` ciego: `yield_now`
+/// devuelve el control al runtime, que pollea la tarea recién lanzada hasta
+/// bloquearla en `db_pool.get()`.
+///
+/// # Panics
+/// Si el handler termina antes de tiempo — señal de que la pool no quedó saturada
+/// y el test no ejercitaría el invariante.
+async fn spawn_handler_blocked_on_saturated_pool<H>(handler: H) -> JoinHandle<()>
+where
+    H: Future<Output = ()> + Send + 'static,
+{
+    let handle = tokio::spawn(handler);
+    // Repetimos la cesión por margen: una sola bastaría en teoría, pero varias
+    // eliminan cualquier dependencia del orden de scheduling del runtime.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !handle.is_finished(),
+        "el handler terminó antes de bloquearse en la pool: la conexión no quedó \
+         saturada y el test no probaría el invariante"
+    );
+    handle
+}
+
+/// Comprueba que `probe` (una adquisición de lock) se completa antes del timeout
+/// mientras el handler sigue pendiente de una conexión de la pool saturada.
+async fn assert_lock_acquirable(label: &str, probe: impl Future<Output = ()>) {
+    let acquired = tokio::time::timeout(Duration::from_millis(300), probe).await;
+    assert!(
+        acquired.is_ok(),
+        "{label} debe adquirirse mientras el handler espera una conexión de la pool saturada"
+    );
+}
+
+/// Afirma que el mutex de `Settings` sigue siendo adquirible mientras `handler`
+/// está pendiente de una conexión de la pool de BD.
+///
+/// El llamante debe crear la pool con `max_size == 1` y retener su única conexión
+/// (saturarla) antes de invocar este helper. El `handler` se lanza en una tarea y
+/// se cede el control de forma determinista hasta que queda bloqueado en la pool;
+/// entonces se intenta `settings.lock().await` con un timeout corto. Si el handler
+/// retiene el guard del mutex mientras espera la conexión, el timeout expira y el
+/// test falla (invariante: ningún guard cruza el `await` de la pool).
+pub async fn assert_settings_lock_free_while_db_pool_saturated<H>(
+    settings: Arc<Mutex<Settings>>,
+    handler: H,
+) where
+    H: Future<Output = ()> + Send + 'static,
+{
+    let handle = spawn_handler_blocked_on_saturated_pool(handler).await;
+    assert_lock_acquirable("settings.lock()", async move {
+        let _guard = settings.lock().await;
+    })
+    .await;
+    handle.abort();
+}
+
+/// Como [`assert_settings_lock_free_while_db_pool_saturated`], pero comprueba
+/// además que un segundo mutex (`extra`, p. ej. `update_history`) también es
+/// adquirible mientras el handler espera una conexión de la pool saturada.
+///
+/// `extra_label` se usa en el mensaje de fallo para identificar qué lock falló.
+pub async fn assert_settings_and_extra_lock_free_while_db_pool_saturated<H, T>(
+    settings: Arc<Mutex<Settings>>,
+    extra: Arc<Mutex<T>>,
+    extra_label: &str,
+    handler: H,
+) where
+    H: Future<Output = ()> + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = spawn_handler_blocked_on_saturated_pool(handler).await;
+    assert_lock_acquirable("settings.lock()", async move {
+        let _guard = settings.lock().await;
+    })
+    .await;
+    assert_lock_acquirable(extra_label, async move {
+        let _guard = extra.lock().await;
+    })
+    .await;
+    handle.abort();
 }
 
 #[cfg(test)]

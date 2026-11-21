@@ -69,6 +69,9 @@ async fn put_update_check_config_h(
             "expresión cron inválida (se esperan 5 campos, p. ej. \"0 6 * * *\")".into(),
         ));
     }
+    // Conexión antes que estado: no retener `settings.lock()` mientras se espera
+    // una conexión de la pool.
+    let conn = db_pool.get().await.unwrap();
     let mut s = settings.lock().await;
     s.update_check_cron = Some(body.cron.clone());
     s.update_check_enabled = Some(body.enabled);
@@ -83,7 +86,6 @@ async fn put_update_check_config_h(
     s.update_max_start_attempts = body.update_max_start_attempts;
     s.update_start_attempt_interval_secs = body.update_start_attempt_interval_secs;
     s.update_health_window_secs = body.update_health_window_secs;
-    let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
     let next_run_at = compute_next_run(&body.cron);
     Ok(Json(UpdateCheckConfig {
@@ -191,13 +193,15 @@ async fn put_default_update_policy_h(
     State(db_pool): State<DbPool>,
     Json(body): Json<DefaultUpdatePolicy>,
 ) -> Json<DefaultUpdatePolicy> {
+    // Conexión antes que estado: no retener `settings.lock()` mientras se espera
+    // una conexión de la pool.
+    let conn = db_pool.get().await.unwrap();
     let mut s = settings.lock().await;
     s.default_update_action = Some(body.action.clone());
     s.default_cleanup_old_image = Some(body.cleanup_old_image);
     s.default_rollback_on_failure = Some(body.rollback_on_failure);
     s.default_max_start_attempts = body.max_start_attempts;
     s.default_health_window_secs = body.health_window_secs;
-    let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
     Json(body)
 }
@@ -209,9 +213,11 @@ async fn export_config_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
 ) -> Json<serde_json::Value> {
+    // Conexión antes que estado: adquirir la conexión antes de los locks de
+    // `settings` y `update_history` para no retenerlos mientras se espera.
+    let conn = db_pool.get().await.unwrap();
     let sett = settings.lock().await;
     let hist = update_history.lock().await;
-    let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &sett);
     // Redact secrets: never emit notification tokens in the exported payload.
     let mut redacted = sett.clone();
@@ -248,10 +254,12 @@ async fn import_config_h(
             ));
         }
     }
+    // Conexión antes que estado: adquirir la conexión antes de mutar el estado,
+    // manteniendo mutación + persistencia en una única sección crítica.
+    let conn = db_pool.get().await.unwrap();
     {
         let mut st = settings.lock().await;
         *st = body.settings;
-        let conn = db_pool.get().await.unwrap();
         let _ = db::save_settings(&conn.lock().unwrap(), &st);
     }
     Ok(Json(serde_json::json!({"status": "imported"})))
@@ -655,6 +663,136 @@ mod tests {
         let s = settings.lock().await;
         assert_eq!(s.default_max_start_attempts, None);
         assert_eq!(s.default_health_window_secs, None);
+    }
+
+    /// settings-lock-scope: `PUT /api/update-policies/default` NO debe retener el
+    /// mutex de `Settings` mientras espera una conexión de la pool saturada.
+    #[tokio::test]
+    async fn test_put_default_update_policy_does_not_hold_settings_lock_while_waiting_for_db() {
+        let db_pool = db::test_pool_with_max_size(1);
+        // Satura la única conexión: el handler quedará esperando en `db_pool.get()`.
+        let _held = db_pool.get().await.expect("get conn");
+
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let body = DefaultUpdatePolicy {
+            action: "pull-restart".into(),
+            cleanup_old_image: false,
+            rollback_on_failure: false,
+            max_start_attempts: None,
+            health_window_secs: None,
+        };
+
+        let handler_settings = settings.clone();
+        let handler_pool = db_pool.clone();
+        crate::test_support::assert_settings_lock_free_while_db_pool_saturated(
+            settings.clone(),
+            async move {
+                let _ = put_default_update_policy_h(
+                    State(handler_settings),
+                    State(handler_pool),
+                    Json(body),
+                )
+                .await;
+            },
+        )
+        .await;
+    }
+
+    /// settings-lock-scope: `PUT /api/update-check/config` NO debe retener el
+    /// mutex de `Settings` mientras espera una conexión de la pool saturada.
+    #[tokio::test]
+    async fn test_put_update_check_config_does_not_hold_settings_lock_while_waiting_for_db() {
+        let db_pool = db::test_pool_with_max_size(1);
+        // Satura la única conexión: el handler quedará esperando en `db_pool.get()`.
+        let _held = db_pool.get().await.expect("get conn");
+
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let body = UpdateCheckConfig {
+            cron: "0 6 * * *".into(),
+            enabled: true,
+            notify: false,
+            last_run_at: None,
+            next_run_at: None,
+            pull_timeout_secs: None,
+            check_interval_ms: None,
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+        };
+
+        let handler_settings = settings.clone();
+        let handler_pool = db_pool.clone();
+        crate::test_support::assert_settings_lock_free_while_db_pool_saturated(
+            settings.clone(),
+            async move {
+                let _ = put_update_check_config_h(
+                    State(handler_settings),
+                    State(handler_pool),
+                    Json(body),
+                )
+                .await;
+            },
+        )
+        .await;
+    }
+
+    /// settings-lock-scope: `GET /api/admin/export` NO debe retener ni el mutex de
+    /// `Settings` ni el de `update_history` mientras espera una conexión de la pool
+    /// saturada.
+    #[tokio::test]
+    async fn test_export_config_does_not_hold_settings_lock_while_waiting_for_db() {
+        let db_pool = db::test_pool_with_max_size(1);
+        // Satura la única conexión: el handler quedará esperando en `db_pool.get()`.
+        let _held = db_pool.get().await.expect("get conn");
+
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let update_history = Arc::new(Mutex::new(Vec::<UpdateHistoryEntry>::new()));
+
+        let handler_settings = settings.clone();
+        let handler_history = update_history.clone();
+        let handler_pool = db_pool.clone();
+        crate::test_support::assert_settings_and_extra_lock_free_while_db_pool_saturated(
+            settings.clone(),
+            update_history.clone(),
+            "update_history.lock()",
+            async move {
+                let _ = export_config_h(
+                    State(handler_settings),
+                    State(handler_history),
+                    State(handler_pool),
+                )
+                .await;
+            },
+        )
+        .await;
+    }
+
+    /// settings-lock-scope: `POST /api/admin/import` NO debe retener el mutex de
+    /// `Settings` mientras espera una conexión de la pool saturada.
+    #[tokio::test]
+    async fn test_import_config_does_not_hold_settings_lock_while_waiting_for_db() {
+        let db_pool = db::test_pool_with_max_size(1);
+        // Satura la única conexión: el handler quedará esperando en `db_pool.get()`.
+        let _held = db_pool.get().await.expect("get conn");
+
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let payload = ImportPayload {
+            settings: Settings::default(),
+        };
+
+        let handler_settings = settings.clone();
+        let handler_pool = db_pool.clone();
+        crate::test_support::assert_settings_lock_free_while_db_pool_saturated(
+            settings.clone(),
+            async move {
+                // El handler devuelve `Result`; el helper espera `()`, así que se
+                // descarta el resultado dentro del future.
+                let _ =
+                    import_config_h(State(handler_settings), State(handler_pool), Json(payload))
+                        .await;
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
