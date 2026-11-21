@@ -2099,3 +2099,206 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
     expect(putCalls(calls)).toHaveLength(0);
   });
 });
+
+/**
+ * `expose-check-interval-ui` — el intervalo de comprobación (`check_interval_ms`)
+ * se edita en **segundos** en el formulario, pero viaja en **milisegundos**:
+ * al cargar se divide entre 1000 y al guardar se multiplica por 1000. La
+ * etiqueta del control refleja el default de `GET /api/update-check/defaults`
+ * (también en segundos), sin literales incrustados.
+ *
+ * El mock usa defaults (`2000 ms` → `2 s`) **distintos** de la config cargada
+ * (`3000 ms` → `3 s`) para que la aserción de la etiqueta sea probatoria: si el
+ * frontend hardcodeara el valor, la etiqueta no mostraría el `2 s` de la API.
+ */
+describe("ConfigPage — edición del intervalo de comprobación (segundos)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderCheckInterval(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+              // Distinto del default de la API (2000) para que la etiqueta sea
+              // probatoria: el valor precargado es 3 s, la etiqueta dice 2 s.
+              check_interval_ms: 3000,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return calls;
+  }
+
+  it("carga el intervalo desde la config y lo muestra en segundos (2000 ms → 2)", async () => {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+              check_interval_ms: 2000,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Intervalo de comprobación (s)");
+    // 2000 ms deben mostrarse como 2 segundos.
+    await waitFor(() => expect(input).toHaveValue("2"));
+  });
+
+  it("poner 5 segundos y guardar envía check_interval_ms = 5000", async () => {
+    const calls = renderCheckInterval();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Intervalo de comprobación (s)");
+    await waitFor(() => expect(input).toHaveValue("3"));
+
+    fireEvent.change(input, { target: { value: "5" } });
+    expect(input).toHaveValue("5");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ check_interval_ms: 5000 });
+    });
+  });
+
+  it("la etiqueta del intervalo refleja el default de la API (2000 ms → 2 s), no el de la config (3 s)", async () => {
+    renderCheckInterval();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    await screen.findByLabelText("Intervalo de comprobación (s)");
+
+    await waitFor(() =>
+      expect(screen.getByText(/Default: 2 s/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Default: 3 s/)).not.toBeInTheDocument();
+  });
+});

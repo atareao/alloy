@@ -7,9 +7,8 @@
 El formulario de configuración de updates MUST permitir editar el intervalo de comprobación
 (`check_interval_ms`) en **segundos**. Al cargar la configuración MUST mostrar el valor recibido
 convertido a segundos (`check_interval_ms / 1000`) y al enviar MUST convertirlo de nuevo a **milisegundos**
-(`segundos * 1000`) en el `PUT /api/update-check/config`. La **etiqueta** y el **placeholder** del control
-MUST reflejar el default devuelto por `GET /api/update-check/defaults` (convertido a segundos), sin
-literales incrustados. El valor MUST ser de al menos **1 segundo**.
+(`segundos * 1000`) en el `PUT /api/update-check/config`. La **etiqueta** del control MUST reflejar el default devuelto por `GET /api/update-check/defaults`
+(convertido a segundos), sin literales incrustados. El valor MUST ser de al menos **1 segundo**.
 
 #### Scenario: Cargar el intervalo desde la configuración
 
@@ -27,4 +26,4 @@ literales incrustados. El valor MUST ser de al menos **1 segundo**.
 
 - **Given** los defaults cargados de `GET /api/update-check/defaults` con `check_interval_ms = 2000`
 - **When** el usuario observa el control del intervalo antes de modificarlo
-- **Then** la etiqueta/placeholder muestran el default en segundos (`2 s`) tomado de la API
+- **Then** la etiqueta muestra el default en segundos (`2 s`) tomado de la API
