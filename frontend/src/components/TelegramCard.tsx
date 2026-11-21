@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button, Card, Flex, Input, Space, Switch, Typography } from "antd";
 import type { AppConfig } from "../types";
 import { apiFetch } from "../api";
+import { useConfigSync } from "../useConfigSync";
 import type { SavingKey, TestingKey } from "../useConfigPage";
 
 interface TelegramCardProps {
@@ -36,18 +37,17 @@ export default function TelegramCard({
   // clear). The field starts empty; leaving it empty on save means "keep the
   // stored token". A partial config stays editable: enable the switch if the
   // channel is fully configured, if a token is stored, or if any non-secret
-  // field is present.
-  useEffect(() => {
-    if (!configProp) return;
+  // field is present. `useConfigSync` adjusts the state during render.
+  useConfigSync(configProp, (config) => {
     setTgToken("");
-    setTgChatId(configProp.telegram_chat_id || "");
-    setTgTopicId(configProp.telegram_topic_id || "");
+    setTgChatId(config.telegram_chat_id || "");
+    setTgTopicId(config.telegram_topic_id || "");
     setTgEnabled(
-      configProp.telegram_configured ||
-        configProp.telegram_token_set ||
-        !!configProp.telegram_chat_id,
+      config.telegram_configured ||
+        config.telegram_token_set ||
+        !!config.telegram_chat_id,
     );
-  }, [configProp]);
+  });
 
   const saveTelegram = async () => {
     setSaving("telegram");
