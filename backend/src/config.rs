@@ -26,6 +26,21 @@ pub struct Config {
     pub session_max_duration_hours: Option<u64>,
 }
 
+/// Lectura tolerante de una variable de entorno booleana.
+///
+/// Devuelve `true` para `1`, `true`, `yes` u `on` (case-insensitive); `false`
+/// si la variable está ausente o su valor no se reconoce.
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Intenta leer un secreto de Podman montado en `/run/secrets/<name>`.
 /// Si el archivo no existe o no se puede leer, devuelve `None`.
 fn read_secret(name: &str) -> Option<String> {
@@ -96,6 +111,16 @@ impl Config {
     pub fn session_max_duration_hours(&self) -> u64 {
         self.session_max_duration_hours.unwrap_or(24)
     }
+
+    /// Indica si se permite emitir la cookie de sesión sin el flag `Secure`.
+    ///
+    /// Controlado por `ALLOW_INSECURE_COOKIES` (`1`/`true`/`yes`/`on`). Por
+    /// defecto `false`: la cookie se marca `Secure` (solo se envía por HTTPS).
+    /// El opt-out explícito está pensado para desarrollo local servido por HTTP
+    /// plano.
+    pub fn allow_insecure_cookies(&self) -> bool {
+        env_flag("ALLOW_INSECURE_COOKIES")
+    }
 }
 
 // ── API handlers ─────────────────────────────────────────────
@@ -110,7 +135,7 @@ use tokio::sync::Mutex;
 
 use crate::db;
 use crate::db::DbPool;
-use crate::models::{PublicConfig, Settings, UpdateSettingsReq};
+use crate::models::{AppError, PublicConfig, Settings, UpdateSettingsReq};
 use crate::state::AppState;
 
 async fn config_handler(State(settings): State<Arc<Mutex<Settings>>>) -> Json<PublicConfig> {
@@ -145,10 +170,10 @@ async fn update_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(db_pool): State<DbPool>,
     Json(body): Json<UpdateSettingsReq>,
-) -> Json<PublicConfig> {
+) -> Result<Json<PublicConfig>, AppError> {
     // Conexión antes que estado: adquirir la conexión de la pool ANTES de tomar
     // `settings.lock()`, para no retener el mutex del estado mientras se espera.
-    let conn = db_pool.get().await.unwrap();
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
     {
         let mut s = settings.lock().await;
         if let Some(v) = body.telegram_token {
@@ -217,12 +242,13 @@ async fn update_config_h(
                 s.valet_token = Some(v);
             }
         }
-        let _ = db::save_settings(&conn.lock().unwrap(), &s);
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let _ = db::save_settings(&guard, &s);
     }
     // Liberar la conexión antes de delegar: `config_handler` vuelve a tomar
     // `settings.lock()`, y retener la conexión no aporta nada tras persistir.
     drop(conn);
-    config_handler(State(settings)).await
+    Ok(config_handler(State(settings)).await)
 }
 
 pub fn routes() -> Router<AppState> {
@@ -559,7 +585,8 @@ port: 8080
             State(db_pool),
             Json(update_req_topic(Some("42".into()))),
         )
-        .await;
+        .await
+        .unwrap();
 
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["telegram_topic_id"], "42");
@@ -579,7 +606,8 @@ port: 8080
             State(db_pool),
             Json(update_req_topic(Some("  42  ".into()))),
         )
-        .await;
+        .await
+        .unwrap();
 
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["telegram_topic_id"], "42");
@@ -602,7 +630,8 @@ port: 8080
             State(db_pool),
             Json(update_req_topic(Some(String::new()))),
         )
-        .await;
+        .await
+        .unwrap();
 
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["telegram_topic_id"], serde_json::Value::Null);
@@ -645,7 +674,8 @@ port: 8080
             State(db_pool),
             Json(update_req_topic(None)),
         )
-        .await;
+        .await
+        .unwrap();
 
         let value = serde_json::to_value(&cfg).unwrap();
         assert_eq!(value["telegram_topic_id"], "42");

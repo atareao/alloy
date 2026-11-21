@@ -49,6 +49,23 @@ async fn auth_login(
     Ok(Redirect::to(&auth_url))
 }
 
+/// Construye la cookie de sesión `session`.
+///
+/// Seam puro extraído de `auth_callback` (change `backend-hardening`). Cuando
+/// `secure` es `true` la cookie lleva el flag `Secure` (el navegador solo la
+/// envía por HTTPS); con `false` se omite, para desarrollo local servido por
+/// HTTP plano. La política la decide el llamante a partir de
+/// `Config::allow_insecure_cookies()`.
+fn build_session_cookie(token: String, max_age_secs: i64, secure: bool) -> Cookie<'static> {
+    Cookie::build(("session", token))
+        .path("/")
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Lax)
+        .max_age(cookie::time::Duration::new(max_age_secs, 0))
+        .build()
+}
+
 async fn auth_callback(
     State(config): State<Config>,
     State(oidc_metadata): State<Option<OidcMetadata>>,
@@ -174,12 +191,13 @@ async fn auth_callback(
     )
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Session creation failed").into_response())?;
 
-    let cookie = Cookie::build(("session", session_token))
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .max_age(cookie::time::Duration::new(max_duration_secs as i64, 0))
-        .build();
+    // `Secure` por defecto (solo HTTPS); opt-out explícito para desarrollo
+    // local por HTTP vía `ALLOW_INSECURE_COOKIES=1`.
+    let cookie = build_session_cookie(
+        session_token,
+        max_duration_secs as i64,
+        !config.allow_insecure_cookies(),
+    );
     Ok(Response::builder()
         .status(302)
         .header(header::LOCATION, "/")
@@ -495,6 +513,7 @@ pub async fn auth_middleware(
         let cookie = Cookie::build(("session", new_token))
             .path("/")
             .http_only(true)
+            .secure(!config.allow_insecure_cookies())
             .same_site(SameSite::Lax)
             .max_age(cookie::time::Duration::new(remaining_secs.max(0), 0))
             .build();
@@ -659,6 +678,37 @@ pub fn routes() -> Router<AppState> {
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
+
+    // ── Cookie de sesión: flag Secure (change backend-hardening) ──
+
+    /// RED (backend-hardening 1.2): con `secure = true` la cookie de sesión DEBE
+    /// llevar el flag `Secure`. Hoy `build_session_cookie` lo ignora (comportamiento
+    /// actual sin `Secure`), así que la aserción falla hasta aplicar el GREEN.
+    #[test]
+    fn build_session_cookie_secure_true_sets_secure_flag() {
+        let cookie = build_session_cookie("token".into(), 3600, true);
+        assert_eq!(
+            cookie.secure(),
+            Some(true),
+            "cookie de sesión con secure=true debe incluir el flag Secure: {cookie}"
+        );
+    }
+
+    /// Contrapartida (verde ya hoy): con `secure = false` la cookie NO debe llevar
+    /// `Secure` (opt-out para desarrollo local por HTTP plano). Además el seam no
+    /// debe cambiar las demás propiedades respecto del comportamiento actual.
+    #[test]
+    fn build_session_cookie_secure_false_omits_secure_flag() {
+        let cookie = build_session_cookie("token".into(), 3600, false);
+        assert!(
+            !cookie.secure().unwrap_or(false),
+            "cookie de sesión con secure=false no debe incluir Secure: {cookie}"
+        );
+        assert_eq!(cookie.name(), "session");
+        assert_eq!(cookie.path(), Some("/"));
+        assert_eq!(cookie.http_only(), Some(true));
+        assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+    }
 
     // ── url_encode ───────────────────────────────────────────
 

@@ -19,13 +19,13 @@ pub async fn get_history_h(
 pub async fn delete_history_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let mut hist = update_history.lock().await;
     hist.clear();
-    let obj = db_pool.get().await.unwrap();
-    let conn = obj.lock().unwrap();
+    let obj = db_pool.get().await.map_err(AppError::from_pool)?;
+    let conn = obj.lock().map_err(AppError::from_pool)?;
     let _ = db::clear_update_history(&conn);
-    Json(serde_json::json!({"status": "cleared"}))
+    Ok(Json(serde_json::json!({"status": "cleared"})))
 }
 
 #[cfg(test)]
@@ -150,8 +150,9 @@ mod tests {
     async fn test_delete_history_on_empty() {
         let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
         let pool = test_pool();
-        let result: Json<serde_json::Value> =
-            delete_history_h(State(hist.clone()), State(pool)).await;
+        let result: Json<serde_json::Value> = delete_history_h(State(hist.clone()), State(pool))
+            .await
+            .unwrap();
         assert_eq!(result.0["status"], "cleared");
         assert!(hist.lock().await.is_empty());
     }

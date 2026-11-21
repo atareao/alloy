@@ -12,15 +12,18 @@ use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::{broadcast, Mutex, Notify, OnceCell, RwLock};
 use tokio::task::JoinHandle;
 
-use crate::models::Settings;
+use crate::config::Config;
+use crate::db::DbPool;
+use crate::models::{BatchProgress, Settings};
+use crate::state::{AppState, JwtValidator, RolledBackGuard, TerminalFailed};
 
 /// Socket del sistema (podman instalado a nivel root).
 const SYSTEM_SOCKET: &str = "/run/podman/podman.sock";
@@ -347,6 +350,39 @@ pub async fn assert_settings_and_extra_lock_free_while_db_pool_saturated<H, T>(
     })
     .await;
     handle.abort();
+}
+
+/// Construye un [`AppState`] mínimo y autónomo para tests de router/cabeceras.
+///
+/// El cliente Docker es *lazy* (no contacta el daemon hasta la primera llamada),
+/// por lo que apunta a un endpoint HTTP inalcanzable: los tests que no ejercitan
+/// rutas dependientes de Docker no lo necesitan. El resto de campos se rellenan
+/// con valores por defecto; agentes y workers NO se lanzan.
+pub fn test_app_state(config: Config, db: DbPool) -> AppState {
+    let docker = Docker::connect_with_http("http://127.0.0.1:1", 120, API_DEFAULT_VERSION)
+        .expect("cliente Docker lazy para tests");
+    AppState {
+        docker,
+        config,
+        tx: broadcast::channel(8).0,
+        oidc_states: Arc::new(Mutex::new(HashMap::new())),
+        oidc_metadata: None,
+        jwt_validator: JwtValidator::new("http://localhost", "test-client"),
+        update_history: Arc::new(Mutex::new(Vec::new())),
+        update_policies: Arc::new(Mutex::new(Vec::new())),
+        cached_containers: Arc::new(RwLock::new(None)),
+        settings: Arc::new(Mutex::new(Settings::default())),
+        db,
+        update_in_progress: Arc::new(Mutex::new(HashSet::new())),
+        terminal_failed: TerminalFailed::default(),
+        rolled_back: RolledBackGuard::default(),
+        progress_cache: Arc::new(Mutex::new(BatchProgress::default())),
+        cancel_check: Arc::new(AtomicBool::new(false)),
+        state_notify: Arc::new(Notify::new()),
+        progress_tx: broadcast::channel(8).0,
+        notif_tx: broadcast::channel(8).0,
+        container_event_tx: broadcast::channel(8).0,
+    }
 }
 
 #[cfg(test)]

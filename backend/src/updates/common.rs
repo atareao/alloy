@@ -29,8 +29,17 @@ pub async fn record_update_entry(
     };
     let mut hist = update_history.lock().await;
     hist.push(entry);
-    if let Ok(conn) = db_pool.get().await {
-        let _ = crate::db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+    // Best-effort: el historial ya está en memoria; si la BD falla solo se registra.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => {
+                if let Err(e) = crate::db::append_update_history(&guard, hist.last().unwrap()) {
+                    tracing::warn!("record_update_entry: no se pudo persistir historial: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("record_update_entry: mutex de DB envenenado: {e}"),
+        },
+        Err(e) => tracing::warn!("record_update_entry: pool de DB no disponible: {e}"),
     }
 }
 
@@ -52,23 +61,56 @@ pub async fn notify_update_complete(
 
 #[allow(dead_code)]
 pub async fn set_updating(db_pool: &DbPool, name: &str) {
-    if let Ok(conn) = db_pool.get().await {
-        let _ = crate::db::set_updating(&conn.lock().unwrap(), name);
+    // Best-effort: marca un flag transitorio; si la BD falla solo se registra.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => {
+                if let Err(e) = crate::db::set_updating(&guard, name) {
+                    tracing::warn!("set_updating: no se pudo marcar '{name}': {e}");
+                }
+            }
+            Err(e) => tracing::warn!("set_updating: mutex de DB envenenado: {e}"),
+        },
+        Err(e) => tracing::warn!("set_updating: pool de DB no disponible: {e}"),
     }
 }
 
 #[allow(dead_code)]
 pub async fn mark_update_done(db_pool: &DbPool, name: &str) {
-    if let Ok(conn) = db_pool.get().await {
-        let _ = crate::db::clear_updating(&conn.lock().unwrap(), name);
-        let _ = crate::db::update_container_has_update(&conn.lock().unwrap(), name, false);
+    // Best-effort: limpieza de flags de estado; si la BD falla solo se registra.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => {
+                if let Err(e) = crate::db::clear_updating(&guard, name) {
+                    tracing::warn!(
+                        "mark_update_done: no se pudo limpiar updating de '{name}': {e}"
+                    );
+                }
+                if let Err(e) = crate::db::update_container_has_update(&guard, name, false) {
+                    tracing::warn!(
+                        "mark_update_done: no se pudo limpiar has_update de '{name}': {e}"
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("mark_update_done: mutex de DB envenenado: {e}"),
+        },
+        Err(e) => tracing::warn!("mark_update_done: pool de DB no disponible: {e}"),
     }
 }
 
 #[allow(dead_code)]
 pub async fn clear_updating(db_pool: &DbPool, name: &str) {
-    if let Ok(conn) = db_pool.get().await {
-        let _ = crate::db::clear_updating(&conn.lock().unwrap(), name);
+    // Best-effort: limpieza de flag transitorio; si la BD falla solo se registra.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => {
+                if let Err(e) = crate::db::clear_updating(&guard, name) {
+                    tracing::warn!("clear_updating: no se pudo limpiar '{name}': {e}");
+                }
+            }
+            Err(e) => tracing::warn!("clear_updating: mutex de DB envenenado: {e}"),
+        },
+        Err(e) => tracing::warn!("clear_updating: pool de DB no disponible: {e}"),
     }
 }
 

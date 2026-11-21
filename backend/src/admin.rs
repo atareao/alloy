@@ -71,7 +71,7 @@ async fn put_update_check_config_h(
     }
     // Conexión antes que estado: no retener `settings.lock()` mientras se espera
     // una conexión de la pool.
-    let conn = db_pool.get().await.unwrap();
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
     let mut s = settings.lock().await;
     s.update_check_cron = Some(body.cron.clone());
     s.update_check_enabled = Some(body.enabled);
@@ -86,7 +86,8 @@ async fn put_update_check_config_h(
     s.update_max_start_attempts = body.update_max_start_attempts;
     s.update_start_attempt_interval_secs = body.update_start_attempt_interval_secs;
     s.update_health_window_secs = body.update_health_window_secs;
-    let _ = db::save_settings(&conn.lock().unwrap(), &s);
+    let guard = conn.lock().map_err(AppError::from_pool)?;
+    let _ = db::save_settings(&guard, &s);
     let next_run_at = compute_next_run(&body.cron);
     Ok(Json(UpdateCheckConfig {
         cron: body.cron,
@@ -116,7 +117,7 @@ async fn put_update_policy_h(
     State(db_pool): State<DbPool>,
     axum::extract::Path(name): axum::extract::Path<String>,
     Json(body): Json<UpdatePolicyReq>,
-) -> Json<UpdatePolicy> {
+) -> Result<Json<UpdatePolicy>, AppError> {
     let policy = UpdatePolicy {
         container: name.clone(),
         action: body.action,
@@ -140,23 +141,27 @@ async fn put_update_policy_h(
             list.push(policy.clone());
         }
     }
-    let conn = db_pool.get().await.unwrap();
-    let _ = db::save_update_policy(&conn.lock().unwrap(), &policy);
-    Json(policy)
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+    let guard = conn.lock().map_err(AppError::from_pool)?;
+    let _ = db::save_update_policy(&guard, &policy);
+    Ok(Json(policy))
 }
 
 async fn delete_update_policy_h(
     State(policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
     State(db_pool): State<DbPool>,
     axum::extract::Path(name): axum::extract::Path<String>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, AppError> {
     {
         let mut list = policies.lock().await;
         list.retain(|p| p.container != name);
     }
-    let conn = db_pool.get().await.unwrap();
-    let _ = db::delete_update_policy(&conn.lock().unwrap(), &name);
-    Json(serde_json::json!({"status": "deleted", "container": name}))
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+    let guard = conn.lock().map_err(AppError::from_pool)?;
+    let _ = db::delete_update_policy(&guard, &name);
+    Ok(Json(
+        serde_json::json!({"status": "deleted", "container": name}),
+    ))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -192,18 +197,19 @@ async fn put_default_update_policy_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(db_pool): State<DbPool>,
     Json(body): Json<DefaultUpdatePolicy>,
-) -> Json<DefaultUpdatePolicy> {
+) -> Result<Json<DefaultUpdatePolicy>, AppError> {
     // Conexión antes que estado: no retener `settings.lock()` mientras se espera
     // una conexión de la pool.
-    let conn = db_pool.get().await.unwrap();
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
     let mut s = settings.lock().await;
     s.default_update_action = Some(body.action.clone());
     s.default_cleanup_old_image = Some(body.cleanup_old_image);
     s.default_rollback_on_failure = Some(body.rollback_on_failure);
     s.default_max_start_attempts = body.max_start_attempts;
     s.default_health_window_secs = body.health_window_secs;
-    let _ = db::save_settings(&conn.lock().unwrap(), &s);
-    Json(body)
+    let guard = conn.lock().map_err(AppError::from_pool)?;
+    let _ = db::save_settings(&guard, &s);
+    Ok(Json(body))
 }
 
 // ── Export / Import ──────────────────────────────────────────
@@ -212,25 +218,26 @@ async fn export_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, AppError> {
     // Conexión antes que estado: adquirir la conexión antes de los locks de
     // `settings` y `update_history` para no retenerlos mientras se espera.
-    let conn = db_pool.get().await.unwrap();
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
     let sett = settings.lock().await;
     let hist = update_history.lock().await;
-    let _ = db::save_settings(&conn.lock().unwrap(), &sett);
+    let guard = conn.lock().map_err(AppError::from_pool)?;
+    let _ = db::save_settings(&guard, &sett);
     // Redact secrets: never emit notification tokens in the exported payload.
     let mut redacted = sett.clone();
     redacted.telegram_token = None;
     redacted.matrix_token = None;
     redacted.valet_token = None;
     redacted.webhook_url = None;
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "version": 1,
         "exported_at": chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
         "settings": redacted,
         "update_history": *hist,
-    }))
+    })))
 }
 
 #[derive(serde::Deserialize)]
@@ -256,11 +263,12 @@ async fn import_config_h(
     }
     // Conexión antes que estado: adquirir la conexión antes de mutar el estado,
     // manteniendo mutación + persistencia en una única sección crítica.
-    let conn = db_pool.get().await.unwrap();
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
     {
         let mut st = settings.lock().await;
         *st = body.settings;
-        let _ = db::save_settings(&conn.lock().unwrap(), &st);
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let _ = db::save_settings(&guard, &st);
     }
     Ok(Json(serde_json::json!({"status": "imported"})))
 }
@@ -591,7 +599,8 @@ mod tests {
             axum::extract::Path("nginx".into()),
             Json(req),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(result.0.max_start_attempts, Some(5));
         assert_eq!(result.0.health_window_secs, Some(60));
         let list = policies.lock().await;
@@ -618,7 +627,8 @@ mod tests {
             State(db_pool.clone()),
             Json(body),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(put.0.max_start_attempts, Some(5));
         assert_eq!(put.0.health_window_secs, Some(60));
 
@@ -659,7 +669,9 @@ mod tests {
             health_window_secs: None,
         };
         let _: Json<DefaultUpdatePolicy> =
-            put_default_update_policy_h(State(settings.clone()), State(db_pool), Json(body)).await;
+            put_default_update_policy_h(State(settings.clone()), State(db_pool), Json(body))
+                .await
+                .unwrap();
         let s = settings.lock().await;
         assert_eq!(s.default_max_start_attempts, None);
         assert_eq!(s.default_health_window_secs, None);
@@ -820,7 +832,8 @@ mod tests {
             axum::extract::Path("nginx".into()),
             Json(req),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(result.0.container, "nginx");
         assert_eq!(result.0.action, UpdateAction::PullRestart);
         assert!(result.0.cleanup_old_image);
@@ -856,7 +869,8 @@ mod tests {
             axum::extract::Path("nginx".into()),
             Json(req),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(result.0.action, UpdateAction::Pull);
         let list = policies.lock().await;
         assert_eq!(list.len(), 1);
@@ -880,7 +894,8 @@ mod tests {
             State(db_pool),
             axum::extract::Path("nginx".into()),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(result.0["status"], "deleted");
         let list = policies.lock().await;
         assert!(list.is_empty());
@@ -895,7 +910,8 @@ mod tests {
             State(db_pool),
             axum::extract::Path("nonexistent".into()),
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(result.0["status"], "deleted");
     }
 
@@ -934,7 +950,9 @@ mod tests {
         let update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
         let result: Json<serde_json::Value> =
-            export_config_h(State(settings), State(update_history), State(db_pool)).await;
+            export_config_h(State(settings), State(update_history), State(db_pool))
+                .await
+                .unwrap();
 
         assert_eq!(result.0["version"], 1);
         assert!(result.0["exported_at"].is_string());
@@ -969,7 +987,9 @@ mod tests {
             }]));
 
         let result: Json<serde_json::Value> =
-            export_config_h(State(settings), State(update_history), State(db_pool)).await;
+            export_config_h(State(settings), State(update_history), State(db_pool))
+                .await
+                .unwrap();
 
         assert!(result.0["settings"]["telegram_token"].is_null());
         assert!(result.0["settings"]["matrix_token"].is_null());

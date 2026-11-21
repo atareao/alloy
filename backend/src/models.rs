@@ -610,6 +610,19 @@ pub enum AppError {
     Internal(String),
 }
 
+impl AppError {
+    /// Traduce un fallo de infraestructura de datos (pool agotada/cerrada o
+    /// `Mutex` de conexión envenenado) a un `AppError::Internal` (HTTP 500).
+    ///
+    /// Centraliza la conversión para que los handlers no paniquen con
+    /// `unwrap()`: `db_pool.get().await.map_err(AppError::from_pool)?`.
+    /// Se usa un helper genérico en lugar de un `impl From<PoolError>` para no
+    /// acoplar `models.rs` al tipo concreto de pool.
+    pub fn from_pool<E: std::fmt::Display>(e: E) -> Self {
+        AppError::Internal(format!("base de datos no disponible: {e}"))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, msg) = match &self {
