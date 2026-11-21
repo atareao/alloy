@@ -36,8 +36,8 @@
 
 ## 5. Cierre
 
-- [ ] 5.1 Auditoría final `@rust-reviewer` (veredicto apto).
+- [x] 5.1 Auditoría final `@rust-reviewer` (veredicto apto).
 - [x] 5.2 `docs/settings-lock-scope.md`.
-- [ ] 5.3 PR de `feature/settings-lock-scope` a `develop`, CI verde.
-- [ ] 5.4 `openspec archive settings-lock-scope` + limpieza del change.
-- [ ] 5.5 Cerrar issue #158 y renombrar este plan a `plans/PLAN-014-ARCHIVED.md`; actualizar `HANDOFF.md`.
+- [x] 5.3 PR de `feature/settings-lock-scope` a `develop`, CI verde.
+- [x] 5.4 `openspec archive settings-lock-scope` + limpieza del change.
+- [x] 5.5 Cerrar issue #158 y renombrar este plan a `plans/PLAN-014-ARCHIVED.md`; actualizar `HANDOFF.md`.
