@@ -1293,6 +1293,101 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 });
 
 /**
+ * `validate-cron-on-put` — el backend valida el cron y responde 400 con
+ * `{"error": ...}`. La UI debe mostrar el mensaje del backend, no uno genérico.
+ *
+ * En RED falla: `saveUpdateCheck` ignora el body del error y muestra siempre
+ * "Error al guardar la revisión de actualizaciones".
+ */
+describe("ConfigPage — error de cron inválido desde el backend", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function installInvalidCronFetchMock() {
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              // Distinto del default de `useState("0 6 * * *")` para que la
+              // aserción de precarga sea realmente probatoria (#134).
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 600,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: "expresión cron inválida: se esperaban 5 campos",
+            }),
+            { status: 400 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+  }
+
+  function renderInvalidCronPage() {
+    installInvalidCronFetchMock();
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+  }
+
+  it("muestra el mensaje de error del backend (no el genérico) cuando el cron es inválido", async () => {
+    renderInvalidCronPage();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    // Espera la precarga asíncrona del GET antes de editar (#134). El valor
+    // del mock ("*/30 * * * *") difiere del initial state, así que esta
+    // aserción fallaría si el preload no aplicara.
+    const cronInput = await screen.findByPlaceholderText("0 6 * * *");
+    await waitFor(() => expect(cronInput).toHaveValue("*/30 * * * *"));
+
+    fireEvent.change(cronInput, { target: { value: "not a cron" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
+
+    expect(
+      await screen.findByText("expresión cron inválida: se esperaban 5 campos"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Error al guardar la revisión de actualizaciones"),
+    ).not.toBeInTheDocument();
+  });
+});
+
+/**
  * Auditoría (Hallazgo 2): faltaban los overrides por política
  * (`max_start_attempts`, `health_window_secs`) en la tarjeta de política por
  * defecto. Deben renderizarse, precargarse desde el GET y enviarse SIEMPRE en

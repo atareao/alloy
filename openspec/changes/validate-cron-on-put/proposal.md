@@ -45,3 +45,10 @@ La UI usa y el storage espera cron de **5 campos** (`0 6 * * *`), pero la crate 
   camino válido no cambia).
 - **Datos**: sin migración.
 - **Dependencias**: ninguna (`cron 0.15` ya presente).
+
+## Addendum (alcance ampliado, aprobado)
+
+Además del PUT, se valida el cron en **`POST /api/admin/import`** (`admin.rs:218-230`), que hoy
+persiste un `Settings` completo sin validar: era la única vía restante que aceptaba un cron inválido.
+Solo se valida si `update_check_cron` viene **presente y no vacío** (`None`/`""` = sin override, se
+acepta). El import pasa a `Result<Json<Value>, AppError>` y delega en `is_valid_cron`.
