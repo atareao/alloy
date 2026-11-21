@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button, Card, Flex, Input, Space, Switch, Typography } from "antd";
 import type { AppConfig } from "../types";
 import { apiFetch } from "../api";
+import { useConfigSync } from "../useConfigSync";
 import type { SavingKey, TestingKey } from "../useConfigPage";
 
 interface MatrixCardProps {
@@ -36,19 +37,18 @@ export default function MatrixCard({
   // clear). The field starts empty; leaving it empty on save means "keep the
   // stored token". A partial config stays editable: enable the switch if the
   // channel is fully configured, if a token is stored, or if any non-secret
-  // field is present.
-  useEffect(() => {
-    if (!configProp) return;
-    setMxHomeserver(configProp.matrix_homeserver || "");
+  // field is present. `useConfigSync` adjusts the state during render.
+  useConfigSync(configProp, (config) => {
+    setMxHomeserver(config.matrix_homeserver || "");
     setMxToken("");
-    setMxRoom(configProp.matrix_room || "");
+    setMxRoom(config.matrix_room || "");
     setMxEnabled(
-      configProp.matrix_configured ||
-        configProp.matrix_token_set ||
-        !!configProp.matrix_homeserver ||
-        !!configProp.matrix_room,
+      config.matrix_configured ||
+        config.matrix_token_set ||
+        !!config.matrix_homeserver ||
+        !!config.matrix_room,
     );
-  }, [configProp]);
+  });
 
   const saveMatrix = async () => {
     setSaving("matrix");

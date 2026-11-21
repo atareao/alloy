@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button, Card, Flex, Input, Space, Switch, Typography } from "antd";
 import type { AppConfig } from "../types";
 import { apiFetch } from "../api";
+import { useConfigSync } from "../useConfigSync";
 import type { SavingKey, TestingKey } from "../useConfigPage";
 
 interface ValetCardProps {
@@ -35,17 +36,16 @@ export default function ValetCard({
   // clear). The field starts empty; leaving it empty on save means "keep the
   // stored token". A partial config stays editable: enable the switch if the
   // channel is fully configured, if a token is stored, or if any non-secret
-  // field is present.
-  useEffect(() => {
-    if (!configProp) return;
-    setValetUrl(configProp.valet_url || "");
+  // field is present. `useConfigSync` adjusts the state during render.
+  useConfigSync(configProp, (config) => {
+    setValetUrl(config.valet_url || "");
     setValetToken("");
     setValetEnabled(
-      configProp.valet_configured ||
-        configProp.valet_token_set ||
-        !!configProp.valet_url,
+      config.valet_configured ||
+        config.valet_token_set ||
+        !!config.valet_url,
     );
-  }, [configProp]);
+  });
 
   const saveValet = async () => {
     setSaving("valet");

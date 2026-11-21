@@ -384,6 +384,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   useEffect(() => {
     if (!authenticated) return;
+    // `fetchCheckConfig` es async: su `setState` corre después del `await`,
+    // nunca de forma síncrona dentro del efecto. Falso positivo de
+    // react/set-state-in-effect.
+    // oxlint-disable-next-line react/set-state-in-effect
     fetchCheckConfig();
   }, [authenticated, fetchCheckConfig]);
 

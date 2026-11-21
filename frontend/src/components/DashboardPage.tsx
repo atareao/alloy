@@ -219,9 +219,6 @@ export default function DashboardPage({
 
   useEffect(() => {
     if (!logsContainer) return;
-    setLogs([]);
-    setLogError(null);
-    setLogTimeout(false);
     const timeoutId = setTimeout(() => {
       setLogTimeout(true);
     }, 5000);
@@ -290,7 +287,11 @@ export default function DashboardPage({
 
   const handleLogs = (name: string) => {
     setLogsContainer(name);
+    // Los reseteos viven en el event handler (no en el efecto) para no
+    // encadenar renders: el efecto solo sincroniza con el EventSource.
     setLogs([]);
+    setLogError(null);
+    setLogTimeout(false);
   };
 
   const handleRemove = async (name: string) => {

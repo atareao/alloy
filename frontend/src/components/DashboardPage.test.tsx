@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  act,
   render,
   screen,
   fireEvent,
@@ -264,6 +265,93 @@ describe("DashboardPage", () => {
     await waitFor(() =>
       expect(EventSourceMock.last()?.url).toBe("/api/containers/web/logs"),
     );
+  });
+
+  /** Localiza la Card de un contenedor por su nombre. */
+  function containerCard(name: string): HTMLElement {
+    const card = screen.getByText(name).closest(".ant-card");
+    if (!card) throw new Error(`card de ${name} no encontrada`);
+    return card as HTMLElement;
+  }
+
+  it("al cambiar de contenedor resetea los logs y abre el EventSource correcto", async () => {
+    setup();
+    expandRow("web");
+    fireEvent.click(screen.getByRole("button", { name: /logs/i }));
+
+    await waitFor(() =>
+      expect(EventSourceMock.last()?.url).toBe("/api/containers/web/logs"),
+    );
+
+    EventSourceMock.last()!.emitRaw("log", "linea-del-web\n");
+    await waitFor(() =>
+      expect(screen.getByText(/linea-del-web/)).toBeInTheDocument(),
+    );
+
+    // Cambia de contenedor sin cerrar el modal: handleLogs debe limpiar el
+    // estado antes de que el nuevo efecto abra el EventSource.
+    expandRow("db");
+    fireEvent.click(
+      within(containerCard("db")).getByRole("button", { name: /logs/i }),
+    );
+
+    await waitFor(() =>
+      expect(EventSourceMock.last()?.url).toBe("/api/containers/db/logs"),
+    );
+    expect(screen.queryByText(/linea-del-web/)).not.toBeInTheDocument();
+    expect(screen.getByText("Esperando logs...")).toBeInTheDocument();
+  });
+
+  it("al cambiar de contenedor resetea el error de logs", async () => {
+    setup();
+    expandRow("web");
+    fireEvent.click(screen.getByRole("button", { name: /logs/i }));
+
+    await waitFor(() =>
+      expect(EventSourceMock.last()?.url).toBe("/api/containers/web/logs"),
+    );
+
+    EventSourceMock.last()!.emitRaw("error", "fallo-del-web");
+    await waitFor(() =>
+      expect(screen.getByText(/fallo-del-web/)).toBeInTheDocument(),
+    );
+
+    expandRow("db");
+    fireEvent.click(
+      within(containerCard("db")).getByRole("button", { name: /logs/i }),
+    );
+
+    await waitFor(() =>
+      expect(EventSourceMock.last()?.url).toBe("/api/containers/db/logs"),
+    );
+    expect(screen.queryByText(/fallo-del-web/)).not.toBeInTheDocument();
+    expect(screen.getByText("Esperando logs...")).toBeInTheDocument();
+  });
+
+  it("al cambiar de contenedor resetea el timeout de logs", () => {
+    vi.useFakeTimers();
+    try {
+      setup();
+      expandRow("web");
+      fireEvent.click(screen.getByRole("button", { name: /logs/i }));
+      expect(EventSourceMock.last()?.url).toBe("/api/containers/web/logs");
+
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByText(/No se recibieron logs/)).toBeInTheDocument();
+
+      expandRow("db");
+      fireEvent.click(
+        within(containerCard("db")).getByRole("button", { name: /logs/i }),
+      );
+
+      expect(EventSourceMock.last()?.url).toBe("/api/containers/db/logs");
+      expect(screen.queryByText(/No se recibieron logs/)).not.toBeInTheDocument();
+      expect(screen.getByText("Esperando logs...")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("elimina un contenedor tras confirmar y cierra el diálogo", async () => {
