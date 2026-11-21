@@ -290,16 +290,24 @@ pub struct UpdateDefaults {
     pub cron: String,
     pub pull_timeout_secs: u64,
     pub check_interval_ms: u64,
+    pub update_max_start_attempts: u32,
+    pub update_start_attempt_interval_secs: u64,
+    pub update_health_window_secs: u64,
 }
 
 impl UpdateDefaults {
     /// Construye los defaults canónicos desde las consts (`DEFAULT_UPDATE_CHECK_CRON`,
-    /// `DEFAULT_PULL_TIMEOUT_SECS`, `DEFAULT_CHECK_INTERVAL_MS`). Sin literales.
+    /// `DEFAULT_PULL_TIMEOUT_SECS`, `DEFAULT_CHECK_INTERVAL_MS`,
+    /// `DEFAULT_UPDATE_MAX_START_ATTEMPTS`, `DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS`,
+    /// `DEFAULT_UPDATE_HEALTH_WINDOW_SECS`). Sin literales.
     pub fn canonical() -> Self {
         Self {
             cron: DEFAULT_UPDATE_CHECK_CRON.to_string(),
             pull_timeout_secs: DEFAULT_PULL_TIMEOUT_SECS,
             check_interval_ms: DEFAULT_CHECK_INTERVAL_MS,
+            update_max_start_attempts: DEFAULT_UPDATE_MAX_START_ATTEMPTS,
+            update_start_attempt_interval_secs: DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS,
+            update_health_window_secs: DEFAULT_UPDATE_HEALTH_WINDOW_SECS,
         }
     }
 }

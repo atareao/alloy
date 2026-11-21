@@ -127,10 +127,13 @@ export default function ConfigPage({
   // Pull timeout
   const [pullTimeout, setPullTimeout] = useState(0);
 
-  // Guarda de arranque (update-rollback-guard) — settings globales
-  const [ucMaxStartAttempts, setUcMaxStartAttempts] = useState(3);
-  const [ucStartAttemptInterval, setUcStartAttemptInterval] = useState(10);
-  const [ucHealthWindow, setUcHealthWindow] = useState(30);
+  // Guarda de arranque (update-rollback-guard) — settings globales.
+  // Init neutral (0), igual que `pullTimeout`: el bloque de la guarda solo se
+  // monta con `ucEnabled`, que se activa en el mismo GET que precarga estos
+  // valores (ver useEffect siguiente), por lo que ya vienen del backend.
+  const [ucMaxStartAttempts, setUcMaxStartAttempts] = useState(0);
+  const [ucStartAttemptInterval, setUcStartAttemptInterval] = useState(0);
+  const [ucHealthWindow, setUcHealthWindow] = useState(0);
 
   useEffect(() => {
     apiFetch("/api/update-check/config")
@@ -1111,8 +1114,11 @@ export default function ConfigPage({
                               aria-label="Máximo de intentos de arranque"
                               value={ucMaxStartAttempts}
                               onChange={(v) =>
-                                setUcMaxStartAttempts(
-                                  v == null ? 3 : Number(v),
+                                setUcMaxStartAttempts((prev) =>
+                                  v == null
+                                    ? (defaults?.update_max_start_attempts ??
+                                      prev)
+                                    : Number(v),
                                 )
                               }
                               min={1}
@@ -1131,8 +1137,11 @@ export default function ConfigPage({
                               aria-label="Intervalo entre intentos (s)"
                               value={ucStartAttemptInterval}
                               onChange={(v) =>
-                                setUcStartAttemptInterval(
-                                  v == null ? 10 : Number(v),
+                                setUcStartAttemptInterval((prev) =>
+                                  v == null
+                                    ? (defaults?.update_start_attempt_interval_secs ??
+                                      prev)
+                                    : Number(v),
                                 )
                               }
                               min={1}
@@ -1151,7 +1160,12 @@ export default function ConfigPage({
                               aria-label="Ventana de salud (s)"
                               value={ucHealthWindow}
                               onChange={(v) =>
-                                setUcHealthWindow(v == null ? 30 : Number(v))
+                                setUcHealthWindow((prev) =>
+                                  v == null
+                                    ? (defaults?.update_health_window_secs ??
+                                      prev)
+                                    : Number(v),
+                                )
                               }
                               min={5}
                               max={600}
