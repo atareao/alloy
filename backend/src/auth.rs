@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::{header, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Json, Redirect, Response},
@@ -17,8 +17,13 @@ use std::time::Instant;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::models::SessionClaims;
+use crate::models::{SessionClaims, SseTicketClaims, SseTicketResponse};
 use crate::state::{AppState, JwtValidator, OidcMetadata, OidcStates};
+
+/// Lifetime of an SSE ticket in seconds.
+const SSE_TICKET_TTL_SECS: u64 = 60;
+/// Purpose marker carried by SSE tickets.
+const SSE_TICKET_PURPOSE: &str = "sse";
 
 // ── OIDC Auth code flow ─────────────────────────────────────
 
@@ -186,6 +191,7 @@ async fn auth_callback(
             iat: now,
             last_active: now,
             exp: now + max_duration_secs,
+            purpose: None,
         },
         &EncodingKey::from_secret(config.oidc_client_secret().as_ref()),
     )
@@ -323,15 +329,70 @@ fn unauthorized_json(session_expired: bool, detail: &str) -> Response {
         .into_response()
 }
 
+/// Extract the raw `token` query parameter.
+///
+/// The value is returned as-is: it is a base64url JWT, so it does not require
+/// URL-decoding. Empty values are returned as `Some("")` and rejected later by
+/// ticket validation.
+fn query_token(query: Option<&str>) -> Option<&str> {
+    query?.split('&').find_map(|part| {
+        let mut parts = part.splitn(2, '=');
+        if parts.next()? == "token" {
+            parts.next()
+        } else {
+            None
+        }
+    })
+}
+
+/// Issue an ephemeral SSE ticket for `sub`, signed with the session secret.
+fn issue_sse_ticket(sub: &str, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = Utc::now().timestamp() as usize;
+    let claims = SseTicketClaims {
+        sub: sub.to_string(),
+        purpose: SSE_TICKET_PURPOSE.to_string(),
+        iat: now,
+        exp: now + SSE_TICKET_TTL_SECS as usize,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_ref()),
+    )
+}
+
+/// Validate an SSE ticket: signature, expiry and `purpose = "sse"`.
+fn validate_sse_ticket(token: &str, secret: &str) -> Result<SseTicketClaims, Response> {
+    // Tickets are short-lived: enforce `exp` strictly (no clock-skew leeway)
+    // and require the registered claims we rely on, instead of inheriting
+    // whatever `jsonwebtoken` defaults to.
+    let mut validation = jsonwebtoken::Validation::default();
+    validation.leeway = 0;
+    validation.validate_exp = true;
+    validation.set_required_spec_claims(&["exp", "sub"]);
+    let data = jsonwebtoken::decode::<SseTicketClaims>(
+        token,
+        &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+        &validation,
+    )
+    .map_err(|_| unauthorized_json(false, "Invalid SSE ticket"))?;
+
+    if data.claims.purpose != SSE_TICKET_PURPOSE {
+        return Err(unauthorized_json(false, "Invalid SSE ticket"));
+    }
+
+    Ok(data.claims)
+}
+
 pub async fn auth_middleware(
     headers: HeaderMap,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: middleware::Next,
 ) -> Result<Response, Response> {
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
 
     // Public endpoints: auth routes, login, health
-    // But /api/auth/sse-token requires auth (returns the session token)
+    // But /api/auth/sse-token requires auth (returns an SSE ticket)
     if (path.starts_with("/api/auth/") && path != "/api/auth/sse-token") || path == "/api/health" {
         return Ok(next.run(req).await);
     }
@@ -364,6 +425,13 @@ pub async fn auth_middleware(
         .map_err(|_| Box::new(unauthorized_json(false, "Invalid session token")))?;
 
         let claims = data.claims;
+
+        // SSE tickets (and any other purpose-scoped token) MUST NOT be
+        // accepted as a session token.
+        if claims.purpose.is_some() {
+            return Err(Box::new(unauthorized_json(false, "Invalid session token")));
+        }
+
         let now = Utc::now().timestamp() as usize;
 
         // Check max session duration (since login)
@@ -422,8 +490,8 @@ pub async fn auth_middleware(
         Ok(claims)
     };
 
-    // 1. Check session cookie
-    let token = 'token: {
+    // 1. Session cookie or 2. Authorization Bearer header.
+    let session_token = 'token: {
         if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
             for part in cookie_str.split("; ") {
                 if let Some(value) = part.strip_prefix("session=") {
@@ -431,7 +499,6 @@ pub async fn auth_middleware(
                 }
             }
         }
-        // 2. Check Authorization Bearer header
         if let Some(token) = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -439,25 +506,46 @@ pub async fn auth_middleware(
         {
             break 'token Some(token.to_string());
         }
-        // 3. Check query parameter (for SSE)
-        if let Some(query) = req.uri().query() {
-            if let Some(token) = query.split('&').find_map(|p| {
-                let mut parts = p.splitn(2, '=');
-                if parts.next()? == "token" {
-                    parts.next()
-                } else {
-                    None
-                }
-            }) {
-                break 'token Some(token.to_string());
-            }
-        }
         None::<String>
     };
 
-    let token = token.ok_or_else(|| unauthorized_json(false, "Not authenticated"))?;
+    // 3. SSE tickets are accepted ONLY as the `token` query parameter on
+    //    `/api/stream`. Session tokens sent by query are rejected.
+    //
+    //    On `/api/stream`, a valid ticket takes precedence over an invalid
+    //    session cookie/Bearer so that a stale cookie does not block the
+    //    stream. If the ticket is also invalid, the original session error is
+    //    returned (preserving `session_expired` when applicable).
+    let claims = if path == "/api/stream" {
+        match session_token.as_deref().map(&validate) {
+            Some(Ok(claims)) => Some(claims),
+            Some(Err(session_err)) => match query_token(req.uri().query()) {
+                Some(ticket) => match validate_sse_ticket(ticket, &secret) {
+                    Ok(_) => None,
+                    Err(_) => return Err(*session_err),
+                },
+                None => return Err(*session_err),
+            },
+            None => {
+                let ticket = query_token(req.uri().query())
+                    .ok_or_else(|| unauthorized_json(false, "Not authenticated"))?;
+                validate_sse_ticket(ticket, &secret)?;
+                None
+            }
+        }
+    } else if let Some(token) = session_token {
+        Some(validate(&token).map_err(|e| *e)?)
+    } else {
+        return Err(unauthorized_json(false, "Not authenticated"));
+    };
 
-    let claims = validate(&token).map_err(|e| *e)?;
+    // SSE ticket auth has no session claims to expose or refresh.
+    let Some(claims) = claims else {
+        return Ok(next.run(req).await);
+    };
+
+    // Expose the validated session claims to downstream handlers.
+    req.extensions_mut().insert(claims.clone());
 
     // Run the request
     tracing::info!("🔒 auth_middleware: ejecutando handler para {}", path);
@@ -636,33 +724,34 @@ fn url_encode(s: &str) -> String {
 
 // ── Routes ─────────────────────────────────────────────────
 
-/// Returns the current session token as JSON.
-/// This handler is protected by the auth middleware (unlike other auth routes).
-async fn sse_token_h(headers: HeaderMap) -> Response {
-    // Extract token from cookie or Authorization header
-    let token = 'token: {
-        if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
-            for part in cookie_str.split("; ") {
-                if let Some(value) = part.strip_prefix("session=") {
-                    break 'token value.to_string();
-                }
-            }
-        }
-        if let Some(token) = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-        {
-            break 'token token.to_string();
-        }
-        // If middleware ran, we should have a token, but just in case:
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "No session token found"})),
+/// Issue an ephemeral SSE ticket for the authenticated session.
+///
+/// This handler is protected by the auth middleware (unlike other auth
+/// routes), which validates the session and inserts its `SessionClaims` and
+/// the signing secret into the request extensions.
+async fn sse_token_h(
+    Extension(claims): Extension<SessionClaims>,
+    Extension(secret): Extension<String>,
+) -> Response {
+    match issue_sse_ticket(&claims.sub, &secret) {
+        Ok(token) => (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(SseTicketResponse {
+                token,
+                expires_in: SSE_TICKET_TTL_SECS,
+            }),
         )
-            .into_response();
-    };
-    Json(json!({"token": token})).into_response()
+            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to issue SSE ticket: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to issue SSE ticket"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -758,6 +847,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: (Utc::now() + exp_offset).timestamp() as usize,
+            purpose: None,
         }
     }
 
@@ -834,6 +924,7 @@ mod tests {
             iat: Utc::now().timestamp() as usize,
             last_active: Utc::now().timestamp() as usize,
             exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+            purpose: None,
         };
         let secret = "my_secret";
         let token = encode(
@@ -1002,6 +1093,7 @@ mod tests {
             iat: now - 60,        // 1 minute ago
             last_active: now - 5, // 5 seconds ago
             exp: now + 3600,      // 1 hour from now
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1074,6 +1166,7 @@ mod tests {
             iat: now - 3600,         // 1 hour ago
             last_active: now - 1861, // > 30 min idle (31 min + 1s buffer)
             exp: now + 3600,
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1136,6 +1229,7 @@ mod tests {
             iat: now - 25 * 3600,  // 25 hours ago (> 24h max)
             last_active: now - 10, // 10 seconds ago (within idle)
             exp: now + 3600,
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1287,6 +1381,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+            purpose: None,
         };
         let secret = "s3cr3t_k3y!@#$%";
         let token = encode(
@@ -1323,6 +1418,7 @@ mod tests {
             iat: now - 3600,
             last_active: now - 31,
             exp: now + 3600,
+            purpose: None,
         };
         let secret = "test_secret";
         let token = encode(
@@ -1359,6 +1455,7 @@ mod tests {
             iat: now - 3601,
             last_active: now - 10,
             exp: now + 3600,
+            purpose: None,
         };
         let secret = "test_secret";
         let token = encode(
@@ -1394,6 +1491,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: now + 3600,
+            purpose: None,
         };
         assert_eq!(claims.iat, now);
         assert_eq!(claims.last_active, now);
@@ -1410,6 +1508,7 @@ mod tests {
             iat: now - 1800,
             last_active: now - 120,
             exp: now + 3600,
+            purpose: None,
         };
 
         let refreshed = SessionClaims {
@@ -1434,6 +1533,7 @@ mod tests {
             iat: now - 7200,
             last_active: now - 60,
             exp: now + 3600,
+            purpose: None,
         };
 
         let mut claims = original.clone();
@@ -1464,6 +1564,7 @@ mod tests {
             iat: now - 3600,                          // 1 hour ago
             last_active: now - sliding_threshold - 5, // past sliding threshold
             exp: now + 3600,                          // valid 1 more hour
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1579,7 +1680,8 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/ws?token={}", token))
+                    .uri("/api/ws")
+                    .header("cookie", format!("session={}", token))
                     .header("upgrade", "websocket")
                     .header("connection", "upgrade")
                     .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
@@ -1819,5 +1921,530 @@ mod tests {
         std::fs::create_dir_all(&root).expect("mkdir root");
         let resp = serve_static(&root, "/dashboard").await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── SSE ticket auth (change sse-token-auth) ──────────────
+
+    fn sse_ticket_config() -> Config {
+        Config {
+            session_idle_timeout_minutes: Some(30),
+            session_max_duration_hours: Some(24),
+            ..Default::default()
+        }
+    }
+
+    fn make_sse_session_token(secret: &str, sub: &str) -> String {
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: sub.into(),
+            name: "SSE User".into(),
+            email: "sse@example.com".into(),
+            iat: now,
+            last_active: now,
+            exp: now + 3600,
+            purpose: None,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("session token")
+    }
+
+    fn make_sse_ticket_with_purpose(
+        secret: &str,
+        sub: &str,
+        purpose: &str,
+        exp_offset_secs: i64,
+    ) -> String {
+        let now = Utc::now().timestamp();
+        let claims = SseTicketClaims {
+            sub: sub.into(),
+            purpose: purpose.into(),
+            iat: now as usize,
+            exp: (now + exp_offset_secs) as usize,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("sse ticket")
+    }
+
+    fn make_sse_ticket(secret: &str, sub: &str, exp_offset_secs: i64) -> String {
+        make_sse_ticket_with_purpose(secret, sub, "sse", exp_offset_secs)
+    }
+
+    fn make_sse_session_token_expired(secret: &str) -> String {
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "expired-user".into(),
+            name: "Expired User".into(),
+            email: "expired@example.com".into(),
+            iat: now - 7200,
+            last_active: now - 3600, // > 30 min idle timeout
+            exp: now + 3600,
+            purpose: None,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("expired session token")
+    }
+
+    fn sse_ticket_test_app(secret: &str, config: Config) -> Router {
+        let secret_clone = secret.to_string();
+        let config_clone = config.clone();
+        Router::new()
+            .route("/api/auth/sse-token", get(sse_token_h))
+            .route("/api/stream", get(sse_handler))
+            .route("/api/containers", get(json_handler))
+            .layer(axum::middleware::from_fn(
+                move |headers: HeaderMap,
+                      mut req: axum::extract::Request,
+                      next: middleware::Next| {
+                    let s = secret_clone.clone();
+                    let c = config_clone.clone();
+                    async move {
+                        req.extensions_mut().insert(s);
+                        req.extensions_mut().insert(c);
+                        auth_middleware(headers, req, next).await
+                    }
+                },
+            ))
+    }
+
+    #[tokio::test]
+    async fn test_sse_token_emission_with_session() {
+        let secret = "sse_ticket_emission_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/sse-token")
+                    .header("cookie", format!("session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+
+        let body = body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json body");
+        assert_eq!(json["expires_in"], 60);
+        let ticket = json["token"].as_str().expect("token").to_string();
+        assert_ne!(
+            ticket, session_token,
+            "el ticket no debe ser el JWT de sesión"
+        );
+
+        let decoded = jsonwebtoken::decode::<SseTicketClaims>(
+            &ticket,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .expect("ticket válido");
+        assert_eq!(decoded.claims.purpose, "sse");
+        assert_eq!(decoded.claims.exp - decoded.claims.iat, 60);
+    }
+
+    #[tokio::test]
+    async fn test_sse_token_emission_without_session_is_401() {
+        let app = sse_ticket_test_app("sse_no_session_secret", sse_ticket_config());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/sse-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_valid_in_stream() {
+        let secret = "sse_ticket_stream_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_jwt_in_query_is_rejected() {
+        let secret = "sse_query_session_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_outside_stream_is_rejected() {
+        let secret = "sse_outside_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/containers?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_expired_is_rejected() {
+        let secret = "sse_expired_secret";
+        let ticket = make_sse_ticket(secret, "user-1", -10);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_as_cookie_is_rejected() {
+        let secret = "sse_cookie_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .header("cookie", format!("session={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_as_bearer_is_rejected() {
+        let secret = "sse_bearer_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .header("authorization", format!("Bearer {}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_session_cookie_authenticates_stream() {
+        let secret = "sse_cookie_session_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .header("cookie", format!("session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_bearer_authenticates_api() {
+        let secret = "test_bearer_session_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/containers")
+                    .header("authorization", format!("Bearer {}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_session_claims_with_purpose_are_rejected() {
+        let secret = "sse_purpose_secret";
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user-1".into(),
+            name: "SSE User".into(),
+            email: "sse@example.com".into(),
+            iat: now,
+            last_active: now,
+            exp: now + 3600,
+            purpose: Some("sse".into()),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("token");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/containers")
+                    .header("cookie", format!("session={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_sse_ticket_does_not_decode_as_session_claims() {
+        let secret = "sse_decode_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let result = jsonwebtoken::decode::<SessionClaims>(
+            &ticket,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        );
+        assert!(
+            result.is_err(),
+            "un ticket SSE no debe decodificar como SessionClaims"
+        );
+    }
+
+    // ── Precedencia sesión/ticket en /api/stream ─────────────
+
+    #[tokio::test]
+    async fn test_invalid_session_cookie_with_valid_ticket_authenticates_stream() {
+        let secret = "invalid_cookie_valid_ticket_secret";
+        let ticket = make_sse_ticket(secret, "sse-user", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .header("cookie", "session=not-a-valid-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_session_cookie_with_invalid_ticket_is_401() {
+        let secret = "invalid_cookie_invalid_ticket_secret";
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream?token=not-a-ticket")
+                    .header("cookie", "session=not-a-valid-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_expired_session_cookie_with_invalid_ticket_preserves_session_expired() {
+        let secret = "expired_cookie_invalid_ticket_secret";
+        let session_token = make_sse_session_token_expired(secret);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream?token=not-a-ticket")
+                    .header("cookie", format!("session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json body");
+        assert_eq!(
+            json["session_expired"], true,
+            "el error de sesión no debe enmascararse cuando el ticket tampoco es válido"
+        );
+    }
+
+    // ── Ticket inválido por purpose / secreto ────────────────
+
+    #[tokio::test]
+    async fn test_sse_ticket_with_wrong_purpose_is_rejected() {
+        let secret = "wrong_purpose_secret";
+        let ticket = make_sse_ticket_with_purpose(secret, "sse-user", "other", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_signed_with_wrong_secret_is_rejected() {
+        let ticket = make_sse_ticket("wrong_secret", "sse-user", 60);
+        let app = sse_ticket_test_app("right_secret", sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_token_emission_with_bearer_session() {
+        let secret = "sse_bearer_emission_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/sse-token")
+                    .header("authorization", format!("Bearer {}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    // ── query_token ──────────────────────────────────────────
+
+    #[test]
+    fn query_token_extracts_token_from_multiple_params() {
+        assert_eq!(
+            query_token(Some("foo=1&token=abc&bar=2")).map(|s| s.to_string()),
+            Some("abc".to_string())
+        );
+    }
+
+    #[test]
+    fn query_token_returns_none_without_token() {
+        assert_eq!(
+            query_token(Some("foo=1&bar=2")).map(|s| s.to_string()),
+            None
+        );
+    }
+
+    #[test]
+    fn query_token_returns_empty_value() {
+        assert_eq!(
+            query_token(Some("token=")).map(|s| s.to_string()),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn query_token_returns_none_without_query() {
+        assert_eq!(query_token(None).map(|s| s.to_string()), None);
     }
 }

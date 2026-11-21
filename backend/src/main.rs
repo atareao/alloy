@@ -487,6 +487,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: now + 3600,
+            purpose: None,
         };
         encode(
             &Header::default(),

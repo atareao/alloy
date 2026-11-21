@@ -113,6 +113,31 @@ pub struct SessionClaims {
     /// Last activity timestamp (epoch seconds).
     /// Used to enforce idle timeout.
     pub last_active: usize,
+    /// Optional purpose marker. Session tokens MUST NOT set it; SSE tickets
+    /// are represented by [`SseTicketClaims`], not this type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
+/// Claims for an ephemeral SSE ticket.
+///
+/// Tickets are signed with the same secret as session tokens but carry
+/// `purpose = "sse"` and a short TTL (60 s). They are only accepted by the
+/// auth middleware as the `token` query parameter on `/api/stream`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SseTicketClaims {
+    pub sub: String,
+    /// Always `"sse"` for tickets issued by `/api/auth/sse-token`.
+    pub purpose: String,
+    pub iat: usize,
+    pub exp: usize,
+}
+
+/// JSON body returned by `GET /api/auth/sse-token`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SseTicketResponse {
+    pub token: String,
+    pub expires_in: u64,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]

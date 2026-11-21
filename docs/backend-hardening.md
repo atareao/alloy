@@ -82,6 +82,7 @@ Middleware en `build_app` (capa externa, cubre API, estáticos y SSE):
 
 ## Follow-ups
 
-- **Punto 4 de #159** (token por `?token=`/SSE) → change/PR aparte.
+- **Punto 4 de #159** (token por `?token=`/SSE) → **cerrado** en `sse-token-auth`: ticket efímero de 60 s con `purpose=sse`, aceptado sólo en `/api/stream`; el JWT de sesión por query se rechaza.
+- **Secreto de sesión vacío**: `unwrap_or_default()` en el middleware permitiría forjar tickets si el secreto faltara; validar el secreto al startup (preexistente, fuera del alcance de #159).
 - Los `unwrap()` de arranque en `main.rs` (parsing de socket/addr) son fallo irrecuperable de
   startup; se dejan como están.
