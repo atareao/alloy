@@ -30,6 +30,7 @@ Orden sugerido por impacto/esfuerzo: **#155 → #156 → #158 → #157 → #159 
 | #161 | 👷 CI sin `rust-cache` en `ci.yml`/`release.yml` |
 | #162 | ✅ tests frontend (`DashboardPage`/`Container*`; recolocar `ErrorBoundary.test.tsx`) |
 | #163 | ⬆️ deps (frontend majors: vitest 5, jsdom 31, TS 7…) |
+| #166 | ✨ ui: ellipsis en nombre/imagen del contenedor + paginación de la lista (10/20/50) |
 
 ## Baselines de verificación
 
