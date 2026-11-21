@@ -3,6 +3,7 @@ import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { ConfigProvider } from "antd";
 import ConfigPage from "./ConfigPage";
+import { CRON_PRESETS } from "../cronPresets";
 import type { AppConfig } from "../types";
 
 // Polyfill ResizeObserver for jsdom (required by antd Card)
@@ -1605,11 +1606,11 @@ describe("ConfigPage — la guarda usa los defaults de la API al vaciar", () => 
  * `validate-cron-on-put` — el backend valida el cron y responde 400 con
  * `{"error": ...}`. La UI debe mostrar el mensaje del backend, no uno genérico.
  *
- * Nota: `validate-cron-client-ui` añade un pre-chequeo en el cliente que
- * bloquea los crons estructuralmente inválidos (p. ej. "not a cron") antes de
- * enviar el PUT. Para seguir ejercitando la ruta "el backend responde 400",
- * se usa un cron que pasa el pre-chequeo ligero (5 campos, charset permitido)
- * pero que el backend rechaza por rango (`99 99 99 99 99`).
+ * Nota: `harden-cron-client-validation` añade un pre-chequeo en el cliente que
+ * bloquea los crons estructuralmente inválidos y los de valores fuera de rango
+ * (p. ej. "not a cron" o "99 99 99 99 99") antes de enviar el PUT. Para seguir
+ * ejercitando la ruta "el backend responde 400", se usa un cron que pasa el
+ * pre-chequeo endurecido (`0 6 * * 1-5`) pero que el mock del backend rechaza.
  */
 describe("ConfigPage — error de cron inválido desde el backend", () => {
   beforeEach(() => {
@@ -1702,9 +1703,9 @@ describe("ConfigPage — error de cron inválido desde el backend", () => {
     const cronInput = await screen.findByPlaceholderText("0 6 * * *");
     await waitFor(() => expect(cronInput).toHaveValue("*/30 * * * *"));
 
-    // Cron client-valid (5 campos + charset) pero backend-invalid (fuera de
-    // rango): atraviesa el pre-chequeo y es el backend quien responde 400.
-    fireEvent.change(cronInput, { target: { value: "99 99 99 99 99" } });
+    // Cron client-valid (5 campos, en rango, con rango a-b): atraviesa el
+    // pre-chequeo y es el backend quien responde 400 con su mensaje.
+    fireEvent.change(cronInput, { target: { value: "0 6 * * 1-5" } });
     fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
 
     expect(
@@ -1838,11 +1839,16 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
 });
 
 /**
- * `validate-cron-client-ui` — el formulario valida y normaliza el cron ANTES
- * de enviar el PUT. Contrato:
+ * `harden-cron-client-validation` — el formulario valida y normaliza el cron
+ * ANTES de enviar el PUT, alineado con la gramática de la crate `cron` del
+ * backend (autoridad final). Contrato:
  *  - 6 campos ⇒ se quita el campo de segundos (primero) al salir del campo;
  *    el PUT envía 5 campos.
- *  - Cron estructuralmente inválido ⇒ error inline + PUT NO disparado.
+ *  - Cada campo se valida por rangos (minuto 0–59, hora 0–23, día-del-mes
+ *    1–31, mes 1–12, día-de-semana 1–7), listas `,`, rangos `a-b` no invertidos,
+ *    pasos `1..=máximo` del campo, `?` (solo día-del-mes/día-de-semana y como
+ *    único elemento) y nombres alfabéticos ≥3 letras (solo mes/día-de-semana).
+ *  - Cron inválido ⇒ error inline + PUT NO disparado.
  *  - Cron válido de 5 campos ⇒ sin error + PUT disparado.
  */
 describe("ConfigPage — validación y normalización del cron en el cliente", () => {
@@ -2002,6 +2008,89 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
       expect(puts[0].body).toMatchObject({ cron: "0 6 * * *" });
     });
     expect(screen.queryByText(/expresión cron inválida/i)).not.toBeInTheDocument();
+  });
+
+  // Endurecimiento: el cliente valida rangos, listas, pasos (1..máximo) y
+  // rangos no invertidos por campo, no solo la estructura de 5 campos. El
+  // día-de-semana es 1–7 (la crate usa 1=domingo; `0` es inválido).
+  it.each([
+    "99 0 * * *",
+    "0 0 * * 0",
+    "30-10 * * * *",
+    "*/0 * * * *",
+    "*/60 * * * *",
+  ])(
+    "un cron client-inválido (%s) muestra error inline y NO dispara el PUT",
+    async (value) => {
+      const cronInput = await renderAndOpenCronTab();
+      const calls = callsOf(cronInput);
+
+      fireEvent.change(cronInput, { target: { value } });
+      fireEvent.click(
+        screen.getByRole("button", { name: /guardar revisión/i }),
+      );
+
+      expect(
+        await screen.findByText(/expresión cron inválida/i),
+      ).toBeInTheDocument();
+      expect(putCalls(calls)).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    "*/15 * * * *",
+    "0 6 * * MON",
+    "0 6 1 JAN *",
+    "0 6 * * 1-5",
+    "0 6 ? * *",
+    "0 6 * * MON-FRI",
+    "0 6 1,15 * *",
+    "0 6 * * MONDAY",
+    "0 6 1 JANUARY *",
+    "0 0 * * SUN",
+    "0 6 31 * *",
+    "0 6 * 12 *",
+  ])(
+    "un cron client-válido (%s) no muestra error y dispara el PUT",
+    async (value) => {
+      const cronInput = await renderAndOpenCronTab();
+      const calls = callsOf(cronInput);
+
+      fireEvent.change(cronInput, { target: { value } });
+      fireEvent.click(
+        screen.getByRole("button", { name: /guardar revisión/i }),
+      );
+
+      await waitFor(() => {
+        const puts = putCalls(calls);
+        expect(puts).toHaveLength(1);
+        expect(puts[0].body).toMatchObject({ cron: value });
+      });
+      expect(
+        screen.queryByText(/expresión cron inválida/i),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("el preset «Cada domingo» usa día-de-semana SUN (1–7) y es client-válido", () => {
+    // Regresión del preset roto: `0 0 * * 0` es inválido en la crate (1=domingo).
+    expect(CRON_PRESETS.find((p) => p.label === "Cada domingo")?.value).toBe(
+      "0 0 * * SUN",
+    );
+  });
+
+  it("todos los presets de frecuencia pasan la validación del cliente", async () => {
+    const cronInput = await renderAndOpenCronTab();
+
+    for (const preset of CRON_PRESETS) {
+      fireEvent.change(cronInput, { target: { value: preset.value } });
+      fireEvent.blur(cronInput);
+
+      await waitFor(() => expect(cronInput).toHaveValue(preset.value));
+      expect(
+        screen.queryByText(/expresión cron inválida/i),
+      ).not.toBeInTheDocument();
+    }
   });
 
   it("un cron con nombre de día (0 6 * * MON) no muestra error y dispara el PUT", async () => {
