@@ -26,5 +26,5 @@ Cola **148 → 149 → 150** completada, mergeada y **liberada**. `develop` == `
 ## Tarea pendiente
 
 - **Ninguna abierta.** Planes `PLAN-007/008/009` archivados.
-- Posible follow-up opcional: **redeploy de co1 a v0.26.0** (Dockge; ver `docs/deploy-co1.md`), no
-  ejecutado en esta sesión.
+- **co1 redeployado a v0.26.0** (Dockge): imagen `ghcr.io/atareao/alloy:latest` (digest manifest
+  `0258b306…`), contenedor recreado y sano (OIDC/Docker OK, HTTP 200). Procedimiento: `docs/deploy-co1.md`.
