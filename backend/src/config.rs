@@ -146,6 +146,9 @@ async fn update_config_h(
     State(db_pool): State<DbPool>,
     Json(body): Json<UpdateSettingsReq>,
 ) -> Json<PublicConfig> {
+    // Conexión antes que estado: adquirir la conexión de la pool ANTES de tomar
+    // `settings.lock()`, para no retener el mutex del estado mientras se espera.
+    let conn = db_pool.get().await.unwrap();
     {
         let mut s = settings.lock().await;
         if let Some(v) = body.telegram_token {
@@ -214,9 +217,11 @@ async fn update_config_h(
                 s.valet_token = Some(v);
             }
         }
-        let conn = db_pool.get().await.unwrap();
         let _ = db::save_settings(&conn.lock().unwrap(), &s);
     }
+    // Liberar la conexión antes de delegar: `config_handler` vuelve a tomar
+    // `settings.lock()`, y retener la conexión no aporta nada tras persistir.
+    drop(conn);
     config_handler(State(settings)).await
 }
 
@@ -351,6 +356,40 @@ port: 8080
         assert_eq!(s.telegram_token.as_deref(), Some("keep-me"));
         assert_eq!(s.matrix_token.as_deref(), Some("keep-matrix"));
         assert_eq!(s.valet_token.as_deref(), Some("keep-valet"));
+    }
+
+    /// settings-lock-scope: `PUT /api/config` NO debe retener el mutex de `Settings`
+    /// mientras espera una conexión de la pool. Con la pool saturada, otro lector
+    /// debe poder adquirir `settings.lock()` antes de que el handler termine.
+    #[tokio::test]
+    async fn test_update_config_does_not_hold_settings_lock_while_waiting_for_db() {
+        let db_pool = db::test_pool_with_max_size(1);
+        // Satura la única conexión: el handler quedará esperando en `db_pool.get()`.
+        let _held = db_pool.get().await.expect("get conn");
+
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let body = UpdateSettingsReq {
+            telegram_token: Some("tg".into()),
+            telegram_chat_id: None,
+            telegram_topic_id: None,
+            matrix_homeserver: None,
+            matrix_token: None,
+            matrix_room: None,
+            webhook_url: None,
+            valet_url: None,
+            valet_token: None,
+        };
+
+        let handler_settings = settings.clone();
+        let handler_pool = db_pool.clone();
+        crate::test_support::assert_settings_lock_free_while_db_pool_saturated(
+            settings.clone(),
+            async move {
+                let _ =
+                    update_config_h(State(handler_settings), State(handler_pool), Json(body)).await;
+            },
+        )
+        .await;
     }
 
     // ── `*_configured` mirrors real send capability ──────────
