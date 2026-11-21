@@ -46,11 +46,19 @@ pub async fn find_container_by_name(
         .ok_or_else(|| AppError::NotFound(format!("Container '{}' not found", name)))
 }
 
+/// Recupera la lista de contenedores enriquecida con el estado persistido en
+/// la base de datos.
+///
+/// El resultado depende de la BD (flags `has_update`, timestamps y digests
+/// persistidos), por lo que un fallo de pool o de `Mutex` de conexión se
+/// propaga como [`AppError`] en lugar de degradar silenciosamente a `[]`. Los
+/// call-sites best-effort (workers, refrescos de estado) deciden entonces si
+/// registran el fallo y continúan.
 pub async fn fetch_containers(
     docker: &Docker,
     allowed: &Option<Vec<String>>,
     db_pool: &DbPool,
-) -> Vec<ContainerInfo> {
+) -> Result<Vec<ContainerInfo>, AppError> {
     let containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
@@ -84,101 +92,70 @@ pub async fn fetch_containers(
 
     // Step 2: Read persisted has_update from DB
     let has_update_map: std::collections::HashMap<String, bool> = {
-        let conn = db_pool.get().await.unwrap();
-        let guard = conn.lock().unwrap();
-        let prepare_result = guard.prepare("SELECT name, has_update FROM containers");
-        let mut stmt = match prepare_result {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("fetch_containers: DB prepare failed: {}", e);
-                return Vec::new();
-            }
-        };
-        let rows = match stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let hu: i32 = row.get(1)?;
-            Ok((name, hu != 0))
-        }) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("fetch_containers: DB query failed: {}", e);
-                return Vec::new();
-            }
-        };
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let mut stmt = guard
+            .prepare("SELECT name, has_update FROM containers")
+            .map_err(AppError::from_pool)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let hu: i32 = row.get(1)?;
+                Ok((name, hu != 0))
+            })
+            .map_err(AppError::from_pool)?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
     // Step 2b: Read persisted last_check / next_check from DB
     let check_times_map = {
-        let conn = match db_pool.get().await {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("fetch_containers: check_times DB error");
-                return Vec::new();
-            }
-        };
-        let guard = conn.lock().unwrap();
-        let mut stmt = match guard.prepare(
-            "SELECT name, last_check, next_check FROM containers WHERE last_check IS NOT NULL",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let rows = match stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let lc: Option<String> = row.get(1)?;
-            let nc: Option<String> = row.get(2)?;
-            Ok((name, (lc, nc)))
-        }) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let mut stmt = guard
+            .prepare(
+                "SELECT name, last_check, next_check FROM containers WHERE last_check IS NOT NULL",
+            )
+            .map_err(AppError::from_pool)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let lc: Option<String> = row.get(1)?;
+                let nc: Option<String> = row.get(2)?;
+                Ok((name, (lc, nc)))
+            })
+            .map_err(AppError::from_pool)?;
         let map: std::collections::HashMap<_, _> = rows.filter_map(|r| r.ok()).collect();
         map
     };
 
     // Step 2c: Read persisted last_remote_digest from DB
     let last_remote_digest_map: std::collections::HashMap<String, String> = {
-        let conn = match db_pool.get().await {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("fetch_containers: last_remote_digest DB error");
-                return Vec::new();
-            }
-        };
-        let guard = conn.lock().unwrap();
-        let mut stmt = match guard.prepare(
-            "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let rows = match stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let digest: String = row.get(1)?;
-            Ok((name, digest))
-        }) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let mut stmt = guard
+            .prepare(
+                "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
+            )
+            .map_err(AppError::from_pool)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let digest: String = row.get(1)?;
+                Ok((name, digest))
+            })
+            .map_err(AppError::from_pool)?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
     // Step 2c-bis: Read persisted last_pulled_digest (local image cache) from DB
-    let last_pulled_digest_map: std::collections::HashMap<String, String> =
-        match db_pool.get().await {
-            Ok(conn) => match conn.lock() {
-                Ok(guard) => crate::db::load_last_pulled_digest_map(&guard),
-                Err(_) => std::collections::HashMap::new(),
-            },
-            Err(_) => {
-                tracing::warn!("fetch_containers: last_pulled_digest DB error");
-                std::collections::HashMap::new()
-            }
-        };
+    let last_pulled_digest_map: std::collections::HashMap<String, String> = {
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        crate::db::load_last_pulled_digest_map(&guard)
+    };
 
     // Step 3: Build ContainerInfo list (now all image names are resolved)
-    containers
+    Ok(containers
         .iter()
         .filter_map(|c| {
             let name = c
@@ -319,7 +296,7 @@ pub async fn fetch_containers(
                     .unwrap_or_default(),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Remove an old image by its digest/ID after a successful update.
@@ -521,13 +498,15 @@ async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
     State(db_pool): State<DbPool>,
-) -> Json<Vec<ContainerInfo>> {
+) -> Result<Json<Vec<ContainerInfo>>, AppError> {
+    // La lista es la respuesta: si hay que leerla de la BD y esta falla, se
+    // devuelve `AppError` (HTTP 500) en lugar de un `200 []` engañoso.
     let cached = cache.read().await;
     if let Some(containers) = cached.as_ref() {
-        Json(containers.clone())
+        Ok(Json(containers.clone()))
     } else {
         drop(cached);
-        Json(fetch_containers(&docker, &None, &db_pool).await)
+        Ok(Json(fetch_containers(&docker, &None, &db_pool).await?))
     }
 }
 
@@ -758,7 +737,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let result = fetch_containers(&docker, &None, &pool).await;
+        let result = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         assert!(!result.is_empty(), "Should have at least one container");
         assert!(
             result.iter().any(|c| c.name == f.name()),
@@ -773,7 +754,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let containers = fetch_containers(&docker, &None, &pool).await;
+        let containers = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         let c = containers
             .iter()
             .find(|c| c.name == f.name())
@@ -795,7 +778,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let containers = fetch_containers(&docker, &None, &pool).await;
+        let containers = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         for c in &containers {
             // Every container must have these basic fields
             assert!(!c.id.is_empty(), "ID should not be empty for {}", c.name);
@@ -840,7 +825,9 @@ mod tests {
         let f2 = FixtureContainer::run("alloy-it").await;
         let allowed_names = vec![f1.name().to_string(), f2.name().to_string()];
         let allowed = Some(allowed_names.clone());
-        let containers = fetch_containers(&docker, &allowed, &pool).await;
+        let containers = fetch_containers(&docker, &allowed, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         for c in &containers {
             assert!(
                 allowed_names.contains(&c.name),
@@ -862,7 +849,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let allowed = Some(Vec::new());
-        let containers = fetch_containers(&docker, &allowed, &pool).await;
+        let containers = fetch_containers(&docker, &allowed, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         assert!(
             containers.is_empty(),
             "Empty allowed list should return nothing"
@@ -955,7 +944,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let containers = fetch_containers(&docker, &None, &pool).await;
+        let containers = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
 
         assert!(
             containers

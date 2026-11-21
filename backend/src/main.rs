@@ -34,8 +34,106 @@ use crate::updates::health_guard::restore_guards_from_history;
 use crate::workers::{cleanup_worker, state_worker, update_check_worker, CachedContainers};
 
 use axum::serve::ListenerExt;
-use axum::{extract::State, response::Json, routing::get};
+use axum::{extract::State, response::Json, routing::get, Router};
 use bollard::Docker;
+
+/// Construye el `Router` de la aplicación a partir del estado.
+///
+/// Función pura: no hace `bind` ni `serve`. Extraída de `main()` (change
+/// `backend-hardening`) para poder ejercitarla en tests con
+/// `tower::ServiceExt::oneshot` — p. ej. las cabeceras de seguridad, que el
+/// GREEN añadirá aquí como capa externa.
+pub fn build_app(state: AppState) -> Router {
+    let secret_clone = state.config.oidc_client_secret().to_string();
+    let config_clone = state.config.clone();
+
+    Router::new()
+        .route("/api/health", get(health_h))
+        .merge(auth::routes())
+        .merge(admin::routes())
+        .merge(config::routes())
+        .merge(containers::routes())
+        .merge(events::routes())
+        .merge(stacks::routes())
+        .merge(updates::routes())
+        .merge(notifications::routes())
+        .layer(axum::middleware::from_fn(
+            move |headers: axum::http::HeaderMap,
+                  mut req: axum::extract::Request,
+                  next: axum::middleware::Next| {
+                let s = secret_clone.clone();
+                let c = config_clone.clone();
+                async move {
+                    req.extensions_mut().insert(s);
+                    req.extensions_mut().insert(c);
+                    auth_middleware(headers, req, next).await
+                }
+            },
+        ))
+        .fallback(auth::frontend_handler)
+        // Capa MÁS externa: fija las cabeceras de seguridad en todas las
+        // respuestas (API, estáticos del fallback y SSE). Se añade tras el
+        // `fallback` para cubrirlo también.
+        .layer(axum::middleware::from_fn(security_headers))
+        .with_state(state)
+}
+
+/// Middleware que añade las cabeceras de seguridad a TODA respuesta.
+///
+/// `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` y la CSP se
+/// aplican siempre; `Strict-Transport-Security` solo cuando la petición llega
+/// por HTTPS (esquema de la URI o `x-forwarded-proto: https`, como ocurre
+/// detrás de un proxy). No altera el cuerpo ni el tipo de las respuestas, por
+/// lo que no rompe la SPA ni los streams SSE.
+async fn security_headers(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{HeaderName, HeaderValue};
+
+    let https = req.uri().scheme_str() == Some("https")
+        || req
+            .headers()
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.split(',')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .eq_ignore_ascii_case("https")
+            });
+
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+             img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
+             frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+        ),
+    );
+    if https {
+        headers.insert(
+            HeaderName::from_static("strict-transport-security"),
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
+    response
+}
 
 async fn health_h(State(docker): State<Docker>) -> Json<serde_json::Value> {
     let docker_ok = docker.ping().await.is_ok();
@@ -280,35 +378,7 @@ async fn main() {
     tokio::spawn(oidc_states_cleanup(state.oidc_states.clone()));
     tokio::spawn(cleanup_worker(docker.clone()));
 
-    // Session secret for cookie signing (use client_secret)
-    let secret_clone = config.oidc_client_secret().to_string();
-    let config_clone = config.clone();
-
-    let app = axum::Router::new()
-        .route("/api/health", get(health_h))
-        .merge(auth::routes())
-        .merge(admin::routes())
-        .merge(config::routes())
-        .merge(containers::routes())
-        .merge(events::routes())
-        .merge(stacks::routes())
-        .merge(updates::routes())
-        .merge(notifications::routes())
-        .layer(axum::middleware::from_fn(
-            move |headers: axum::http::HeaderMap,
-                  mut req: axum::extract::Request,
-                  next: axum::middleware::Next| {
-                let s = secret_clone.clone();
-                let c = config_clone.clone();
-                async move {
-                    req.extensions_mut().insert(s);
-                    req.extensions_mut().insert(c);
-                    auth_middleware(headers, req, next).await
-                }
-            },
-        ))
-        .fallback(auth::frontend_handler)
-        .with_state(state);
+    let app = build_app(state);
 
     let port = config.port();
     let host = config.host();
@@ -383,8 +453,199 @@ async fn oidc_states_cleanup(oidc_states: OidcStates) {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
     use axum::serve::{Listener, ListenerExt};
     use tokio::io::AsyncWriteExt;
+    use tower::ServiceExt;
+
+    use super::build_app;
+    use crate::db;
+    use crate::models::SessionClaims;
+
+    /// Config con los cuatro campos OIDC mínimos (necesarios para `build_app`,
+    /// que deriva el secreto de firma de sesión de `oidc_client_secret`).
+    fn hardening_test_config() -> crate::config::Config {
+        crate::config::Config {
+            oidc_issuer_url: Some("http://localhost".into()),
+            oidc_client_id: Some("test-client".into()),
+            oidc_client_secret: Some("test-secret".into()),
+            oidc_redirect_url: Some("http://localhost/callback".into()),
+            ..Default::default()
+        }
+    }
+
+    /// Session token válido firmado con `secret`, para atravesar `auth_middleware`.
+    fn hardening_session_token(secret: &str) -> String {
+        use chrono::Utc;
+        use jsonwebtoken::{encode, EncodingKey, Header};
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "test-user".into(),
+            name: "Test User".into(),
+            email: "test@example.com".into(),
+            iat: now,
+            last_active: now,
+            exp: now + 3600,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("session token")
+    }
+
+    /// RED (backend-hardening 1.1): un handler que usa la pool NO debe panickear
+    /// cuando la pool está cerrada; debe devolver HTTP 500 con JSON `{"error": ...}`.
+    ///
+    /// **Detección del RED**: hoy `update_config_h` hace `db_pool.get().await.unwrap()`
+    /// y su firma es infalible (`Json<T>`), de modo que el `unwrap` panickea al pollear
+    /// el handler dentro del router; el panic se propaga por el futuro de `oneshot`
+    /// (que se `await`ea en la propia tarea del test) y el test falla **por panic**,
+    /// no por aserción. Tras el GREEN (`AppError::from_pool` + firma
+    /// `Result<Json<T>, AppError>`) el panic desaparece y se cumplen las aserciones
+    /// de 500 + `{"error": ...}`.
+    #[tokio::test]
+    async fn closed_pool_handler_returns_500_json_without_panicking() {
+        let pool = db::test_pool();
+        // Cierra la pool: cualquier `db_pool.get()` posterior devuelve
+        // `PoolError::Closed` en lugar de una conexión.
+        pool.close();
+        let app = build_app(crate::test_support::test_app_state(
+            hardening_test_config(),
+            pool,
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/config")
+                    .header("content-type", "application/json")
+                    .header(
+                        "cookie",
+                        format!("session={}", hardening_session_token("test-secret")),
+                    )
+                    .body(Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("el handler no debe panickear con la pool cerrada");
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("json body");
+        assert!(
+            json.get("error").is_some(),
+            "el cuerpo 500 debe ser {{\"error\": ...}}: {json}"
+        );
+    }
+
+    /// RED (backend-hardening 1.3): toda respuesta MUST llevar las cabeceras de
+    /// seguridad. Hoy `build_app` no las añade, así que la aserción falla.
+    #[tokio::test]
+    async fn security_headers_present_on_response() {
+        let app = build_app(crate::test_support::test_app_state(
+            hardening_test_config(),
+            db::test_pool(),
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/login")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["x-frame-options"], "DENY");
+        assert_eq!(
+            response.headers()["referrer-policy"],
+            "strict-origin-when-cross-origin"
+        );
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .expect("CSP is ASCII");
+        assert!(
+            csp.contains("style-src 'self' 'unsafe-inline'"),
+            "CSP debe permitir los estilos inline de AntD (style-src 'self' 'unsafe-inline'): {csp}"
+        );
+        assert!(
+            csp.contains("script-src 'self'"),
+            "CSP debe restringir los scripts a 'self' (script-src 'self'): {csp}"
+        );
+    }
+
+    /// RED (backend-hardening 1.3): las cabeceras de seguridad MUST cubrir también
+    /// las respuestas servidas por el `fallback` (estático/SPA), no solo la API.
+    ///
+    /// Una ruta que no empieza por `/api/` atraviesa `auth_middleware` sin exigir
+    /// sesión y la sirve `frontend_handler`. Aunque `dist/` no exista en el entorno
+    /// de tests (fallback a 404 "Frontend not built"), la capa MÁS externa
+    /// `security_headers` MUST añadir igualmente las cabeceras a esa respuesta.
+    #[tokio::test]
+    async fn security_headers_present_on_static_spa_fallback() {
+        let app = build_app(crate::test_support::test_app_state(
+            hardening_test_config(),
+            db::test_pool(),
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/some-spa-route")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+
+        // El fallback estático/SPA es público: no debe exigir sesión.
+        assert_ne!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "el fallback estático/SPA no debe exigir autenticación"
+        );
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["x-frame-options"], "DENY");
+        assert_eq!(
+            response.headers()["referrer-policy"],
+            "strict-origin-when-cross-origin"
+        );
+    }
+
+    /// RED (backend-hardening 1.3): cuando la petición llega por HTTPS
+    /// (`x-forwarded-proto: https`) la respuesta MUST incluir HSTS. Hoy no hay
+    /// middleware de cabeceras, así que falta.
+    #[tokio::test]
+    async fn hsts_header_present_when_https_forwarded() {
+        let app = build_app(crate::test_support::test_app_state(
+            hardening_test_config(),
+            db::test_pool(),
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/login")
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+
+        assert!(
+            response.headers().contains_key("strict-transport-security"),
+            "debe incluir Strict-Transport-Security cuando x-forwarded-proto: https"
+        );
+    }
 
     /// RED->GREEN test for sse-nodelay-fix.
     ///

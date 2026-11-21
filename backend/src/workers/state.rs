@@ -170,7 +170,14 @@ async fn refresh(
     notif_tx: &broadcast::Sender<NotifEvent>,
     container_event_tx: &broadcast::Sender<ContainerEvent>,
 ) {
-    let containers = fetch_containers(docker, &None, db_pool).await;
+    // Best-effort: el worker no tiene respuesta HTTP que degradar. Si la BD no
+    // está disponible se registra el fallo y se refresca con lista vacía.
+    let containers = fetch_containers(docker, &None, db_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("refresh: fetch_containers falló, refrescando con lista vacía: {e}");
+            Vec::new()
+        });
     *cache.write().await = Some(containers.clone());
     let _ = tx.send(StateEvent {
         containers: containers.clone(),

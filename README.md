@@ -274,6 +274,10 @@ oidc_redirect_url: "https://alloy.example.com/api/auth/callback"
 | `OIDC_CLIENT_ID` | — | **Yes** | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | — | **Yes** | OIDC client secret |
 | `OIDC_REDIRECT_URL` | — | **Yes** | OIDC callback URL |
+| `ALLOW_INSECURE_COOKIES` | `false` | No | Si es `1/true/yes/on`, la cookie de sesión **no** lleva `Secure`. Solo para desarrollo local por HTTP plano. |
+
+
+> La cookie de sesión se emite con `Secure` por defecto (requiere servir Alloy por **HTTPS**). Solo si sirves por HTTP plano (p. ej. `localhost` sin TLS) activa `ALLOW_INSECURE_COOKIES=1`, o el login fallará.
 
 ## API
 
