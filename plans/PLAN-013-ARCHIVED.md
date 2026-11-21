@@ -28,13 +28,13 @@ Ver `openspec/changes/decompose-config-page/tasks.md`.
 
 ## Criterios de aceptación
 
-- [ ] `ConfigPage.tsx` sin handlers `save*` ni estado de formulario por dominio (orquestador).
-- [ ] Validación cron en módulo puro sin React.
-- [ ] Estado compartido (`saving`, `testing`, `error`, `success`, `activeTab`) y auto-ocultado a 3 s con cleanup en `useConfigPage`.
-- [ ] 8 Cards extraídas; textos visibles, `aria-label` y placeholders intactos.
-- [ ] `ConfigPage.test.tsx` pasa sin cambios.
-- [ ] `vitest run`, `tsc -b`, `lint`, `build` limpios.
-- [ ] `docs/decompose-config-page.md` creado.
+- [x] `ConfigPage.tsx` sin handlers `save*` ni estado de formulario por dominio (orquestador).
+- [x] Validación cron en módulo puro sin React.
+- [x] Estado compartido (`saving`, `testing`, `error`, `success`, `activeTab`) y auto-ocultado a 3 s con cleanup en `useConfigPage`.
+- [x] 8 Cards extraídas; textos visibles, `aria-label` y placeholders intactos.
+- [x] `ConfigPage.test.tsx` pasa sin cambios.
+- [x] `vitest run`, `tsc -b`, `lint`, `build` limpios.
+- [x] `docs/decompose-config-page.md` creado.
 
 ## Follow-ups (fuera de alcance)
 
