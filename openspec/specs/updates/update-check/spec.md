@@ -12,15 +12,17 @@ tenga un desenlace logueado y que las consultas a registry se dedupliquen por im
 
 Al ejecutar la política `PullRestartStack`, Alloy MUST aplicar el `pull` de la imagen y la
 recreación del servicio de compose **vía la API de Docker (Bollard)**, sin depender del
-binario `docker` ni de un fichero de compose visible en el contenedor. Cualquier fallo
-MUST quedar registrado con nivel `ERROR` (nunca en silencio). El éxito MUST emitir
-notificación, persistir el digest de la imagen en ejecución, marcar `has_update=false` e
-incrementar el contador de actualizaciones.
+binario `docker` ni de un fichero de compose visible en el contenedor. El éxito MUST
+considerarse tal **solo si el contenedor pasa la verificación de arranque sano**
+(update-health-guard) **cuando la política tiene `rollback_on_failure` activo**; con `rollback_on_failure=false` se conserva el comportamiento previo (sin verificación ampliada ni rollback), por decisión explícita de diseño. Cualquier fallo MUST quedar registrado con nivel `ERROR` (nunca en
+silencio). El éxito MUST emitir notificación, persistir el digest de la imagen en ejecución,
+marcar `has_update=false` e incrementar el contador de actualizaciones.
 
 #### Scenario: Servicio de stack actualizado con éxito
 
 - **Given** un contenedor de compose con update disponible y política `PullRestartStack`
-- **When** el pull por digest y la recreación del servicio vía API terminan con éxito
+- **When** el pull por digest, la recreación vía API y la verificación de arranque sano
+  terminan con éxito
 - **Then** se persiste como `last_remote_digest` el config digest resuelto de forma fiable
   (o, si la resolución fue degradada, el image id del contenedor recreado)
 - **And** se marca `has_update=false`
@@ -43,10 +45,17 @@ incrementar el contador de actualizaciones.
 - **Then** se registra un `ERROR` con la causa
 - **And** `has_update` permanece sin cambios
 
+#### Scenario: Recreación sin arranque sano dispara la guarda
+
+- **Given** un `PullRestartStack` cuya recreación devuelve `Ok` pero el contenedor no arranca sano
+- **When** la verificación de arranque sano falla
+- **Then** se aplica la guarda de update (reintentos → rollback por digest → estado final)
+- **And** el resultado se refleja en el historial y en las notificaciones correspondientes
+
 #### Scenario: Resolución degradada durante un stack update
 
 - **Given** un registry que no expone el config digest real (resultado degradado)
-- **When** el servicio se recrea con éxito
+- **When** el servicio se recrea con éxito y arranca sano
 - **Then** NO se persiste el manifest digest como `last_remote_digest`
 - **And** se registra un `WARN` indicando modo degradado
 - **And** no se vuelve a recrear el mismo servicio por el mismo manifest en ciclos
@@ -205,3 +214,211 @@ fin con ceros.
 - **Given** un batch que acaba con contadores reales
 - **When** se limpia la caché de progreso (`reset_progress_cache`)
 - **Then** el evento de fin con contadores reales no se reemite con ceros
+
+### Requirement: La aplicación de políticas integra la guarda de arranque
+
+Al aplicar una política que recrea el contenedor (`PullRestart`/`PullRestartStack`) con
+`rollback_on_failure` activo, Alloy MUST delegar la detección de fallo y el rollback en la
+guarda `update-health-guard` en lugar del sondeo puntual y el tag `rollback-<ts>` actuales.
+Los resultados (`rolled-back`, `failed-stopped`) MUST exponerse en el historial y en las
+notificaciones, y MUST NOT quedar solo en el log como `warn`.
+
+#### Scenario: Update que falla y acaba en rollback sano
+
+- **Given** un contenedor con `rollback_on_failure = true` cuya imagen nueva no arranca sano
+- **When** se agotan los intentos y el rollback por digest arranca sano
+- **Then** el estado final es `rolled-back`
+- **And** se emite notificación `warn`
+- **And** el historial refleja el resultado (no solo un log)
+
+#### Scenario: Update y rollback que fallan
+
+- **Given** un contenedor cuya imagen nueva no arranca y cuya imagen anterior tampoco arranca
+- **When** el rollback falla la verificación de arranque sano
+- **Then** el contenedor queda parado con estado `failed-stopped`
+- **And** se emite notificación `error`
+- **And** el historial refleja el estado terminal
+
+### Requirement: Único origen de los defaults de configuración de updates
+
+Los defaults de `cron` (auto-update), `pull_timeout_secs` y `check_interval_ms` MUST declararse **una
+sola vez** como constantes en `backend/src/models.rs`, y todos los puntos de uso (impl `Default`, serde
+defaults, lectura SQLite, GET API, scheduler, workers y flujos manuales) MUST referenciarlas. No MUST
+quedar literales duplicados de estos defaults en código de producción.
+
+Valores canónicos:
+
+- `DEFAULT_UPDATE_CHECK_CRON = "0 6 * * *"` (todos los días a las 6:00).
+- `DEFAULT_PULL_TIMEOUT_SECS = 600`.
+- `DEFAULT_CHECK_INTERVAL_MS = 2000`.
+
+#### Scenario: Config sin cron usa el default canónico en API y scheduler
+
+- **Given** unos settings sin `update_check_cron` definido
+- **When** se consulta `GET /api/update-check/config`
+- **Then** el `cron` devuelto es `0 6 * * *`
+- **And** el scheduler usa el mismo default `0 6 * * *` (no `0 0 * * *`)
+
+#### Scenario: pull_timeout_secs sin definir usa 600
+
+- **Given** unos settings sin `pull_timeout_secs`
+- **When** cualquier flujo de pull (scheduler o update manual) necesita el timeout
+- **Then** usa `600` (constante), no un literal disperso
+
+#### Scenario: check_interval_ms sin definir usa 2000
+
+- **Given** unos settings sin `check_interval_ms`
+- **When** el worker/loop lo consulta
+- **Then** usa `2000` (constante)
+
+### Requirement: Consistencia de los defaults entre backend y UI
+
+El frontend MUST obtener los defaults de updates desde la API (`GET /api/update-check/defaults`) y MUST
+**NO** hardcodear esos valores. El **placeholder** del cron, la **etiqueta** del timeout y el
+**fallback** al vaciar el campo `pull_timeout_secs` MUST reflejar los valores devueltos por la API. El
+formulario no MUST depender de literales incrustados para estos defaults.
+
+#### Scenario: El formulario de settings arranca con los canónicos
+
+- **Given** la página de configuración con los defaults cargados de `GET /api/update-check/defaults`
+- **When** el usuario observa el campo de cron y el de `pull_timeout_secs`
+- **Then** el placeholder del cron y la etiqueta del timeout muestran los valores devueltos por la API
+  (los canónicos por defecto: `0 6 * * *` y `600 (10 min)`)
+
+#### Scenario: Vaciar el timeout no cambia el default mostrado
+
+- **Given** el campo `pull_timeout_secs` con valor y los defaults cargados de la API
+- **When** el usuario lo vacía
+- **Then** el fallback aplicado es el `pull_timeout_secs` devuelto por la API
+
+### Requirement: Validación de la expresión cron al guardar la configuración
+
+`PUT /api/update-check/config` MUST validar el campo `cron` antes de persistir. Una expresión
+inválida, **vacía**, o que no tenga **exactamente 5 campos** MUST rechazarse con **400** y un cuerpo
+`{"error": <mensaje>}`, sin modificar el estado persistido ni los settings en memoria.
+
+La validación MUST realizarse mediante un helper de **punto único** `pub fn is_valid_cron(expr: &str)
+-> bool` (en `backend/src/timezone.rs`), que exige 5 campos y comprueba el parseo con la crate `cron`
+(prefijando `"0 "` internamente). El formato canónico es de **5 campos** (p. ej. `0 6 * * *`).
+
+#### Scenario: Cron inválido devuelve 400 y no persiste
+
+- **Given** unos settings con un cron válido guardado
+- **When** se envía `PUT /api/update-check/config` con `cron = "not a cron"`
+- **Then** la respuesta es **400** con `{"error": ...}`
+- **And** los settings persistidos y en memoria **no cambian**
+
+#### Scenario: Cron vacío devuelve 400
+
+- **Given** el handler PUT de configuración
+- **When** se envía `cron = ""`
+- **Then** la respuesta es **400** con `{"error": ...}`
+
+#### Scenario: Cron con 6 campos devuelve 400
+
+- **Given** el handler PUT de configuración
+- **When** se envía `cron = "0 0 6 * * *"` (6 campos)
+- **Then** la respuesta es **400** con `{"error": ...}` (solo se acepta el formato canónico de 5 campos)
+
+#### Scenario: Cron válido de 5 campos se guarda
+
+- **Given** el handler PUT de configuración
+- **When** se envía `cron = "0 6 * * *"`
+- **Then** la respuesta es **200** con el `UpdateCheckConfig` guardado
+- **And** `next_run_at` se calcula con el cron indicado
+
+#### Scenario: El formulario muestra el error del backend
+
+- **Given** la página de configuración con el auto-update habilitado
+- **When** el usuario guarda con un cron inválido y el backend responde 400
+- **Then** la UI muestra el mensaje de error devuelto por el backend (no un mensaje genérico)
+
+### Requirement: Validación del cron al importar la configuración
+
+`POST /api/admin/import` MUST validar el campo `update_check_cron` del `Settings` importado **antes**
+de mutar el estado o persistir. Si el cron viene **presente y no vacío** y no es una expresión válida
+de 5 campos, MUST rechazarse con **400** `{"error": msg}` sin modificar el estado en memoria ni el
+persistido. Un cron ausente (`None`) o **vacío** representa "sin override" y MUST aceptarse. La
+validación MUST delegar en el mismo helper `is_valid_cron`.
+
+#### Scenario: Importar un settings con cron inválido devuelve 400 y no persiste
+
+- **Given** unos settings persistidos con un cron válido
+- **When** se envía `POST /api/admin/import` con un `settings` cuyo `update_check_cron` es `"not a cron"`
+- **Then** la respuesta es **400** con `{"error": ...}`
+- **And** el estado en memoria y el persistido **no cambian**
+
+#### Scenario: Importar un settings sin cron (o vacío) se acepta
+
+- **Given** el handler de importación
+- **When** se importa un `settings` con `update_check_cron = None` (o `""`)
+- **Then** la respuesta es **200** y el settings se aplica (sin override de cron)
+
+### Requirement: Helper de validación de cron de punto único
+
+La aplicación MUST exponer un único helper (`is_valid_cron`) para decidir si una expresión cron es
+válida en el formato canónico de 5 campos. Todos los puntos que **validan** cron (el PUT de la
+configuración y la importación) MUST delegar en él en lugar de duplicar el prefijado `"0 "` y el
+parseo.
+
+#### Scenario: El helper acepta 5 campos válidos y rechaza el resto
+
+- **Given** el helper `is_valid_cron`
+- **When** se le pasa `"0 6 * * *"` → **true**
+- **And** se le pasa `"*/15 * * * *"` → **true**
+- **And** se le pasa `""`, `"not a cron"` o `"0 0 6 * * *"` (6 campos) → **false**
+
+### Requirement: Endpoint de defaults de configuración de updates
+
+La API MUST exponer los defaults canónicos de la configuración de updates mediante
+`GET /api/update-check/defaults`, que devuelve un objeto
+`{ "cron": <string>, "pull_timeout_secs": <u64>, "check_interval_ms": <u64> }` poblado **desde las
+consts** de `models.rs` (`DEFAULT_UPDATE_CHECK_CRON`, `DEFAULT_PULL_TIMEOUT_SECS`,
+`DEFAULT_CHECK_INTERVAL_MS`). No MUST haber literales de esos valores en el handler.
+
+#### Scenario: El endpoint devuelve los canónicos
+
+- **Given** el servidor en marcha
+- **When** se consulta `GET /api/update-check/defaults`
+- **Then** responde **200** con `cron = "0 6 * * *"`, `pull_timeout_secs = 600`,
+  `check_interval_ms = 2000` (las consts)
+
+### Requirement: Validación del cron en el formulario antes de enviar
+
+El formulario de configuración MUST validar la expresión cron **antes** de enviarla. Si es inválida
+(no tiene **5 campos** o algún campo no respeta la estructura permitida —dígitos, letras (nombres de mes/día) y los operadores
+`* , - /`—), MUST mostrar un **error inline** junto al campo y MUST **NO** enviar el `PUT`
+`/api/update-check/config`. La validación del cliente es un pre-chequeo ligero; el backend sigue siendo
+la autoridad final.
+
+#### Scenario: Cron malformado muestra error inline y no envía el PUT
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario introduce un cron malformado (p. ej. `not a cron`) y pulsa guardar
+- **Then** se muestra un error junto al campo
+- **And** **no** se realiza la petición `PUT /api/update-check/config`
+
+#### Scenario: Cron válido de 5 campos no bloquea el guardado
+
+- **Given** el formulario con un cron válido de 5 campos (p. ej. `0 6 * * *`)
+- **When** el usuario pulsa guardar
+- **Then** no se muestra error de validación y se envía el `PUT`
+
+### Requirement: Normalización de expresiones cron de 6 campos en el formulario
+
+El formulario MUST normalizar una expresión cron de **6 campos** eliminando el campo de **segundos**
+(primero) y reduciéndola al formato canónico de **5 campos**, antes de validarla y de enviarla. El
+backend NO cambia: sigue aceptando solo 5 campos.
+
+#### Scenario: Un cron de 6 campos se normaliza a 5 al salir del campo
+
+- **Given** el formulario con el campo cron
+- **When** el usuario introduce `0 0 6 * * *` (6 campos) y sale del campo
+- **Then** el valor del campo pasa a `0 6 * * *` (5 campos)
+- **And** al guardar, el `PUT` envía `cron = "0 6 * * *"`
+
+#### Scenario: Normalizar y validar en el guardado sin volver a 400
+
+- **Given** el formulario con un cron de 6 campos válido subyacentemente
+- **When** el usuario pulsa guardar
+- **Then** se normaliza a 5 campos antes del envío y el `PUT` no recibe un 400 por formato

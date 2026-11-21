@@ -112,6 +112,7 @@ export interface HistoryEntry {
   timestamp: string;
   status: string;
   duration_ms: number;
+  attempts: number;
 }
 
 export type UpdateAction =
@@ -126,6 +127,10 @@ export interface UpdatePolicy {
   cleanup_old_image: boolean;
   rollback_on_failure: boolean;
   notify_events: boolean;
+  /** Override del nº máximo de intentos de arranque (default global). */
+  max_start_attempts?: number;
+  /** Override de la ventana de salud en segundos (default global). */
+  health_window_secs?: number;
 }
 
 export interface UpdateCheckConfig {
@@ -135,12 +140,34 @@ export interface UpdateCheckConfig {
   last_run_at: string | null;
   next_run_at: string | null;
   pull_timeout_secs?: number | null;
+  /** Nº máximo de intentos de arranque antes de hacer rollback. */
+  update_max_start_attempts?: number | null;
+  /** Segundos entre intentos de arranque. */
+  update_start_attempt_interval_secs?: number | null;
+  /** Ventana de salud (s) que debe mantenerse estable para dar el arranque por bueno. */
+  update_health_window_secs?: number | null;
+}
+
+/**
+ * Defaults canónicos de la revisión de updates, expuestos por
+ * `GET /api/update-check/defaults`. La UI los usa para el placeholder del cron,
+ * la etiqueta del timeout y el fallback al vaciar `pull_timeout_secs`, en lugar
+ * de hardcodear los literales.
+ */
+export interface UpdateDefaults {
+  cron: string;
+  pull_timeout_secs: number;
+  check_interval_ms: number;
 }
 
 export interface DefaultUpdatePolicy {
   action: UpdateAction;
   cleanup_old_image: boolean;
   rollback_on_failure: boolean;
+  /** Override del nº máximo de intentos de arranque (default global). */
+  max_start_attempts?: number;
+  /** Override de la ventana de salud en segundos (default global). */
+  health_window_secs?: number;
 }
 
 export interface ContainerSummary {

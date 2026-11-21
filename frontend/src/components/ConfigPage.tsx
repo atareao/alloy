@@ -17,6 +17,7 @@ import type {
   AppConfig,
   DefaultUpdatePolicy,
   UpdateCheckConfig,
+  UpdateDefaults,
 } from "../types";
 import { apiFetch } from "../api";
 
@@ -31,6 +32,45 @@ const CRON_PRESETS = [
   { value: "*/30 * * * *", label: "Cada 30 minutos" },
   { value: "0 */1 * * *", label: "Cada hora" },
 ];
+
+// Pre-chequeo ligero del cron en el cliente (el backend es la autoridad final).
+// Charset permitido por campo: dígitos, letras (nombres de mes/día) y los
+// operadores `* , - /`. Así un cron que el backend acepta (p. ej. `0 6 * * MON`)
+// no se bloquea en el cliente.
+const CRON_FIELD_RE = /^[0-9A-Za-z*,\-/]+$/;
+
+/**
+ * Normaliza una expresión cron: `trim`; si trae **6 campos** (formato con
+ * segundos) elimina el primero (segundos) y devuelve los 5 canónicos.
+ */
+function normalizeCron(expr: string): string {
+  const trimmed = expr.trim();
+  const fields = trimmed.split(/\s+/);
+  if (fields.length === 6) {
+    return fields.slice(1).join(" ");
+  }
+  return trimmed;
+}
+
+/**
+ * Validación ligera del cron: normaliza primero, exige **exactamente 5 campos**
+ * con el charset permitido. Es un pre-chequeo; el backend valida de verdad.
+ */
+function isValidCronClient(expr: string): boolean {
+  const normalized = normalizeCron(expr);
+  if (!normalized) return false;
+  const fields = normalized.split(/\s+/);
+  if (fields.length !== 5) return false;
+  return fields.every((f) => CRON_FIELD_RE.test(f));
+}
+
+/** Mensaje de error inline para el campo cron, o `null` si es válido. */
+function cronErrorFor(raw: string): string | null {
+  if (raw.trim() === "") return "La expresión cron es obligatoria";
+  if (!isValidCronClient(raw))
+    return "Expresión cron inválida (se esperan 5 campos: min hora día mes semana)";
+  return null;
+}
 
 interface ConfigPageProps {
   config: AppConfig | null;
@@ -69,17 +109,29 @@ export default function ConfigPage({
   const [valetEnabled, setValetEnabled] = useState(false);
 
   // Update check cron
-  const [ucCron, setUcCron] = useState("0 */6 * * *");
+  const [ucCron, setUcCron] = useState("");
   const [ucEnabled, setUcEnabled] = useState(false);
   const [ucNotify, setUcNotify] = useState(false);
+  const [cronError, setCronError] = useState<string | null>(null);
 
   // Update check config — fetched separately
   const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
     null,
   );
 
+  // Defaults canónicos de la revisión (GET /api/update-check/defaults). Se usan
+  // para el placeholder del cron, la etiqueta del timeout y el fallback al
+  // vaciar `pull_timeout_secs`, evitando literales hardcodeados.
+  const [defaults, setDefaults] = useState<UpdateDefaults | null>(null);
+
   // Pull timeout
-  const [pullTimeout, setPullTimeout] = useState(600);
+  const [pullTimeout, setPullTimeout] = useState(0);
+
+  // Guarda de arranque (update-rollback-guard) — settings globales
+  const [ucMaxStartAttempts, setUcMaxStartAttempts] = useState(3);
+  const [ucStartAttemptInterval, setUcStartAttemptInterval] = useState(10);
+  const [ucHealthWindow, setUcHealthWindow] = useState(30);
+
   useEffect(() => {
     apiFetch("/api/update-check/config")
       .then((res) => res.json())
@@ -90,7 +142,21 @@ export default function ConfigPage({
         setUcNotify(data.notify);
         if (data.pull_timeout_secs != null)
           setPullTimeout(data.pull_timeout_secs);
+        if (data.update_max_start_attempts != null)
+          setUcMaxStartAttempts(data.update_max_start_attempts);
+        if (data.update_start_attempt_interval_secs != null)
+          setUcStartAttemptInterval(data.update_start_attempt_interval_secs);
+        if (data.update_health_window_secs != null)
+          setUcHealthWindow(data.update_health_window_secs);
       })
+      .catch(() => {});
+  }, []);
+
+  // Carga los defaults canónicos desde la API (placeholder/etiqueta/fallback).
+  useEffect(() => {
+    apiFetch("/api/update-check/defaults")
+      .then((res) => res.json())
+      .then((data: UpdateDefaults) => setDefaults(data))
       .catch(() => {});
   }, []);
 
@@ -98,6 +164,12 @@ export default function ConfigPage({
   const [defAction, setDefAction] = useState<string>("pull-restart");
   const [defCleanup, setDefCleanup] = useState(false);
   const [defRollback, setDefRollback] = useState(false);
+  // Overrides opcionales de la guarda para la política por defecto.
+  // `null` = sin override (se usa el valor global).
+  const [defMaxStartAttempts, setDefMaxStartAttempts] = useState<number | null>(
+    null,
+  );
+  const [defHealthWindow, setDefHealthWindow] = useState<number | null>(null);
   useEffect(() => {
     apiFetch("/api/update-policies/default")
       .then((res) => res.json())
@@ -105,6 +177,8 @@ export default function ConfigPage({
         setDefAction(data.action);
         setDefCleanup(data.cleanup_old_image);
         setDefRollback(data.rollback_on_failure);
+        setDefMaxStartAttempts(data.max_start_attempts ?? null);
+        setDefHealthWindow(data.health_window_secs ?? null);
       })
       .catch(() => {});
   }, []);
@@ -266,6 +340,16 @@ export default function ConfigPage({
   };
 
   const saveUpdateCheck = async () => {
+    // Validación/normalización en cliente: pre-chequeo antes del PUT.
+    // El backend sigue siendo la autoridad final.
+    const normalizedCron = normalizeCron(ucCron);
+    const clientError = cronErrorFor(normalizedCron);
+    if (clientError) {
+      setCronError(clientError);
+      return;
+    }
+    if (normalizedCron !== ucCron) setUcCron(normalizedCron);
+    setCronError(null);
     setSaving("update-check");
     setError(null);
     try {
@@ -273,10 +357,13 @@ export default function ConfigPage({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cron: ucCron,
+          cron: normalizedCron,
           enabled: ucEnabled,
           notify: ucNotify,
           pull_timeout_secs: pullTimeout,
+          update_max_start_attempts: ucMaxStartAttempts,
+          update_start_attempt_interval_secs: ucStartAttemptInterval,
+          update_health_window_secs: ucHealthWindow,
         }),
       });
       if (res.ok) {
@@ -287,13 +374,22 @@ export default function ConfigPage({
         setUcNotify(data.notify);
         if (data.pull_timeout_secs != null)
           setPullTimeout(data.pull_timeout_secs);
+        if (data.update_max_start_attempts != null)
+          setUcMaxStartAttempts(data.update_max_start_attempts);
+        if (data.update_start_attempt_interval_secs != null)
+          setUcStartAttemptInterval(data.update_start_attempt_interval_secs);
+        if (data.update_health_window_secs != null)
+          setUcHealthWindow(data.update_health_window_secs);
         showSuccess(
           ucEnabled
             ? "✅ Revisión programada activada"
             : "❌ Revisión programada desactivada",
         );
       } else {
-        setError("Error al guardar la revisión de actualizaciones");
+        const data = await res
+          .json()
+          .catch(() => ({ error: "Error desconocido" }));
+        setError(data.error || `Error HTTP ${res.status}`);
       }
     } catch {
       setError("Error de conexión");
@@ -312,6 +408,9 @@ export default function ConfigPage({
           action: defAction,
           cleanup_old_image: defCleanup,
           rollback_on_failure: defRollback,
+          // Siempre presentes para no resetear overrides existentes (null = sin override).
+          max_start_attempts: defMaxStartAttempts,
+          health_window_secs: defHealthWindow,
         }),
       });
       if (res.ok) {
@@ -916,9 +1015,27 @@ export default function ConfigPage({
                           Edita directamente si los presets no se ajustan
                         </Typography.Text>
                         <Input
-                          placeholder="0 */6 * * *"
+                          placeholder={defaults?.cron ?? ""}
                           value={ucCron}
-                          onChange={(e) => setUcCron(e.target.value)}
+                          status={cronError ? "error" : undefined}
+                          aria-invalid={!!cronError}
+                          aria-describedby={
+                            cronError ? "update-check-cron-error" : undefined
+                          }
+                          onChange={(e) => {
+                            // Patrón "touched": no introducimos error mientras el
+                            // usuario escribe si el campo estaba limpio; si ya
+                            // había error, lo recalculamos para limpiarlo al
+                            // corregir.
+                            const v = e.target.value;
+                            setUcCron(v);
+                            if (cronError) setCronError(cronErrorFor(v));
+                          }}
+                          onBlur={() => {
+                            const normalized = normalizeCron(ucCron);
+                            if (normalized !== ucCron) setUcCron(normalized);
+                            setCronError(cronErrorFor(normalized));
+                          }}
                         />
                       </Space>
                       <Flex align="center" gap={8}>
@@ -943,18 +1060,117 @@ export default function ConfigPage({
                           style={{ fontSize: 12 }}
                         >
                           Aumentar para imágenes grandes (&gt;500MB) o
-                          conexiones lentas. Default: 1800 (30 min)
+                          conexiones lentas.
+                          {defaults
+                            ? ` Default: ${defaults.pull_timeout_secs} (${Math.round(
+                                defaults.pull_timeout_secs / 60,
+                              )} min)`
+                            : ""}
                         </Typography.Text>
                         <InputNumber
                           value={pullTimeout}
-                          onChange={(v) => setPullTimeout(Number(v) || 1800)}
+                          onChange={(v) =>
+                            setPullTimeout((prev) =>
+                              v == null
+                                ? (defaults?.pull_timeout_secs ?? prev)
+                                : Number(v),
+                            )
+                          }
                           min={60}
                           max={7200}
                           step={60}
                           style={{ width: "100%" }}
                         />
                       </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          🛡️ Guarda de arranque
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Tras aplicar una actualización se verifica que el
+                          contenedor arranque bien; si no, se reintenta y, si
+                          finalmente falla, se hace rollback a la imagen
+                          anterior.
+                        </Typography.Text>
+                        <Flex gap={8} wrap="wrap">
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              Máximo de intentos de arranque
+                            </Typography.Text>
+                            <InputNumber
+                              aria-label="Máximo de intentos de arranque"
+                              value={ucMaxStartAttempts}
+                              onChange={(v) =>
+                                setUcMaxStartAttempts(
+                                  v == null ? 3 : Number(v),
+                                )
+                              }
+                              min={1}
+                              max={10}
+                              style={{ width: 140 }}
+                            />
+                          </Space>
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              Intervalo entre intentos (s)
+                            </Typography.Text>
+                            <InputNumber
+                              aria-label="Intervalo entre intentos (s)"
+                              value={ucStartAttemptInterval}
+                              onChange={(v) =>
+                                setUcStartAttemptInterval(
+                                  v == null ? 10 : Number(v),
+                                )
+                              }
+                              min={1}
+                              max={120}
+                              style={{ width: 140 }}
+                            />
+                          </Space>
+                          <Space direction="vertical" size={2}>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ fontSize: 12 }}
+                            >
+                              Ventana de salud (s)
+                            </Typography.Text>
+                            <InputNumber
+                              aria-label="Ventana de salud (s)"
+                              value={ucHealthWindow}
+                              onChange={(v) =>
+                                setUcHealthWindow(v == null ? 30 : Number(v))
+                              }
+                              min={5}
+                              max={600}
+                              style={{ width: 140 }}
+                            />
+                          </Space>
+                        </Flex>
+                      </Space>
                     </Space>
+                  )}
+                  {cronError && (
+                    <Typography.Text
+                      id="update-check-cron-error"
+                      type="danger"
+                      style={{ fontSize: 12, display: "block" }}
+                      role="alert"
+                    >
+                      {cronError}
+                    </Typography.Text>
                   )}
                   <Flex justify="flex-end" style={{ marginTop: 16 }}>
                     <Button
@@ -1045,6 +1261,58 @@ export default function ConfigPage({
                       >
                         Si el contenedor no arranca, restaura la imagen anterior
                       </Typography.Text>
+                    </Space>
+                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Typography.Text strong>
+                        🛡️ Overrides de la guarda (opcional)
+                      </Typography.Text>
+                      <Typography.Text
+                        type="secondary"
+                        style={{ fontSize: 12 }}
+                      >
+                        Vacío = usar el valor global definido en la pestaña
+                        Actualizaciones.
+                      </Typography.Text>
+                      <Flex gap={8} wrap="wrap">
+                        <Space direction="vertical" size={2}>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ fontSize: 12 }}
+                          >
+                            Máximo de intentos de arranque
+                          </Typography.Text>
+                          <InputNumber
+                            aria-label="Override máximo de intentos de arranque"
+                            value={defMaxStartAttempts}
+                            onChange={(v) =>
+                              setDefMaxStartAttempts(v == null ? null : Number(v))
+                            }
+                            min={1}
+                            max={10}
+                            placeholder="Global"
+                            style={{ width: 140 }}
+                          />
+                        </Space>
+                        <Space direction="vertical" size={2}>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ fontSize: 12 }}
+                          >
+                            Ventana de salud (s)
+                          </Typography.Text>
+                          <InputNumber
+                            aria-label="Override ventana de salud (s)"
+                            value={defHealthWindow}
+                            onChange={(v) =>
+                              setDefHealthWindow(v == null ? null : Number(v))
+                            }
+                            min={5}
+                            max={600}
+                            placeholder="Global"
+                            style={{ width: 140 }}
+                          />
+                        </Space>
+                      </Flex>
                     </Space>
                   </Space>
                   <Flex justify="flex-end" style={{ marginTop: 16 }}>

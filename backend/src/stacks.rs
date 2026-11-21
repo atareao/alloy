@@ -20,7 +20,12 @@ use tokio::sync::Mutex;
 use crate::db::{self, DbPool};
 use crate::models::*;
 use crate::notifications::notify_all;
-use crate::state::AppState;
+use crate::state::{AppState, RolledBackGuard, TerminalFailed};
+use crate::updates::handlers::{
+    apply_with_guard, clear_suppression, guard_outcome_message, record_guard_outcome,
+    GuardOutcomeReport,
+};
+use crate::updates::health_guard::{guard_history_status, may_remove_old_image};
 
 /// Container identity used by the API-driven `down` planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +123,7 @@ pub(crate) fn stack_history_entry(
         timestamp: crate::timezone::now_formatted(),
         status: "stack-update".into(),
         duration_ms,
+        attempts: 0,
     }
 }
 
@@ -165,6 +171,8 @@ async fn update_stack_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(db_pool): State<DbPool>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
+    State(terminal_failed): State<TerminalFailed>,
+    State(rolled_back): State<RolledBackGuard>,
     Path(project): Path<String>,
 ) -> Result<Json<StackUpdateResponse>, AppError> {
     let containers = docker
@@ -179,7 +187,17 @@ async fn update_stack_h(
         return Err(AppError::NotFound(format!("Stack '{}' not found", project)));
     }
     let services = project_services(&containers, &project);
-    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+    let (pull_timeout, guard_max, guard_interval, guard_window, rollback_on_failure, notify) = {
+        let s = settings.lock().await;
+        (
+            s.effective_pull_timeout_secs(),
+            s.update_max_start_attempts.max(1),
+            s.update_start_attempt_interval_secs,
+            s.update_health_window_secs,
+            s.default_rollback_on_failure.unwrap_or(false),
+            s.update_check_notify.unwrap_or(false),
+        )
+    };
     let mut results = Vec::new();
     for service in &services {
         let start = std::time::Instant::now();
@@ -203,24 +221,49 @@ async fn update_stack_h(
                 .unwrap_or_default();
             let image = c.image.clone().unwrap_or_default();
             let cid = c.id.clone().unwrap_or_default();
+            // Intervención manual (D9/D10): limpiar la supresión de cada
+            // contenedor del stack antes de aplicar, igual que
+            // `update_container_h`.
+            clear_suppression(&name, &terminal_failed, &rolled_back).await;
             if cid.is_empty() || image.is_empty() {
                 error = Some(format!("contenedor '{}' sin id/imagen", name));
                 continue;
             }
             let old_digest = c.image_id.clone().unwrap_or_default();
             let c_start = std::time::Instant::now();
-            // Pull + recreate via the Docker API (no `docker compose` CLI).
-            match crate::updates::handlers::pull_and_recreate(
-                &docker,
-                &name,
-                &cid,
-                &image,
-                None,
-                pull_timeout,
-            )
-            .await
-            {
-                Ok(()) => {
+            // Digest remoto del servicio: es el valor que alimenta el anti-churn
+            // de rollback (D10) para que el worker no reintente el mismo digest.
+            let remote_digest =
+                crate::updates::digest::check_remote_digest_with_docker_detailed(&image, &docker)
+                    .await
+                    .map(|d| d.config_digest)
+                    .unwrap_or_default();
+            // Pull + recreate via the Docker API (no `docker compose` CLI), más
+            // la guarda de arranque compartida (D11): la imagen anterior sólo se
+            // descarta tras confirmar la nueva sana.
+            let pulled = crate::containers::pull_image(&docker, &image, None, pull_timeout).await;
+            let applied = if pulled {
+                apply_with_guard(
+                    &docker,
+                    &name,
+                    &cid,
+                    &image,
+                    None,
+                    &old_digest,
+                    guard_max,
+                    guard_interval,
+                    guard_window,
+                    rollback_on_failure,
+                )
+                .await
+            } else {
+                Err(AppError::Docker(format!(
+                    "pull de la imagen '{}' falló",
+                    image
+                )))
+            };
+            match applied {
+                Ok(guard) if may_remove_old_image(guard.outcome) => {
                     // Persist the config digest of the freshly deployed service
                     // so the next update check compares against the image
                     // actually running (parity with the scheduler path).
@@ -236,6 +279,35 @@ async fn update_stack_h(
                     );
                     append_stack_history(&db_pool, &update_history, entry).await;
                 }
+                Ok(guard) => {
+                    // `rolled-back` / `failed-stopped`: historial + notificación
+                    // + efectos en memoria (D9/D10) vía el helper compartido. La
+                    // imagen anterior se conserva.
+                    record_guard_outcome(
+                        guard.outcome,
+                        GuardOutcomeReport {
+                            name: &name,
+                            image: &image,
+                            old_digest: &old_digest,
+                            attempted_digest: &remote_digest,
+                            attempts: guard.attempts,
+                            duration_ms: c_start.elapsed().as_millis() as u64,
+                            message: guard_outcome_message(guard.outcome),
+                        },
+                        &update_history,
+                        &db_pool,
+                        &settings,
+                        &terminal_failed,
+                        &rolled_back,
+                        notify,
+                    )
+                    .await;
+                    error = Some(format!(
+                        "{} '{}'",
+                        guard_history_status(guard.outcome),
+                        name
+                    ));
+                }
                 Err(e) => {
                     tracing::error!(
                         "update_stack_h: servicio '{}' contenedor '{}': {}",
@@ -243,7 +315,7 @@ async fn update_stack_h(
                         name,
                         e
                     );
-                    error = Some(e);
+                    error = Some(e.to_string());
                 }
             }
         }

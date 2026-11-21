@@ -8,7 +8,7 @@ use bollard::{
         NetworkingConfig, RemoveContainerOptions, RenameContainerOptions, RestartContainerOptions,
         StartContainerOptions, StopContainerOptions,
     },
-    image::{PruneImagesOptions, RemoveImageOptions, TagImageOptions},
+    image::PruneImagesOptions,
     Docker,
 };
 use std::collections::HashMap;
@@ -16,12 +16,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, Notify};
 
-use crate::containers::{fetch_containers, find_container_by_name, pull_image};
+use crate::containers::{
+    fetch_containers, find_container_by_name, pull_image, stop_container, verify_stable_running,
+};
 use crate::db;
 use crate::db::DbPool;
 use crate::models::*;
-use crate::notifications::notify_all;
+use crate::notifications::{notify_all, notify_all_level};
+use crate::state::{RolledBackGuard, TerminalFailed};
 use crate::updates::digest::check_remote_digest_with_docker;
+use crate::updates::health_guard::{
+    decide_after_verify, effective_health_window, effective_max_attempts, guard_history_status,
+    guard_notify_level, may_remove_old_image, outcome_after_post_rollback_verify,
+    rollback_reference, GuardAction, GuardOutcome, VerifyResult,
+};
 use bollard::models::ImagePruneResponse;
 
 /// Cache progress for the long-polling state endpoint.
@@ -146,13 +154,17 @@ async fn persist_last_pulled_digest(db_pool: &DbPool, name: &str, digest: Option
     }
 }
 
-/// Recreate a container by stopping, backing up, inspecting, creating with new image,
-/// starting, and cleaning up the backup. On failure, attempts rollback.
+/// Recreate a container by stopping, backing up, inspecting, creating with the
+/// given image reference, starting, and cleaning up the backup. On start
+/// failure, attempts an inline rollback (restore the backup container).
+///
+/// This is the **single** recreation mechanism: it serves both the forward
+/// update (`repo:tag`) and the guard rollback (exact `sha256:...` digest).
 ///
 /// `_digest` is accepted for call-site symmetry but is no longer used to build
-/// `Config.Image`: the container is always recreated by the clean `repo:tag`
-/// reference (the pull-by-digest + retag step already points `repo:tag` at the
-/// freshly downloaded content).
+/// `Config.Image`: the container is always recreated by the clean reference
+/// passed in `image_full` (the pull-by-digest + retag step already points
+/// `repo:tag` at the freshly downloaded content).
 pub(crate) async fn recreate_container(
     docker: &Docker,
     name: &str,
@@ -257,25 +269,358 @@ pub(crate) async fn recreate_container(
     Ok(())
 }
 
-/// Shared API-only update path used by the stack update handler and the
-/// `PullRestartStack` policy branch: pull the image (by manifest digest when
-/// available) and recreate the container via the Docker API. No CLI.
+/// Resultado de la guarda de arranque aplicada a una política.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GuardRun {
+    /// Desenlace final: `Updated`, `RolledBack` o `FailedStopped`.
+    pub outcome: GuardOutcome,
+    /// Nº real de intentos de verificación de arranque realizados.
+    pub attempts: u32,
+}
+
+/// Resuelve los parámetros efectivos de la guarda para una política.
+/// El override de la política gana sobre el valor global; el máximo se
+/// normaliza a `>= 1` para no provocar bucles infinitos.
+pub(crate) fn guard_params(policy: &UpdatePolicy, settings: &Settings) -> (u32, u64, u64) {
+    (
+        effective_max_attempts(
+            policy.max_start_attempts,
+            settings.update_max_start_attempts,
+        )
+        .max(1),
+        settings.update_start_attempt_interval_secs,
+        effective_health_window(
+            policy.health_window_secs,
+            settings.update_health_window_secs,
+        ),
+    )
+}
+
+/// Recrea el contenedor con el **digest exacto** de la imagen anterior.
 ///
-/// Returns the failure cause so callers can surface it.
-pub(crate) async fn pull_and_recreate(
+/// Delega en [`recreate_container`] (mecanismo único de recreación) usando el
+/// digest persistido como referencia de imagen: nunca un tag frágil
+/// `rollback-<ts>`.
+pub(crate) async fn rollback_to_digest(
+    docker: &Docker,
+    name: &str,
+    old_digest: &str,
+) -> Result<(), String> {
+    let reference = rollback_reference(old_digest);
+    if reference.is_empty() {
+        return Err("no hay digest previo para el rollback".to_string());
+    }
+    let cid = docker
+        .inspect_container(name, None::<InspectContainerOptions>)
+        .await
+        .ok()
+        .and_then(|r| r.id)
+        .filter(|c| !c.is_empty())
+        .ok_or_else(|| format!("no se pudo inspeccionar '{}' para el rollback", name))?;
+    recreate_container(docker, name, &cid, &reference, Some(&reference)).await
+}
+
+/// Ejecuta la guarda de arranque sano sobre un contenedor ya recreado con la
+/// imagen nueva.
+///
+/// Flujo (D3/D4/D1/D12):
+/// 1. Verifica `running` estable durante `window_secs`.
+/// 2. Si no es sano, reintenta hasta `max_attempts` (esperando `interval_secs`).
+/// 3. Si se agotan, hace rollback por digest y verifica la imagen anterior:
+///    sana ⇒ [`GuardOutcome::RolledBack`]; no sana ⇒ para el contenedor ⇒
+///    [`GuardOutcome::FailedStopped`].
+///
+/// Devuelve también el nº real de intentos para el historial.
+///
+/// # Errores
+///
+/// Un fallo de **inspección** de Docker (`verify_stable_running` ⇒ `Err`) es
+/// inconcluso, no un «no arrancó sano» (design D12): se registra con `ERROR`,
+/// se **omite el teardown** (ni rollback ni parada) y se propaga el error para
+/// que el llamador no descarte la imagen anterior.
+pub(crate) async fn run_start_guard(
+    docker: &Docker,
+    name: &str,
+    old_digest: &str,
+    max_attempts: u32,
+    interval_secs: u64,
+    window_secs: u64,
+) -> Result<GuardRun, AppError> {
+    let max_attempts = max_attempts.max(1);
+    let mut attempts = 0u32;
+
+    loop {
+        attempts += 1;
+        let verify = verify_stable_running(docker, name, window_secs).await;
+        match decide_after_verify(VerifyResult::from_result(&verify), attempts, max_attempts) {
+            GuardAction::Accept => {
+                return Ok(GuardRun {
+                    outcome: GuardOutcome::Updated,
+                    attempts,
+                });
+            }
+            GuardAction::RetryStart => {
+                tracing::warn!(
+                    "update-guard [{}]: arranque no sano (intento {}/{}), reintentando",
+                    name,
+                    attempts,
+                    max_attempts
+                );
+                if interval_secs > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                }
+                if let Err(e) = docker
+                    .restart_container(name, None::<RestartContainerOptions>)
+                    .await
+                {
+                    tracing::warn!("update-guard [{}]: restart falló: {}", name, e);
+                }
+            }
+            GuardAction::Rollback => break,
+            GuardAction::SkipTeardown => {
+                // D12: error de inspección ≠ contenedor no sano. No se hace
+                // rollback ni se para el contenedor, y la imagen anterior queda
+                // intacta (el llamador no la descarta por este camino).
+                let cause = verify
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "causa desconocida".to_string());
+                tracing::error!(
+                    "update-guard [{}]: fallo de inspección en el intento {}/{}: {} — se omite el teardown (ni rollback ni parada) y se conserva la imagen anterior",
+                    name,
+                    attempts,
+                    max_attempts,
+                    cause
+                );
+                return Err(AppError::Docker(format!(
+                    "verify_stable_running '{}': inspección fallida en el intento {}: {}",
+                    name, attempts, cause
+                )));
+            }
+        }
+    }
+
+    tracing::warn!(
+        "update-guard [{}]: {} intentos agotados, rollback a {}",
+        name,
+        attempts,
+        crate::updates::digest::short_digest(old_digest)
+    );
+
+    let rolled_back = rollback_to_digest(docker, name, old_digest).await;
+    if let Err(e) = &rolled_back {
+        tracing::error!("update-guard [{}]: rollback falló: {}", name, e);
+    }
+    // La verificación de la imagen anterior sólo tiene sentido si el rollback
+    // se aplicó; si no, el desenlace es «no sana» (rollback fallido).
+    let post_verify = if rolled_back.is_ok() {
+        verify_stable_running(docker, name, window_secs).await
+    } else {
+        Ok(false)
+    };
+    let post_result = VerifyResult::from_result(&post_verify);
+    if post_result == VerifyResult::InspectionError {
+        // D12: inconcluso ⇒ no se para el contenedor.
+        if let Err(e) = &post_verify {
+            tracing::error!(
+                "update-guard [{}]: verificación post-rollback inconclusa (error de inspección): {} — no se detiene el contenedor",
+                name,
+                e
+            );
+        }
+    }
+
+    let outcome = outcome_after_post_rollback_verify(post_result);
+    if outcome == GuardOutcome::FailedStopped {
+        tracing::error!(
+            "update-guard [{}]: la imagen anterior tampoco arranca sana; contenedor detenido",
+            name
+        );
+        if let Err(e) = stop_container(docker, name).await {
+            tracing::error!("update-guard [{}]: stop falló: {}", name, e);
+        }
+    } else {
+        tracing::warn!(
+            "update-guard [{}]: rollback sano (imagen anterior OK)",
+            name
+        );
+    }
+
+    Ok(GuardRun { outcome, attempts })
+}
+
+/// Recrea el contenedor con la imagen nueva y aplica la guarda de arranque.
+///
+/// Único punto de entrada compartido por el worker de updates y los flujos
+/// manuales (`update_container_h`, `update_all_h`, `update_stack_h` y
+/// `apply_single_policy`) — design D11:
+///
+/// 1. `recreate_container` con la referencia limpia `repo:tag`.
+/// 2. Con `rollback_on_failure` activo, `run_start_guard` (verificación de la
+///    ventana estable → reintentos → rollback por digest exacto → estado
+///    terminal).
+/// 3. Con `rollback_on_failure` inactivo se conserva el comportamiento previo
+///    (sin verificación ampliada ni rollback), por decisión explícita de diseño
+///    (spec `updates/update-check`).
+///
+/// El llamador MUST NOT descartar la imagen anterior salvo que el desenlace sea
+/// [`GuardOutcome::Updated`] (ver [`may_remove_old_image`]).
+///
+/// # Errores
+///
+/// `Err` si la recreación falla o si la verificación queda inconclusa por un
+/// fallo de inspección (D12: sin teardown).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn apply_with_guard(
     docker: &Docker,
     name: &str,
     cid: &str,
     image_full: &str,
     manifest_digest: Option<&str>,
-    timeout_secs: u64,
-) -> Result<(), String> {
-    if !pull_image(docker, image_full, manifest_digest, timeout_secs).await {
-        return Err(format!("pull de la imagen '{}' falló", image_full));
-    }
+    old_digest: &str,
+    max_attempts: u32,
+    interval_secs: u64,
+    window_secs: u64,
+    rollback_on_failure: bool,
+) -> Result<GuardRun, AppError> {
     recreate_container(docker, name, cid, image_full, manifest_digest)
         .await
-        .map_err(|e| format!("recreate de '{}' falló: {}", name, e))
+        .map_err(AppError::Docker)?;
+
+    if !rollback_on_failure {
+        return Ok(GuardRun {
+            outcome: GuardOutcome::Updated,
+            attempts: 0,
+        });
+    }
+
+    run_start_guard(
+        docker,
+        name,
+        old_digest,
+        max_attempts,
+        interval_secs,
+        window_secs,
+    )
+    .await
+}
+
+/// Añade una entrada al historial en memoria y la persiste en DB.
+async fn push_history_entry(
+    update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
+    db_pool: &DbPool,
+    entry: UpdateHistoryEntry,
+) {
+    {
+        let mut hist = update_history.lock().await;
+        hist.push(entry.clone());
+    }
+    if let Ok(conn) = db_pool.get().await {
+        if let Ok(guard) = conn.lock() {
+            let _ = db::append_update_history(&guard, &entry);
+        }
+    }
+}
+
+/// Datos de un desenlace no exitoso de la guarda para el historial y la
+/// notificación.
+pub(crate) struct GuardOutcomeReport<'a> {
+    pub name: &'a str,
+    pub image: &'a str,
+    pub old_digest: &'a str,
+    /// Digest remoto (config) al que se intentó actualizar. Es el digest que
+    /// alimenta el mapa anti-churn `rolled_back` (design D10).
+    pub attempted_digest: &'a str,
+    pub attempts: u32,
+    pub duration_ms: u64,
+    /// Mensaje de la notificación; el nivel lo fija [`guard_notify_level`].
+    pub message: &'a str,
+}
+
+/// Registra en historial, notifica y aplica los efectos en memoria de un
+/// desenlace **no exitoso** de la guarda (`rolled-back` / `failed-stopped`).
+///
+/// Unifica el bloque decisión→historial→notificación antes duplicado entre el
+/// worker y los handlers manuales (design D11, hallazgo 8 del reviewer):
+///
+/// - `rolled-back` ⇒ alimenta el mapa anti-churn `rolled_back` con
+///   `(name, attempted_digest)` para que el ciclo no reintente el mismo digest
+///   (design D10).
+/// - `failed-stopped` ⇒ marca el contenedor como terminal para que no se
+///   reintente hasta intervención explícita (design D9).
+///
+/// NO elimina la imagen anterior: sólo [`may_remove_old_image`] autoriza esa
+/// limpieza.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_guard_outcome(
+    outcome: GuardOutcome,
+    report: GuardOutcomeReport<'_>,
+    update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
+    db_pool: &DbPool,
+    settings: &Arc<Mutex<Settings>>,
+    terminal_failed: &TerminalFailed,
+    rolled_back: &RolledBackGuard,
+    notify: bool,
+) {
+    match outcome {
+        GuardOutcome::RolledBack => {
+            let mut map = rolled_back.0.lock().await;
+            map.insert(report.name.to_string(), report.attempted_digest.to_string());
+        }
+        GuardOutcome::FailedStopped => {
+            let mut set = terminal_failed.0.lock().await;
+            set.insert(report.name.to_string());
+        }
+        // `Updated` no es un desenlace de fallo: no hay nada que registrar aquí.
+        GuardOutcome::Updated => return,
+    }
+
+    push_history_entry(
+        update_history,
+        db_pool,
+        UpdateHistoryEntry {
+            container: report.name.to_string(),
+            image: report.image.to_string(),
+            old_digest: report.old_digest.to_string(),
+            new_digest: report.attempted_digest.to_string(),
+            timestamp: crate::timezone::now_formatted(),
+            status: guard_history_status(outcome).to_string(),
+            duration_ms: report.duration_ms,
+            attempts: report.attempts,
+        },
+    )
+    .await;
+
+    if notify {
+        notify_all_level(
+            settings,
+            report.name,
+            report.message,
+            guard_notify_level(outcome),
+        )
+        .await;
+    }
+}
+
+/// Limpia la supresión (D9/D10) de un contenedor ante una intervención manual
+/// del operador: sale del estado terminal `failed-stopped` (`terminal_failed`) y
+/// reinicia el anti-churn de rollback (`rolled_back`), de modo que el contenedor
+/// vuelve a ser candidato a update.
+///
+/// Es la operación inversa de [`record_guard_outcome`] y el punto único de
+/// limpieza manual compartido por [`update_container_h`], [`update_all_h`] y
+/// `stacks::update_stack_h`, para que los tres flujos sean idénticos (D9/D10).
+///
+/// NOTA: los contenedores `failed-stopped` están **parados** y por eso NO
+/// aparecen en el listado de `update_all_h` (`docker_list_running`, `all: false`);
+/// su reintento se realiza vía [`update_container_h`] (`POST /api/update/{name}`).
+pub(crate) async fn clear_suppression(
+    name: &str,
+    terminal_failed: &TerminalFailed,
+    rolled_back: &RolledBackGuard,
+) {
+    terminal_failed.0.lock().await.remove(name);
+    rolled_back.0.lock().await.remove(name);
 }
 
 struct PendingUpdate {
@@ -294,8 +639,15 @@ pub async fn update_container_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
+    State(terminal_failed): State<TerminalFailed>,
+    State(rolled_back): State<RolledBackGuard>,
     Path(name): Path<String>,
 ) -> Result<Json<UpdateProgress>, AppError> {
+    // Intervención explícita del operador (D9/D10): reanuda la gestión
+    // automática del contenedor saliendo del estado terminal `failed-stopped` y
+    // limpiando la supresión anti-churn tras un rollback.
+    clear_suppression(&name, &terminal_failed, &rolled_back).await;
+
     let container = find_container_by_name(&docker, &name).await?;
     let image = container.image.as_deref().unwrap_or("");
     let cid = container.id.as_deref().unwrap_or("");
@@ -346,7 +698,7 @@ pub async fn update_container_h(
         }));
     }
 
-    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+    let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
     let start_time = std::time::Instant::now();
     tracing::info!(
         "update_container_h: descargando '{}' (timeout: {}s)",
@@ -362,6 +714,7 @@ pub async fn update_container_h(
             timestamp: crate::timezone::now_formatted(),
             status: "error".into(),
             duration_ms: start_time.elapsed().as_millis() as u64,
+            attempts: 0,
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
@@ -376,10 +729,45 @@ pub async fn update_container_h(
     }
     // Record the digest of the image now present in the local cache.
     persist_last_pulled_digest(&db_pool, &name, Some(&remote_digest)).await;
-    match recreate_container(&docker, &name, cid, image, Some(&manifest_digest)).await {
-        Ok(_) => {
-            tracing::info!("update_container_h: '{}' reiniciado correctamente", name);
+
+    // Parámetros de la guarda para el flujo manual: settings globales (este
+    // handler no resuelve política por contenedor).
+    let (guard_max, guard_interval, guard_window, rollback_on_failure, notify) = {
+        let s = settings.lock().await;
+        (
+            s.update_max_start_attempts.max(1),
+            s.update_start_attempt_interval_secs,
+            s.update_health_window_secs,
+            s.default_rollback_on_failure.unwrap_or(false),
+            s.update_check_notify.unwrap_or(false),
+        )
+    };
+
+    // La recreación pasa por la guarda compartida (D11): la imagen anterior
+    // sólo se descarta tras confirmar la nueva sana.
+    match apply_with_guard(
+        &docker,
+        &name,
+        cid,
+        image,
+        Some(&manifest_digest),
+        &image_id,
+        guard_max,
+        guard_interval,
+        guard_window,
+        rollback_on_failure,
+    )
+    .await
+    {
+        Ok(guard) if may_remove_old_image(guard.outcome) => {
+            tracing::info!(
+                "update_container_h: '{}' reiniciado correctamente (intentos: {})",
+                name,
+                guard.attempts
+            );
             notify_all(&settings, &name, "✅ actualizado y reiniciado").await;
+            // La nueva imagen está confirmada sana: ahora sí se puede limpiar
+            // la anterior.
             crate::containers::remove_old_image(&docker, &image_id).await;
             {
                 let conn = db_pool.get().await.unwrap();
@@ -387,19 +775,21 @@ pub async fn update_container_h(
                 let _ = db::update_container_has_update(&conn_lock, &name, false);
                 let _ = db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest);
             }
-            let entry = UpdateHistoryEntry {
-                container: name.clone(),
-                image: image.to_string(),
-                old_digest: image_id.clone(),
-                new_digest: remote_digest.clone(),
-                timestamp: crate::timezone::now_formatted(),
-                status: "success".into(),
-                duration_ms: start_time.elapsed().as_millis() as u64,
-            };
-            let mut hist = update_history.lock().await;
-            hist.push(entry);
-            let conn = db_pool.get().await.unwrap();
-            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+            push_history_entry(
+                &update_history,
+                &db_pool,
+                UpdateHistoryEntry {
+                    container: name.clone(),
+                    image: image.to_string(),
+                    old_digest: image_id.clone(),
+                    new_digest: remote_digest.clone(),
+                    timestamp: crate::timezone::now_formatted(),
+                    status: guard_history_status(guard.outcome).to_string(),
+                    duration_ms: start_time.elapsed().as_millis() as u64,
+                    attempts: guard.attempts,
+                },
+            )
+            .await;
             Ok(Json(UpdateProgress {
                 container: name,
                 status: "ok".into(),
@@ -412,23 +802,73 @@ pub async fn update_container_h(
                 ..Default::default()
             }))
         }
+        Ok(guard) => {
+            // `rolled-back` / `failed-stopped`: historial + notificación +
+            // efectos en memoria (anti-churn D10 / terminal D9) en el helper
+            // compartido. La imagen anterior se conserva.
+            record_guard_outcome(
+                guard.outcome,
+                GuardOutcomeReport {
+                    name: &name,
+                    image,
+                    old_digest: &image_id,
+                    attempted_digest: &remote_digest,
+                    attempts: guard.attempts,
+                    duration_ms: start_time.elapsed().as_millis() as u64,
+                    message: guard_outcome_message(guard.outcome),
+                },
+                &update_history,
+                &db_pool,
+                &settings,
+                &terminal_failed,
+                &rolled_back,
+                notify,
+            )
+            .await;
+            Ok(Json(UpdateProgress {
+                container: name,
+                status: guard_history_status(guard.outcome).into(),
+                done: true,
+                error: None,
+                total: 0,
+                checked: 0,
+                updated: 0,
+                errors: 0,
+                ..Default::default()
+            }))
+        }
         Err(e) => {
             tracing::error!("update_container_h: error al reiniciar '{}': {}", name, e);
-            let entry = UpdateHistoryEntry {
-                container: name.clone(),
-                image: image.to_string(),
-                old_digest: image_id.clone(),
-                new_digest: remote_digest.clone(),
-                timestamp: crate::timezone::now_formatted(),
-                status: "error".into(),
-                duration_ms: start_time.elapsed().as_millis() as u64,
-            };
-            let mut hist = update_history.lock().await;
-            hist.push(entry);
-            let conn = db_pool.get().await.unwrap();
-            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+            push_history_entry(
+                &update_history,
+                &db_pool,
+                UpdateHistoryEntry {
+                    container: name.clone(),
+                    image: image.to_string(),
+                    old_digest: image_id.clone(),
+                    new_digest: remote_digest.clone(),
+                    timestamp: crate::timezone::now_formatted(),
+                    status: "error".into(),
+                    duration_ms: start_time.elapsed().as_millis() as u64,
+                    attempts: 0,
+                },
+            )
+            .await;
             Err(AppError::Docker(format!("restart: {}", e)))
         }
+    }
+}
+
+/// Mensaje de notificación asociado a un desenlace no exitoso de la guarda.
+pub(crate) fn guard_outcome_message(outcome: GuardOutcome) -> &'static str {
+    match outcome {
+        GuardOutcome::RolledBack => {
+            "⚠️ actualización revertida (rollback): imagen anterior restaurada"
+        }
+        GuardOutcome::FailedStopped => {
+            "⛔ fallo terminal: la imagen anterior tampoco arranca; contenedor detenido"
+        }
+        GuardOutcome::Updated => "✅ actualizado",
     }
 }
 
@@ -437,9 +877,27 @@ pub async fn update_all_h(
     State(settings): State<Arc<Mutex<Settings>>>,
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
+    State(terminal_failed): State<TerminalFailed>,
+    State(rolled_back): State<RolledBackGuard>,
 ) -> Json<Vec<UpdateProgress>> {
+    let (guard_max, guard_interval, guard_window, rollback_on_failure, notify) = {
+        let s = settings.lock().await;
+        (
+            s.update_max_start_attempts.max(1),
+            s.update_start_attempt_interval_secs,
+            s.update_health_window_secs,
+            s.default_rollback_on_failure.unwrap_or(false),
+            s.update_check_notify.unwrap_or(false),
+        )
+    };
     let mut results = vec![];
     for (name, image, cid, image_id) in crate::workers::docker_list_running(&docker).await {
+        // Intervención manual (D9/D10): limpiar la supresión de cada contenedor
+        // iterado antes de aplicar, igual que `update_container_h`. Los
+        // contenedores `failed-stopped` están **parados** y por eso no entran en
+        // este listado (`docker_list_running` usa `all: false`): su reintento se
+        // hace vía `update_container_h` (`POST /api/update/{name}`).
+        clear_suppression(&name, &terminal_failed, &rolled_back).await;
         // Verificar digest remoto antes de hacer pull
         let (needs_pull, remote_digest, manifest_digest) =
             match crate::updates::digest::check_remote_digest_with_docker(&image, &docker).await {
@@ -488,7 +946,7 @@ pub async fn update_all_h(
         }
 
         let old_digest = image_id.as_deref().unwrap_or("").to_string();
-        let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+        let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
         let start_time = std::time::Instant::now();
         tracing::info!(
             "update_all_h: descargando '{}' (imagen: {}, timeout: {}s)",
@@ -517,6 +975,7 @@ pub async fn update_all_h(
                 timestamp: crate::timezone::now_formatted(),
                 status: "error".into(),
                 duration_ms: start_time.elapsed().as_millis() as u64,
+                attempts: 0,
             };
             let mut hist = update_history.lock().await;
             hist.push(entry);
@@ -527,10 +986,31 @@ pub async fn update_all_h(
         tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
         // Record the digest of the image now present in the local cache.
         persist_last_pulled_digest(&db_pool, &name, Some(&remote_digest)).await;
-        match recreate_container(&docker, &name, &cid, &image, Some(&manifest_digest)).await {
-            Ok(_) => {
-                tracing::info!("update_all_h: contenedor '{}' recreado correctamente", name);
+        // La recreación pasa por la guarda compartida (D11): la imagen anterior
+        // sólo se descarta tras confirmar la nueva sana.
+        match apply_with_guard(
+            &docker,
+            &name,
+            &cid,
+            &image,
+            Some(&manifest_digest),
+            &old_digest,
+            guard_max,
+            guard_interval,
+            guard_window,
+            rollback_on_failure,
+        )
+        .await
+        {
+            Ok(guard) if may_remove_old_image(guard.outcome) => {
+                tracing::info!(
+                    "update_all_h: contenedor '{}' recreado correctamente (intentos: {})",
+                    name,
+                    guard.attempts
+                );
                 notify_all(&settings, &name, "✅ actualizado").await;
+                // Confirmada la nueva imagen sana: ahora sí se puede limpiar la
+                // anterior.
                 crate::containers::remove_old_image(&docker, &old_digest).await;
                 if let Ok(conn) = db_pool.get().await {
                     match conn.lock() {
@@ -562,35 +1042,74 @@ pub async fn update_all_h(
                     errors: 0,
                     ..Default::default()
                 });
-                let entry = UpdateHistoryEntry {
-                    container: name.clone(),
-                    image: image.clone(),
-                    old_digest,
-                    new_digest: remote_digest.clone(),
-                    timestamp: crate::timezone::now_formatted(),
-                    status: "success".into(),
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                };
-                let mut hist = update_history.lock().await;
-                hist.push(entry);
-                let conn = db_pool.get().await.unwrap();
-                let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+                push_history_entry(
+                    &update_history,
+                    &db_pool,
+                    UpdateHistoryEntry {
+                        container: name.clone(),
+                        image: image.clone(),
+                        old_digest,
+                        new_digest: remote_digest.clone(),
+                        timestamp: crate::timezone::now_formatted(),
+                        status: guard_history_status(guard.outcome).to_string(),
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                        attempts: guard.attempts,
+                    },
+                )
+                .await;
+            }
+            Ok(guard) => {
+                // `rolled-back` / `failed-stopped`: historial + notificación +
+                // efectos en memoria (D9/D10) vía el helper compartido. La
+                // imagen anterior se conserva.
+                record_guard_outcome(
+                    guard.outcome,
+                    GuardOutcomeReport {
+                        name: &name,
+                        image: &image,
+                        old_digest: &old_digest,
+                        attempted_digest: &remote_digest,
+                        attempts: guard.attempts,
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                        message: guard_outcome_message(guard.outcome),
+                    },
+                    &update_history,
+                    &db_pool,
+                    &settings,
+                    &terminal_failed,
+                    &rolled_back,
+                    notify,
+                )
+                .await;
+                results.push(UpdateProgress {
+                    container: name,
+                    status: guard_history_status(guard.outcome).into(),
+                    done: true,
+                    error: None,
+                    total: 0,
+                    checked: 0,
+                    updated: 0,
+                    errors: 0,
+                    ..Default::default()
+                });
             }
             Err(e) => {
                 tracing::error!("update_all_h: error al reiniciar '{}': {}", name, e);
-                let entry = UpdateHistoryEntry {
-                    container: name.clone(),
-                    image: image.clone(),
-                    old_digest: old_digest.clone(),
-                    new_digest: remote_digest.clone(),
-                    timestamp: crate::timezone::now_formatted(),
-                    status: "error".into(),
-                    duration_ms: start_time.elapsed().as_millis() as u64,
-                };
-                let mut hist = update_history.lock().await;
-                hist.push(entry);
-                let conn = db_pool.get().await.unwrap();
-                let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+                push_history_entry(
+                    &update_history,
+                    &db_pool,
+                    UpdateHistoryEntry {
+                        container: name.clone(),
+                        image: image.clone(),
+                        old_digest: old_digest.clone(),
+                        new_digest: remote_digest.clone(),
+                        timestamp: crate::timezone::now_formatted(),
+                        status: "error".into(),
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                        attempts: 0,
+                    },
+                )
+                .await;
 
                 results.push(UpdateProgress {
                     container: name,
@@ -689,6 +1208,8 @@ async fn check_and_apply_all(
     settings: &Arc<Mutex<Settings>>,
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
+    terminal_failed: &TerminalFailed,
+    rolled_back: &RolledBackGuard,
 ) -> Vec<ContainerInfo> {
     let mut containers = fetch_containers(docker, &None, db_pool).await;
     let raw_containers = docker
@@ -705,7 +1226,7 @@ async fn check_and_apply_all(
 
     let check_interval = {
         let s = settings.lock().await;
-        s.check_interval_ms.unwrap_or(2000)
+        s.effective_check_interval_ms()
     };
 
     // Pre-build a name→(&ContainerSummary, image_id) map from raw containers
@@ -891,6 +1412,8 @@ async fn check_and_apply_all(
                             cleanup_old_image: default_cleanup,
                             rollback_on_failure: default_rollback,
                             notify_events: false,
+                            max_start_attempts: None,
+                            health_window_secs: None,
                         });
                         let mut this_ok = false;
                         let outcome = apply_single_policy(
@@ -902,6 +1425,8 @@ async fn check_and_apply_all(
                             update_history,
                             db_pool,
                             tx,
+                            terminal_failed,
+                            rolled_back,
                             &pending,
                             &policy,
                             &mut this_ok,
@@ -1001,10 +1526,7 @@ async fn check_and_apply_all(
     {
         let conn = db_pool.get().await.unwrap();
         let mut s = settings.lock().await;
-        let cron = s
-            .update_check_cron
-            .clone()
-            .unwrap_or_else(|| "0 0 * * *".into());
+        let cron = s.effective_update_check_cron();
         let last_check = crate::timezone::now_formatted();
         let next_check = crate::timezone::next_cron_time(&cron).unwrap_or_default();
         for c in &containers {
@@ -1069,6 +1591,8 @@ pub async fn check_all_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(update_policies): State<Arc<Mutex<Vec<UpdatePolicy>>>>,
     State(state_notify): State<Arc<Notify>>,
+    State(terminal_failed): State<TerminalFailed>,
+    State(rolled_back): State<RolledBackGuard>,
 ) -> Json<Vec<ContainerInfo>> {
     // Reset cancel flag at start
     cancel_check.store(false, Ordering::SeqCst);
@@ -1083,6 +1607,8 @@ pub async fn check_all_h(
         &settings,
         &update_history,
         &update_policies,
+        &terminal_failed,
+        &rolled_back,
     )
     .await;
     Json(containers)
@@ -1104,10 +1630,15 @@ pub(crate) enum ApplyOutcome {
     Skipped,
     /// Se intentó aplicar y falló.
     Failed,
+    /// La guarda revirtió a la imagen anterior (`rolled-back`): es un fallo
+    /// aplicado (la actualización no se completó), nunca un skip.
+    RolledBack,
+    /// La guarda acabó en fallo terminal (`failed-stopped`): fallo aplicado.
+    FailedStopped,
 }
 
 /// Apply a single container's update policy inline.
-/// Contains the same logic as the per-container loop body in `apply_policies_background`.
+/// Contains the same logic as the per-container loop body in `check_and_apply_all`.
 #[allow(clippy::too_many_arguments)]
 async fn apply_single_policy(
     docker: &Docker,
@@ -1118,6 +1649,8 @@ async fn apply_single_policy(
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     db_pool: &DbPool,
     _tx: &broadcast::Sender<StateEvent>,
+    terminal_failed: &TerminalFailed,
+    rolled_back: &RolledBackGuard,
     p: &PendingUpdate,
     policy: &UpdatePolicy,
     any_success: &mut bool,
@@ -1167,10 +1700,14 @@ async fn apply_single_policy(
 
     let start_time = std::time::Instant::now();
     let mut success = false;
-    let pull_timeout = {
+    let (pull_timeout, guard_max, guard_interval, guard_window) = {
         let s = settings.lock().await;
-        s.pull_timeout_secs.unwrap_or(600)
+        let (max, interval, window) = guard_params(policy, &s);
+        (s.effective_pull_timeout_secs(), max, interval, window)
     };
+    // Desenlace de la guarda, solo cuando `rollback_on_failure` la ejecuta.
+    let mut guard_outcome: Option<GuardOutcome> = None;
+    let mut guard_attempts: u32 = 0;
 
     match policy.action {
         UpdateAction::Pull => {
@@ -1237,6 +1774,7 @@ async fn apply_single_policy(
                     timestamp: crate::timezone::now_formatted(),
                     status: "apply-policy-error".into(),
                     duration_ms: start_time.elapsed().as_millis() as u64,
+                    attempts: 0,
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
@@ -1250,11 +1788,6 @@ async fn apply_single_policy(
                 p.name,
                 p.image_full
             );
-            let backup = if policy.rollback_on_failure {
-                tag_backup_image(docker, &p.image_full).await
-            } else {
-                None
-            };
             if pull_image(
                 docker,
                 &p.image_full,
@@ -1279,60 +1812,43 @@ async fn apply_single_policy(
                     p.name.clone(),
                 )
                 .await;
-                match recreate_container(
+                match apply_with_guard(
                     docker,
                     &p.name,
                     &p.cid,
                     &p.image_full,
                     p.manifest_digest.as_deref(),
+                    &p.image_id,
+                    guard_max,
+                    guard_interval,
+                    guard_window,
+                    policy.rollback_on_failure,
                 )
                 .await
                 {
-                    Ok(_) => {
+                    Ok(guard) => {
                         tracing::info!(
-                            "apply_single_policy: contenedor '{}' recreado correctamente",
-                            p.name
+                            "apply_single_policy: contenedor '{}' recreado (intentos: {})",
+                            p.name,
+                            guard.attempts
                         );
-                        if policy.rollback_on_failure
-                            && !verify_container_healthy(docker, &p.name).await
-                        {
-                            tracing::warn!("apply_single_policy: rollback '{}'", p.name);
-                            if let Some((backup_full, base, orig_tag)) = backup {
-                                rollback_container(
-                                    docker,
-                                    &p.cid,
-                                    &base,
-                                    &orig_tag,
-                                    &backup_full,
-                                    &p.image_full,
-                                )
-                                .await;
-                            }
-                            update_progress(
-                                progress_cache,
-                                state_notify,
-                                progress_tx,
-                                total,
-                                checked,
-                                updated,
-                                errors,
-                                p.name.clone(),
-                            )
-                            .await;
-                        } else {
-                            update_progress(
-                                progress_cache,
-                                state_notify,
-                                progress_tx,
-                                total,
-                                checked,
-                                updated,
-                                errors,
-                                p.name.clone(),
-                            )
-                            .await;
+                        guard_attempts = guard.attempts;
+                        if may_remove_old_image(guard.outcome) {
                             success = true;
+                        } else {
+                            guard_outcome = Some(guard.outcome);
                         }
+                        update_progress(
+                            progress_cache,
+                            state_notify,
+                            progress_tx,
+                            total,
+                            checked,
+                            updated,
+                            errors,
+                            p.name.clone(),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         tracing::error!(
@@ -1351,20 +1867,21 @@ async fn apply_single_policy(
                             p.name.clone(),
                         )
                         .await;
-                        let entry = UpdateHistoryEntry {
-                            container: p.name.clone(),
-                            image: p.image_full.clone(),
-                            old_digest: p.image_id.clone(),
-                            new_digest: String::new(),
-                            timestamp: crate::timezone::now_formatted(),
-                            status: "apply-policy-restart-error".into(),
-                            duration_ms: start_time.elapsed().as_millis() as u64,
-                        };
-                        let mut hist = update_history.lock().await;
-                        hist.push(entry);
-                        let conn = db_pool.get().await.unwrap();
-                        let _ =
-                            db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+                        push_history_entry(
+                            update_history,
+                            db_pool,
+                            UpdateHistoryEntry {
+                                container: p.name.clone(),
+                                image: p.image_full.clone(),
+                                old_digest: p.image_id.clone(),
+                                new_digest: String::new(),
+                                timestamp: crate::timezone::now_formatted(),
+                                status: "apply-policy-restart-error".into(),
+                                duration_ms: start_time.elapsed().as_millis() as u64,
+                                attempts: 0,
+                            },
+                        )
+                        .await;
                     }
                 }
             } else {
@@ -1377,6 +1894,7 @@ async fn apply_single_policy(
                     timestamp: crate::timezone::now_formatted(),
                     status: "apply-policy-error".into(),
                     duration_ms: start_time.elapsed().as_millis() as u64,
+                    attempts: 0,
                 };
                 let mut hist = update_history.lock().await;
                 hist.push(entry);
@@ -1398,21 +1916,50 @@ async fn apply_single_policy(
                     p.name
                 ),
             }
-            match pull_and_recreate(
+            // La misma guarda que en `PullRestart` (reintentos → rollback por
+            // digest) se aplica a los servicios de stack, a través del helper
+            // compartido (D11): pull + recrear + guarda.
+            let applied = if pull_image(
                 docker,
-                &p.name,
-                &p.cid,
                 &p.image_full,
                 p.manifest_digest.as_deref(),
                 pull_timeout,
             )
             .await
             {
-                Ok(()) => {
+                apply_with_guard(
+                    docker,
+                    &p.name,
+                    &p.cid,
+                    &p.image_full,
+                    p.manifest_digest.as_deref(),
+                    &p.image_id,
+                    guard_max,
+                    guard_interval,
+                    guard_window,
+                    policy.rollback_on_failure,
+                )
+                .await
+            } else {
+                Err(AppError::Docker(format!(
+                    "pull de la imagen '{}' falló",
+                    p.image_full
+                )))
+            };
+
+            match applied {
+                Ok(guard) => {
                     tracing::info!(
-                        "apply_single_policy: PullRestartStack '{}' recreado vía API",
-                        p.name
+                        "apply_single_policy: PullRestartStack '{}' recreado vía API (intentos: {})",
+                        p.name,
+                        guard.attempts
                     );
+                    guard_attempts = guard.attempts;
+                    if may_remove_old_image(guard.outcome) {
+                        success = true;
+                    } else {
+                        guard_outcome = Some(guard.outcome);
+                    }
                     update_progress(
                         progress_cache,
                         state_notify,
@@ -1424,7 +1971,6 @@ async fn apply_single_policy(
                         p.name.clone(),
                     )
                     .await;
-                    success = true;
                 }
                 Err(e) => {
                     tracing::error!(
@@ -1538,6 +2084,7 @@ async fn apply_single_policy(
             timestamp: crate::timezone::now_formatted(),
             status: "success".into(),
             duration_ms: start_time.elapsed().as_millis() as u64,
+            attempts: guard_attempts,
         };
         let mut hist = update_history.lock().await;
         hist.push(entry);
@@ -1564,6 +2111,36 @@ async fn apply_single_policy(
             log_prune_result("policy.cleanup_old_image", &result);
         }
         ApplyOutcome::Applied
+    } else if let Some(outcome) = guard_outcome {
+        // La guarda se ejecutó y acabó en rollback (`rolled-back`) o fallo
+        // terminal (`failed-stopped`): historial, notificación con el nivel
+        // acorde (warn/error) y efectos en memoria (anti-churn D10 / terminal
+        // D9) vía el helper compartido. La imagen anterior se conserva.
+        record_guard_outcome(
+            outcome,
+            GuardOutcomeReport {
+                name: &p.name,
+                image: &p.image_full,
+                old_digest: &p.image_id,
+                attempted_digest: p.remote_digest.as_deref().unwrap_or(""),
+                attempts: guard_attempts,
+                duration_ms: start_time.elapsed().as_millis() as u64,
+                message: guard_outcome_message(outcome),
+            },
+            update_history,
+            db_pool,
+            settings,
+            terminal_failed,
+            rolled_back,
+            true,
+        )
+        .await;
+        match outcome {
+            GuardOutcome::RolledBack => ApplyOutcome::RolledBack,
+            GuardOutcome::FailedStopped => ApplyOutcome::FailedStopped,
+            // No alcanzable: `guard_outcome` solo se fija para no-`Updated`.
+            GuardOutcome::Updated => ApplyOutcome::Applied,
+        }
     } else {
         tracing::warn!("apply_single_policy: fallo/no-hubo-éxito '{}'", p.name);
         ApplyOutcome::Failed
@@ -1583,6 +2160,8 @@ async fn apply_policies_background(
     update_policies: &Arc<Mutex<Vec<UpdatePolicy>>>,
     db_pool: &DbPool,
     pending: &[PendingUpdate],
+    terminal_failed: &TerminalFailed,
+    rolled_back: &RolledBackGuard,
 ) {
     tracing::info!(
         "apply_policies_background: iniciando con {} pendientes: {:?}",
@@ -1616,6 +2195,8 @@ async fn apply_policies_background(
                 cleanup_old_image: default_cleanup,
                 rollback_on_failure: default_rollback,
                 notify_events: false,
+                max_start_attempts: None,
+                health_window_secs: None,
             },
         };
         let _ = apply_single_policy(
@@ -1627,6 +2208,8 @@ async fn apply_policies_background(
             update_history,
             db_pool,
             tx,
+            terminal_failed,
+            rolled_back,
             p,
             &policy,
             &mut any_success,
@@ -1688,82 +2271,6 @@ pub(crate) fn log_prune_result(
             tracing::warn!("prune_images [{}]: error: {}", context, e);
         }
     }
-}
-
-/// Verify a container is running after a restart, with progressive backoff.
-/// Sleeps 3s, 6s, then 12s between checks. Returns true as soon as the
-/// container is running, false after all three attempts fail.
-pub(crate) async fn verify_container_healthy(docker: &Docker, name: &str) -> bool {
-    let delays = [3u64, 6, 12];
-    for delay in &delays {
-        tokio::time::sleep(std::time::Duration::from_secs(*delay)).await;
-        match find_container_by_name(docker, name).await {
-            Ok(c) if c.state.as_deref() == Some("running") => return true,
-            Ok(c) => {
-                tracing::debug!(
-                    "verify_container_healthy [{}]: state={:?}, retrying in {}s",
-                    name,
-                    c.state,
-                    delay
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "verify_container_healthy [{}]: find error={}, retrying in {}s",
-                    name,
-                    e,
-                    delay
-                );
-            }
-        }
-    }
-    tracing::warn!(
-        "verify_container_healthy [{}]: no healthy after 3 attempts (21s total)",
-        name
-    );
-    false
-}
-
-/// Tag current image as backup for rollback: image:tag → image:rollback-{ts}
-pub(crate) async fn tag_backup_image(
-    docker: &Docker,
-    image: &str,
-) -> Option<(String, String, String)> {
-    let ts = crate::timezone::now().format("%Y%m%d%H%M%S").to_string();
-    if let Some((base, original_tag)) = image.rsplit_once(':') {
-        let backup_full = format!("{}:rollback-{}", base, ts);
-        let opts = TagImageOptions {
-            repo: base.to_string(),
-            tag: format!("rollback-{}", ts),
-        };
-        if docker.tag_image(image, Some(opts)).await.is_ok() {
-            return Some((backup_full, base.to_string(), original_tag.to_string()));
-        }
-    }
-    None
-}
-
-/// Rollback: restore backup tag, restart container, remove the new image
-pub(crate) async fn rollback_container(
-    docker: &Docker,
-    cid: &str,
-    base: &str,
-    original_tag: &str,
-    backup_full: &str,
-    new_image: &str,
-) {
-    tracing::warn!("Rollback: restoring backup for {}", new_image);
-    let restore_opts = TagImageOptions {
-        repo: base.to_string(),
-        tag: original_tag.to_string(),
-    };
-    let _ = docker.tag_image(backup_full, Some(restore_opts)).await;
-    let _ = docker
-        .restart_container(cid, None::<RestartContainerOptions>)
-        .await;
-    let _ = docker
-        .remove_image(new_image, None::<RemoveImageOptions>, None)
-        .await;
 }
 
 /// Llama a `check_remote_digest_with_docker` con la referencia de imagen completa.
@@ -1838,11 +2345,15 @@ async fn emit_batch_done(
 }
 
 /// Contabiliza el desenlace de UN solo contenedor. `Skipped` no cuenta.
+/// Un rollback sano (`RolledBack`) o un fallo terminal (`FailedStopped`) son
+/// fallos aplicados: cuentan como `failed`, nunca como skip.
 fn tally_apply_outcome(outcome: ApplyOutcome, updated: &mut u32, failed: &mut u32) {
     match outcome {
         ApplyOutcome::Applied => *updated += 1,
-        ApplyOutcome::Failed => *failed += 1,
         ApplyOutcome::Skipped => {}
+        ApplyOutcome::Failed | ApplyOutcome::RolledBack | ApplyOutcome::FailedStopped => {
+            *failed += 1;
+        }
     }
 }
 
@@ -2058,8 +2569,12 @@ mod tests {
             cleanup_old_image: true,
             rollback_on_failure: false,
             notify_events: true,
+            max_start_attempts: None,
+            health_window_secs: None,
         };
         let mut any_success = false;
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
 
         let outcome = apply_single_policy(
             &docker,
@@ -2070,6 +2585,8 @@ mod tests {
             &update_history,
             &db_pool,
             &tx,
+            &terminal_failed,
+            &rolled_back,
             &p,
             &policy,
             &mut any_success,
@@ -2205,5 +2722,177 @@ mod tests {
         }
         assert_eq!(updated, 3, "3 aplicaciones correctas");
         assert_eq!(failed, 1, "1 aplicación fallida (el skip no cuenta)");
+    }
+
+    /// Un rollback sano o un fallo terminal son fallos aplicados, nunca un skip.
+    #[test]
+    fn test_tally_apply_outcome_guard_failures_count_as_failed() {
+        let mut updated = 0u32;
+        let mut failed = 0u32;
+        for outcome in [
+            ApplyOutcome::RolledBack,
+            ApplyOutcome::FailedStopped,
+            ApplyOutcome::Skipped,
+        ] {
+            tally_apply_outcome(outcome, &mut updated, &mut failed);
+        }
+        assert_eq!(updated, 0, "ningún rollback cuenta como actualizado");
+        assert_eq!(failed, 2, "rollback y fallo terminal son fallos aplicados");
+    }
+
+    // ── guard_params (override de política gana) ─────────────
+
+    fn guard_test_policy(
+        max_start_attempts: Option<u32>,
+        health_window_secs: Option<u64>,
+    ) -> UpdatePolicy {
+        UpdatePolicy {
+            container: "web".into(),
+            action: UpdateAction::PullRestart,
+            cleanup_old_image: false,
+            rollback_on_failure: true,
+            notify_events: false,
+            max_start_attempts,
+            health_window_secs,
+        }
+    }
+
+    #[test]
+    fn test_guard_params_policy_override_wins() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            ..Default::default()
+        };
+        let policy = guard_test_policy(Some(5), Some(60));
+        assert_eq!(guard_params(&policy, &settings), (5, 10, 60));
+    }
+
+    #[test]
+    fn test_guard_params_uses_globals_without_override() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            ..Default::default()
+        };
+        let policy = guard_test_policy(None, None);
+        assert_eq!(guard_params(&policy, &settings), (3, 10, 30));
+    }
+
+    /// `max_start_attempts = 0` se normaliza a 1 para no provocar bucles infinitos.
+    #[test]
+    fn test_guard_params_clamps_zero_max_attempts() {
+        let settings = Settings::default();
+        let policy = guard_test_policy(Some(0), None);
+        assert_eq!(guard_params(&policy, &settings).0, 1);
+    }
+
+    // ── clear_suppression (D9/D10, intervención manual) ──────
+
+    /// El helper compartido por los flujos manuales MUST limpiar ambos guards:
+    /// el estado terminal `failed-stopped` (`terminal_failed`) y el anti-churn de
+    /// rollback (`rolled_back`).
+    #[tokio::test]
+    async fn clear_suppression_clears_both_guards() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+        terminal_failed.0.lock().await.insert("app".into());
+        rolled_back
+            .0
+            .lock()
+            .await
+            .insert("app".into(), "sha256:deadbeef".into());
+
+        clear_suppression("app", &terminal_failed, &rolled_back).await;
+
+        assert!(
+            !terminal_failed.0.lock().await.contains("app"),
+            "terminal_failed debe quedar limpio tras la intervención manual"
+        );
+        assert!(
+            !rolled_back.0.lock().await.contains_key("app"),
+            "rolled_back debe quedar limpio tras la intervención manual"
+        );
+    }
+
+    /// La limpieza MUST estar acotada al contenedor intervenido: no debe tocar la
+    /// supresión de otros contenedores.
+    #[tokio::test]
+    async fn clear_suppression_is_scoped_per_container() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+        terminal_failed.0.lock().await.insert("app".into());
+        terminal_failed.0.lock().await.insert("db".into());
+        rolled_back
+            .0
+            .lock()
+            .await
+            .insert("app".into(), "sha256:new".into());
+        rolled_back
+            .0
+            .lock()
+            .await
+            .insert("db".into(), "sha256:new".into());
+
+        clear_suppression("app", &terminal_failed, &rolled_back).await;
+
+        let tf = terminal_failed.0.lock().await;
+        let rb = rolled_back.0.lock().await;
+        assert!(tf.contains("db"), "db sigue suprimido (no intervenido)");
+        assert!(rb.contains_key("db"), "db sigue suprimido (no intervenido)");
+        assert!(!tf.contains("app"));
+        assert!(!rb.contains_key("app"));
+    }
+
+    /// Limpiar una supresión inexistente es un no-op (idempotente): los flujos
+    /// masivos llaman al helper para cada contenedor iterado, haya supresión o no.
+    #[tokio::test]
+    async fn clear_suppression_is_noop_when_absent() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+
+        clear_suppression("ghost", &terminal_failed, &rolled_back).await;
+
+        assert!(terminal_failed.0.lock().await.is_empty());
+        assert!(rolled_back.0.lock().await.is_empty());
+    }
+
+    /// Contrato de bucle de `update_all_h` / `update_stack_h`: cada contenedor
+    /// iterado pasa por `clear_suppression` antes de aplicar, así que una tanda
+    /// completa deja la supresión de todos ellos limpia.
+    ///
+    /// Los handlers completos requieren un daemon de contenedores
+    /// (`docker_list_running` / `docker.list_containers`), que el repo sólo
+    /// ejercita en tests `#[ignore]` con `podman_client`; este test cubre el
+    /// contrato de limpieza por contenedor sin daemon.
+    #[tokio::test]
+    async fn clear_suppression_clears_every_iterated_container() {
+        let terminal_failed = TerminalFailed::default();
+        let rolled_back = RolledBackGuard::default();
+        let iterated = ["app", "db", "cache"];
+        for name in iterated {
+            terminal_failed.0.lock().await.insert(name.to_string());
+            rolled_back
+                .0
+                .lock()
+                .await
+                .insert(name.to_string(), "sha256:remote".into());
+        }
+
+        // Espejo del bucle de los handlers: limpiar por contenedor iterado.
+        for name in iterated {
+            clear_suppression(name, &terminal_failed, &rolled_back).await;
+        }
+
+        assert!(
+            terminal_failed.0.lock().await.is_empty(),
+            "ningún contenedor iterado debe quedar en terminal_failed"
+        );
+        assert!(
+            rolled_back.0.lock().await.is_empty(),
+            "ningún contenedor iterado debe quedar suprimido por rollback"
+        );
     }
 }

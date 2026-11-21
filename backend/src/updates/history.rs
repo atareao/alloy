@@ -51,6 +51,7 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00".into(),
                 status: "success".into(),
                 duration_ms: 100,
+                attempts: 0,
             },
             UpdateHistoryEntry {
                 container: "new".into(),
@@ -60,6 +61,7 @@ mod tests {
                 timestamp: "2024-06-01T00:00:00".into(),
                 status: "success".into(),
                 duration_ms: 200,
+                attempts: 0,
             },
         ]));
         let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
@@ -82,6 +84,7 @@ mod tests {
                     timestamp: format!("2024-{:02}-01T00:00:00", (i % 12) + 1),
                     status: "success".into(),
                     duration_ms: i as u64,
+                    attempts: 0,
                 });
             }
         }
@@ -100,6 +103,7 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00".into(),
                 status: "error".into(),
                 duration_ms: 50,
+                attempts: 0,
             }]));
         let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
         assert_eq!(result.0.len(), 1);
@@ -117,6 +121,7 @@ mod tests {
                 timestamp: "2024-01-01T00:00:00".into(),
                 status: "success".into(),
                 duration_ms: 12345,
+                attempts: 0,
             }]));
         let result: Json<Vec<UpdateHistoryEntry>> = get_history_h(State(hist)).await;
         assert_eq!(result.0[0].duration_ms, 12345);
@@ -133,6 +138,7 @@ mod tests {
                 timestamp: "now".into(),
                 status: "success".into(),
                 duration_ms: 100,
+                attempts: 0,
             }]));
         let pool = test_pool();
         let _ = delete_history_h(State(hist.clone()), State(pool)).await;

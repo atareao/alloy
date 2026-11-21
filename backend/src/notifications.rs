@@ -3,6 +3,7 @@ use tokio::sync::Mutex;
 
 use crate::models::Settings;
 use crate::state::http_client;
+use crate::updates::health_guard::{STATUS_FAILED_STOPPED, STATUS_ROLLED_BACK};
 
 /// Set de codificación para el segmento de ruta del room de Matrix: parte de
 /// `NON_ALPHANUMERIC` pero deja los caracteres *unreserved* de RFC 3986
@@ -216,12 +217,31 @@ pub async fn notify_all_state(
     status: &str,
     raw_state: Option<&str>,
 ) {
+    let level = valet_level_for(raw_state);
+    fan_out(settings, container, status, level).await;
+}
+
+/// Fan-out a notification with an **explicit** Valet `level`.
+///
+/// Used by the update guard to force `warning` on a rollback and `critical`
+/// (error) on a terminal failure, without relying on the state heuristics of
+/// [`valet_level`].
+pub async fn notify_all_level(
+    settings: &Arc<Mutex<Settings>>,
+    container: &str,
+    status: &str,
+    level: &str,
+) {
+    fan_out(settings, container, status, level).await;
+}
+
+/// Shared fan-out: clone settings, release the lock, then notify every channel.
+async fn fan_out(settings: &Arc<Mutex<Settings>>, container: &str, status: &str, level: &str) {
     // Clone the settings and release the `Mutex` guard at the end of this
     // statement, *before* the network fan-out below. Otherwise a slow channel
     // (up to the 30 s HTTP client timeout) would keep the lock and block
     // `GET/PUT /api/config` and the test endpoint.
     let s = settings.lock().await.clone();
-    let level = valet_level_for(raw_state);
     let _ = tokio::join!(
         notify_telegram(&s, container, status),
         notify_matrix(&s, container, status),
@@ -232,12 +252,22 @@ pub async fn notify_all_state(
 
 /// Map a container status to a Valet notification level (deterministic, pure).
 ///
+/// Explicit guard states take priority so they keep their meaning regardless of
+/// the substring heuristic below:
+/// - `failed-stopped` → `critical` (terminal failure).
+/// - `rolled-back` → `warning` (update reverted).
+///
+/// Otherwise:
 /// - `critical` when the status contains `died`, `dead` or `error`.
 /// - `warning` when it contains `exit` (exited) or `stop` (stopped).
 /// - `info` otherwise.
 pub fn valet_level(status: &str) -> &'static str {
     let s = status.to_lowercase();
-    if s.contains("died") || s.contains("dead") || s.contains("error") {
+    if s.contains(STATUS_FAILED_STOPPED) {
+        "critical"
+    } else if s.contains(STATUS_ROLLED_BACK) {
+        "warning"
+    } else if s.contains("died") || s.contains("dead") || s.contains("error") {
         "critical"
     } else if s.contains("exit") || s.contains("stop") {
         "warning"
@@ -562,6 +592,23 @@ mod tests {
         assert_eq!(valet_level("Death"), "info"); // "death" is not one of the keywords
         assert_eq!(valet_level("DIED"), "critical");
         assert_eq!(valet_level("Exited"), "warning");
+    }
+
+    // ── valet_level: estados de la guarda de update ──────────
+
+    /// `failed-stopped` es un fallo terminal ⇒ `critical` (gana a la heurística
+    /// de `stop` ⇒ `warning`).
+    #[test]
+    fn test_valet_level_failed_stopped_is_critical() {
+        assert_eq!(valet_level("failed-stopped"), "critical");
+        assert_eq!(valet_level("FAILED-STOPPED"), "critical");
+    }
+
+    /// `rolled-back` es un rollback con aviso ⇒ `warning` (antes caía en `info`).
+    #[test]
+    fn test_valet_level_rolled_back_is_warning() {
+        assert_eq!(valet_level("rolled-back"), "warning");
+        assert_eq!(valet_level("Rolled-Back"), "warning");
     }
 
     // ── valet_level_for (task 2b.2) ─────────────────────────
