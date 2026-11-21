@@ -143,7 +143,7 @@ Cada uno usa `BroadcastStream` wrapping un `broadcast::Receiver`. La autenticaci
 - **Discovery**: obtiene metadata via `{issuer}/.well-known/openid-configuration`
 - **JWKS validation**: descarga claves de `{issuer}/.well-known/jwks.json` y valida tokens con RSA256
 - **Auth code flow**: `GET /api/auth/login` → redirect al provider → callback → sesión vía cookie firmada
-- **Auth middleware**: chequea cookie `session=...` (firmada con `oidc_client_secret`), `Authorization: Bearer ...` header, o `?token=...` query param (para SSE)
+- **Auth middleware**: chequea cookie `session=...` (firmada con `oidc_client_secret`) o `Authorization: Bearer ...` para sesión. Para SSE, `GET /api/auth/sse-token` emite un ticket efímero (60 s, `purpose=sse`) que se acepta **solo** como `?token=` en `GET /api/stream`; el JWT de sesión por query se rechaza.
 - **JwtValidator** en `state.rs`: estilo PocketID/oxinbox, con `fetch_jwks()` al startup y auto-fetch en primer uso
 
 #### 6. Docker API via Bollard
