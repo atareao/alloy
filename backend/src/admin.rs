@@ -162,6 +162,12 @@ struct DefaultUpdatePolicy {
     action: String,
     cleanup_old_image: bool,
     rollback_on_failure: bool,
+    /// Override de la política por defecto del nº máximo de intentos de arranque.
+    #[serde(default)]
+    max_start_attempts: Option<u32>,
+    /// Override de la política por defecto de la ventana estable de salud (segundos).
+    #[serde(default)]
+    health_window_secs: Option<u64>,
 }
 
 async fn get_default_update_policy_h(
@@ -175,6 +181,8 @@ async fn get_default_update_policy_h(
             .unwrap_or_else(|| "pull-restart".into()),
         cleanup_old_image: s.default_cleanup_old_image.unwrap_or(false),
         rollback_on_failure: s.default_rollback_on_failure.unwrap_or(false),
+        max_start_attempts: s.default_max_start_attempts,
+        health_window_secs: s.default_health_window_secs,
     })
 }
 
@@ -187,6 +195,8 @@ async fn put_default_update_policy_h(
     s.default_update_action = Some(body.action.clone());
     s.default_cleanup_old_image = Some(body.cleanup_old_image);
     s.default_rollback_on_failure = Some(body.rollback_on_failure);
+    s.default_max_start_attempts = body.max_start_attempts;
+    s.default_health_window_secs = body.health_window_secs;
     let conn = db_pool.get().await.unwrap();
     let _ = db::save_settings(&conn.lock().unwrap(), &s);
     Json(body)
@@ -580,6 +590,71 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].max_start_attempts, Some(5));
         assert_eq!(list[0].health_window_secs, Some(60));
+    }
+
+    /// apply-default-guard-overrides: PUT/GET de la política por defecto
+    /// persisten los overrides de la guarda (memoria + DB) y los devuelven.
+    #[tokio::test]
+    async fn test_default_update_policy_guard_roundtrip() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let body = DefaultUpdatePolicy {
+            action: "pull-restart".into(),
+            cleanup_old_image: false,
+            rollback_on_failure: false,
+            max_start_attempts: Some(5),
+            health_window_secs: Some(60),
+        };
+        let put: Json<DefaultUpdatePolicy> = put_default_update_policy_h(
+            State(settings.clone()),
+            State(db_pool.clone()),
+            Json(body),
+        )
+        .await;
+        assert_eq!(put.0.max_start_attempts, Some(5));
+        assert_eq!(put.0.health_window_secs, Some(60));
+
+        // Persistido en el estado en memoria.
+        {
+            let s = settings.lock().await;
+            assert_eq!(s.default_max_start_attempts, Some(5));
+            assert_eq!(s.default_health_window_secs, Some(60));
+        }
+
+        // Servido por el GET.
+        let got: Json<DefaultUpdatePolicy> = get_default_update_policy_h(State(settings)).await;
+        assert_eq!(got.0.max_start_attempts, Some(5));
+        assert_eq!(got.0.health_window_secs, Some(60));
+
+        // Persistido en la tabla `settings`.
+        let conn = db_pool.get().await.unwrap();
+        let guard = conn.lock().unwrap();
+        let loaded = db::load_settings(&guard).unwrap();
+        assert_eq!(loaded.default_max_start_attempts, Some(5));
+        assert_eq!(loaded.default_health_window_secs, Some(60));
+    }
+
+    /// apply-default-guard-overrides: un `null` en el PUT limpia el override.
+    #[tokio::test]
+    async fn test_default_update_policy_guard_overrides_can_be_cleared() {
+        let db_pool = db::test_pool();
+        let settings = Arc::new(Mutex::new(Settings {
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        }));
+        let body = DefaultUpdatePolicy {
+            action: "pull-restart".into(),
+            cleanup_old_image: false,
+            rollback_on_failure: false,
+            max_start_attempts: None,
+            health_window_secs: None,
+        };
+        let _: Json<DefaultUpdatePolicy> =
+            put_default_update_policy_h(State(settings.clone()), State(db_pool), Json(body)).await;
+        let s = settings.lock().await;
+        assert_eq!(s.default_max_start_attempts, None);
+        assert_eq!(s.default_health_window_secs, None);
     }
 
     #[tokio::test]

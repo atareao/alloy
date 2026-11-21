@@ -570,6 +570,12 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .get("update_health_window_secs")
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_UPDATE_HEALTH_WINDOW_SECS),
+        default_max_start_attempts: map
+            .get("default_max_start_attempts")
+            .and_then(|v| v.parse().ok()),
+        default_health_window_secs: map
+            .get("default_health_window_secs")
+            .and_then(|v| v.parse().ok()),
     })
 }
 
@@ -628,6 +634,14 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         (
             "update_health_window_secs",
             Some(settings.update_health_window_secs.to_string()),
+        ),
+        (
+            "default_max_start_attempts",
+            settings.default_max_start_attempts.map(|v| v.to_string()),
+        ),
+        (
+            "default_health_window_secs",
+            settings.default_health_window_secs.map(|v| v.to_string()),
         ),
     ];
 

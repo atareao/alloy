@@ -1396,25 +1396,12 @@ async fn check_and_apply_all(
                             .into_iter()
                             .map(|p| (p.container.clone(), p))
                             .collect();
-                        let (default_action, default_cleanup, default_rollback) = {
-                            let s = settings.lock().await;
-                            (
-                                s.default_update_action
-                                    .clone()
-                                    .unwrap_or_else(|| "pull-restart".into()),
-                                s.default_cleanup_old_image.unwrap_or(false),
-                                s.default_rollback_on_failure.unwrap_or(false),
-                            )
+                        // Sin política específica se construye el fallback desde
+                        // los defaults de `Settings`.
+                        let policy = match policy_map.get(&name) {
+                            Some(p) => p.clone(),
+                            None => settings.lock().await.fallback_update_policy(name.clone()),
                         };
-                        let policy = policy_map.get(&name).cloned().unwrap_or(UpdatePolicy {
-                            container: name.clone(),
-                            action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
-                            cleanup_old_image: default_cleanup,
-                            rollback_on_failure: default_rollback,
-                            notify_events: false,
-                            max_start_attempts: None,
-                            health_window_secs: None,
-                        });
                         let mut this_ok = false;
                         let outcome = apply_single_policy(
                             docker,
@@ -2173,31 +2160,14 @@ async fn apply_policies_background(
         .into_iter()
         .map(|p| (p.container.clone(), p))
         .collect();
-    let (default_action, default_cleanup, default_rollback) = {
-        let s = settings.lock().await;
-        (
-            s.default_update_action
-                .clone()
-                .unwrap_or_else(|| "pull-restart".into()),
-            s.default_cleanup_old_image.unwrap_or(false),
-            s.default_rollback_on_failure.unwrap_or(false),
-        )
-    };
-
     let mut any_success = false;
 
     for p in pending {
+        // Sin política específica se construye el fallback desde los defaults
+        // de `Settings`.
         let policy = match policy_map.get(&p.name) {
             Some(pol) => pol.clone(),
-            None => UpdatePolicy {
-                container: p.name.clone(),
-                action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
-                cleanup_old_image: default_cleanup,
-                rollback_on_failure: default_rollback,
-                notify_events: false,
-                max_start_attempts: None,
-                health_window_secs: None,
-            },
+            None => settings.lock().await.fallback_update_policy(p.name.clone()),
         };
         let _ = apply_single_policy(
             docker,
@@ -2775,6 +2745,86 @@ mod tests {
             update_max_start_attempts: 3,
             update_start_attempt_interval_secs: 10,
             update_health_window_secs: 30,
+            ..Default::default()
+        };
+        let policy = guard_test_policy(None, None);
+        assert_eq!(guard_params(&policy, &settings), (3, 10, 30));
+    }
+
+    // ── guard_params × overrides por defecto (precedencia) ───
+
+    /// Un contenedor SIN política usa el override de la política por defecto
+    /// (sembrado en su `UpdatePolicy` de fallback), no el global.
+    #[test]
+    fn test_guard_params_default_override_applies_to_policy_less_container() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
+            ..Default::default()
+        };
+        // La `UpdatePolicy` de fallback se siembra con los overrides por defecto.
+        let (def_max, def_window) = settings.default_guard_overrides();
+        let policy = guard_test_policy(def_max, def_window);
+        assert_eq!(guard_params(&policy, &settings), (5, 10, 30));
+    }
+
+    /// Escenario «Limpiar» del fallback: sin override por defecto (`None`) la
+    /// política de fallback cae al global (`update_max_start_attempts`).
+    #[test]
+    fn test_guard_params_fallback_without_default_override_uses_global() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: None,
+            ..Default::default()
+        };
+        let policy = settings.fallback_update_policy("web");
+        assert_eq!(guard_params(&policy, &settings), (3, 10, 30));
+    }
+
+    /// Cableado extremo a extremo: el fallback construido por el helper lleva
+    /// los overrides por defecto y `guard_params` los resuelve (sin pasar por
+    /// `guard_test_policy`).
+    #[test]
+    fn test_fallback_update_policy_integrates_with_guard_params() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        };
+        let policy = settings.fallback_update_policy("web");
+        assert_eq!(guard_params(&policy, &settings), (5, 10, 60));
+    }
+
+    /// La política del contenedor gana sobre el override por defecto.
+    #[test]
+    fn test_guard_params_container_policy_override_beats_default() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
+            ..Default::default()
+        };
+        let policy = guard_test_policy(Some(7), None);
+        assert_eq!(guard_params(&policy, &settings), (7, 10, 30));
+    }
+
+    /// Un contenedor CON política sin override cae al global, no al default
+    /// (el override por defecto solo aplica al fallback sin política).
+    #[test]
+    fn test_guard_params_container_policy_without_override_uses_global() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
             ..Default::default()
         };
         let policy = guard_test_policy(None, None);
