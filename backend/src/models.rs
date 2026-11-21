@@ -266,6 +266,17 @@ pub struct Settings {
     /// Segundos de ventana estable para considerar sano un arranque. Default: 30.
     #[serde(default = "default_update_health_window_secs")]
     pub update_health_window_secs: u64,
+
+    /// Override de la **política por defecto** del nº máximo de intentos de
+    /// arranque sano. `None` = sin override (aplica solo al *fallback* de
+    /// contenedores sin política específica).
+    #[serde(default)]
+    pub default_max_start_attempts: Option<u32>,
+
+    /// Override de la **política por defecto** de la ventana estable de salud
+    /// (segundos). `None` = sin override.
+    #[serde(default)]
+    pub default_health_window_secs: Option<u64>,
 }
 
 /// Default global: nº máximo de intentos de arranque sano antes del rollback.
@@ -348,6 +359,8 @@ impl Default for Settings {
             update_max_start_attempts: DEFAULT_UPDATE_MAX_START_ATTEMPTS,
             update_start_attempt_interval_secs: DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS,
             update_health_window_secs: DEFAULT_UPDATE_HEALTH_WINDOW_SECS,
+            default_max_start_attempts: None,
+            default_health_window_secs: None,
         }
     }
 }
@@ -374,6 +387,36 @@ impl Settings {
     /// `DEFAULT_CHECK_INTERVAL_MS` cuando el valor almacenado es `None`.
     pub fn effective_check_interval_ms(&self) -> u64 {
         self.check_interval_ms.unwrap_or(DEFAULT_CHECK_INTERVAL_MS)
+    }
+
+    /// Overrides de la guarda de la política por defecto (aplican al fallback de
+    /// contenedores sin política específica).
+    pub fn default_guard_overrides(&self) -> (Option<u32>, Option<u64>) {
+        (
+            self.default_max_start_attempts,
+            self.default_health_window_secs,
+        )
+    }
+
+    /// Construye la `UpdatePolicy` de *fallback* para un contenedor **sin**
+    /// política específica: acción/limpieza/rollback de la política por defecto
+    /// y los overrides de la guarda por defecto (`None` si no hay).
+    /// `notify_events: false`.
+    pub fn fallback_update_policy(&self, container: impl Into<String>) -> UpdatePolicy {
+        UpdatePolicy {
+            container: container.into(),
+            action: self
+                .default_update_action
+                .clone()
+                .unwrap_or_else(|| "pull-restart".into())
+                .parse()
+                .unwrap_or(UpdateAction::PullRestart),
+            cleanup_old_image: self.default_cleanup_old_image.unwrap_or(false),
+            rollback_on_failure: self.default_rollback_on_failure.unwrap_or(false),
+            notify_events: false,
+            max_start_attempts: self.default_max_start_attempts,
+            health_window_secs: self.default_health_window_secs,
+        }
     }
 }
 
@@ -1146,5 +1189,86 @@ mod tests {
         assert_eq!(s.effective_update_check_cron(), "0 3 * * *");
         assert_eq!(s.effective_pull_timeout_secs(), 120);
         assert_eq!(s.effective_check_interval_ms(), 500);
+    }
+
+    // ── default guard overrides (apply-default-guard-overrides) ──
+
+    /// Compat: un JSON de `Settings` sin los campos nuevos deserializa a `None`
+    /// (settings almacenados antes del cambio siguen cargando sin migración).
+    #[test]
+    fn test_settings_without_default_guard_overrides_deserializes_to_none() {
+        let json = r#"{
+            "update_max_start_attempts": 3,
+            "update_start_attempt_interval_secs": 10,
+            "update_health_window_secs": 30
+        }"#;
+        let s: Settings = serde_json::from_str(json)
+            .expect("settings previos deben deserializar sin los campos nuevos");
+        assert_eq!(s.default_max_start_attempts, None);
+        assert_eq!(s.default_health_window_secs, None);
+        assert_eq!(s.update_max_start_attempts, 3);
+        assert_eq!(s.update_health_window_secs, 30);
+    }
+
+    /// El helper devuelve el par de overrides de la política por defecto.
+    #[test]
+    fn test_default_guard_overrides_returns_pair() {
+        let s = Settings {
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        };
+        assert_eq!(s.default_guard_overrides(), (Some(5), Some(60)));
+        assert_eq!(Settings::default().default_guard_overrides(), (None, None));
+    }
+
+    // ── fallback_update_policy (apply-default-guard-overrides) ──
+
+    /// El fallback de un contenedor sin política toma acción/limpieza/rollback
+    /// de la política por defecto y siembra los overrides de la guarda.
+    #[test]
+    fn test_fallback_update_policy_seeds_defaults_and_guard_overrides() {
+        let s = Settings {
+            default_update_action: Some("pull-restart-stack".into()),
+            default_cleanup_old_image: Some(true),
+            default_rollback_on_failure: Some(true),
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        };
+        let p = s.fallback_update_policy("web");
+        assert_eq!(p.container, "web");
+        assert_eq!(p.action, UpdateAction::PullRestartStack);
+        assert!(p.cleanup_old_image);
+        assert!(p.rollback_on_failure);
+        assert!(!p.notify_events);
+        assert_eq!(p.max_start_attempts, Some(5));
+        assert_eq!(p.health_window_secs, Some(60));
+    }
+
+    /// Sin política por defecto ni overrides: `pull-restart`, limpieza/rollback
+    /// a `false` y guarda sin override (`None`).
+    #[test]
+    fn test_fallback_update_policy_falls_back_to_sane_defaults() {
+        let p = Settings::default().fallback_update_policy("web");
+        assert_eq!(p.action, UpdateAction::PullRestart);
+        assert!(!p.cleanup_old_image);
+        assert!(!p.rollback_on_failure);
+        assert!(!p.notify_events);
+        assert_eq!(p.max_start_attempts, None);
+        assert_eq!(p.health_window_secs, None);
+    }
+
+    /// Una acción por defecto inválida cae a `pull-restart` (no revienta).
+    #[test]
+    fn test_fallback_update_policy_invalid_action_falls_back_to_pull_restart() {
+        let s = Settings {
+            default_update_action: Some("no-such-action".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.fallback_update_policy("web").action,
+            UpdateAction::PullRestart
+        );
     }
 }
