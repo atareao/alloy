@@ -220,6 +220,7 @@ podman run -d \
   --name alloy \
   -p 3066:3066 \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(stat -c '%g' /var/run/docker.sock)" \
   -v alloy-data:/app/data \
   -e OIDC_ISSUER_URL=https://your-oidc-provider.example.com \
   -e OIDC_CLIENT_ID=alloy \
@@ -232,7 +233,7 @@ podman run -d \
 > Alloy **requires OIDC** authentication. There is no simple JWT fallback. You must configure `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URL`.
 
 > [!TIP]
-> The container runs as the unprivileged user `app` (UID/GID `1000`) and can be built with your host identity using `--build-arg UID=$(id -u) --build-arg GID=$(id -g)`. To give it access to the Docker socket, pass its group with `--group-add <gid>` (e.g. `--group-add 999`). See [docs/container-identity.md](docs/container-identity.md).
+> The container runs as the unprivileged user `app` (UID/GID `1000`) and can be built with your host identity using `--build-arg UID=$(id -u) --build-arg GID=$(id -g)`. To give it access to the Docker socket, the example above passes the socket's real group with `--group-add "$(stat -c '%g' /var/run/docker.sock)"` (you can also hardcode it, e.g. `--group-add 999`). See [docs/container-identity.md](docs/container-identity.md).
 
 ### From source
 
