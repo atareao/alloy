@@ -23,4 +23,4 @@ Ver `openspec/changes/pin-deploy-co1-version/tasks.md`.
 - [x] `docs/deploy-co1.md` sin la afirmación falsa y con procedimiento de tag pinchado.
 - [x] Ejemplo versionado del compose con imagen pinchada.
 - [x] Verificación por tag documentada.
-- [ ] Stack de co1 corriendo `:0.26.0` (ops manual).
+- [ ] Stack de co1 corriendo `:0.26.0` (ops manual, pendiente).

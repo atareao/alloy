@@ -19,4 +19,4 @@
 ## 4. Docs de la feature y archivo
 
 - [x] 4.1 `docs/pin-deploy-co1-version.md`.
-- [ ] 4.2 `openspec archive pin-deploy-co1-version` tras merge (PR a `develop`).
+- [x] 4.2 `openspec archive pin-deploy-co1-version` tras merge (PR a `develop`). ✅
