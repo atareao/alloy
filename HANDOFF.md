@@ -18,6 +18,7 @@ próximo release). Backlog de mejoras abierto tras una revisión de deuda técni
 ### Backlog pendiente (sin empezar)
 
 Orden sugerido por impacto/esfuerzo: **#155 → #156 → #158 → #157 → #159 → #161 → #160 → #162 → #163**.
+Incluye **#166** (ellipsis + paginación).
 
 | # | Qué |
 |---|---|
