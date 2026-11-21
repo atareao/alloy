@@ -25,4 +25,4 @@
 
 ## 4. Archive
 
-- [ ] 4.1 `openspec archive apply-default-guard-overrides` tras merge.
+- [x] 4.1 `openspec archive apply-default-guard-overrides` tras merge.
