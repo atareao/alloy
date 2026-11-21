@@ -24,4 +24,4 @@
 
 ## 4. Archive
 
-- [ ] 4.1 `openspec archive fix-static-path-traversal` tras merge.
+- [x] 4.1 `openspec archive fix-static-path-traversal` tras merge.
