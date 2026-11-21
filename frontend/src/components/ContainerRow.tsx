@@ -127,41 +127,41 @@ export default function ContainerRow({
             {hasUpdate && (
               <Tag
                 color="yellow"
-                style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}
+                style={{
+                  fontSize: 10,
+                  lineHeight: "14px",
+                  padding: "0 4px",
+                  flexShrink: 0,
+                }}
               >
                 !
               </Tag>
             )}
             <Typography.Text
               strong
-              ellipsis
-              style={{ minWidth: 60, fontSize: 14 }}
+              ellipsis={{ tooltip: c.name }}
+              style={{ minWidth: 0, fontSize: 14 }}
             >
-              {isMobile
-                ? c.name.length > 12
-                  ? c.name.slice(0, 9) + "..."
-                  : c.name
-                : c.name}
+              {c.name}
             </Typography.Text>
-            {c.updating && <Spin size="small" />}
+            {c.updating && <Spin size="small" style={{ flexShrink: 0 }} />}
             <Typography.Text
               type="secondary"
-              ellipsis
-              style={{ minWidth: 60, fontSize: 12 }}
+              ellipsis={{ tooltip: c.status }}
+              style={{ minWidth: 0, fontSize: 12 }}
             >
-              {isMobile
-                ? c.status.length > 20
-                  ? c.status.slice(0, 17) + "..."
-                  : c.status
-                : c.status}
+              {c.status}
             </Typography.Text>
             {isUpdating && (
               <Tooltip title={`🔍 ${progress.checking}`}>
-                <Tag color="yellow" style={{ flexShrink: 0 }}>
+                <Tag color="yellow" style={{ flexShrink: 0, maxWidth: 160 }}>
                   <Flex gap={4} wrap="nowrap" align="center">
-                    <Spin size="small" />
-                    <Typography.Text style={{ fontSize: 12 }}>
-                      {progress.checking.slice(0, 20)}
+                    <Spin size="small" style={{ flexShrink: 0 }} />
+                    <Typography.Text
+                      ellipsis
+                      style={{ fontSize: 12, minWidth: 0 }}
+                    >
+                      {progress.checking}
                     </Typography.Text>
                   </Flex>
                 </Tag>
@@ -175,6 +175,7 @@ export default function ContainerRow({
                 type="default"
                 size="small"
                 icon={<LinkOutlined />}
+                style={{ flexShrink: 0 }}
                 onClick={(e) => e.stopPropagation()}
               />
             ) : c.traefik_url ? (
@@ -183,7 +184,7 @@ export default function ContainerRow({
                 target="_blank"
                 rel="noopener noreferrer"
                 ellipsis
-                style={{ maxWidth: 180 }}
+                style={{ maxWidth: 180, flexShrink: 0 }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <LinkOutlined /> {c.traefik_url.replace(/^https?:\/\//, "")}
@@ -258,41 +259,41 @@ export default function ContainerRow({
             {hasUpdate && (
               <Tag
                 color="yellow"
-                style={{ fontSize: 10, lineHeight: "14px", padding: "0 4px" }}
+                style={{
+                  fontSize: 10,
+                  lineHeight: "14px",
+                  padding: "0 4px",
+                  flexShrink: 0,
+                }}
               >
                 !
               </Tag>
             )}
             <Typography.Text
               strong
-              ellipsis
-              style={{ minWidth: 60, fontSize: 14 }}
+              ellipsis={{ tooltip: c.name }}
+              style={{ minWidth: 0, fontSize: 14 }}
             >
-              {isMobile
-                ? c.name.length > 12
-                  ? c.name.slice(0, 9) + "..."
-                  : c.name
-                : c.name}
+              {c.name}
             </Typography.Text>
-            {c.updating && <Spin size="small" />}
+            {c.updating && <Spin size="small" style={{ flexShrink: 0 }} />}
             <Typography.Text
               type="secondary"
-              ellipsis
-              style={{ minWidth: 60, fontSize: 12 }}
+              ellipsis={{ tooltip: c.status }}
+              style={{ minWidth: 0, fontSize: 12 }}
             >
-              {isMobile
-                ? c.status.length > 20
-                  ? c.status.slice(0, 17) + "..."
-                  : c.status
-                : c.status}
+              {c.status}
             </Typography.Text>
             {isUpdating && (
               <Tooltip title={`🔍 ${progress.checking}`}>
-                <Tag color="yellow" style={{ flexShrink: 0 }}>
+                <Tag color="yellow" style={{ flexShrink: 0, maxWidth: 160 }}>
                   <Flex gap={4} wrap="nowrap" align="center">
-                    <Spin size="small" />
-                    <Typography.Text style={{ fontSize: 12 }}>
-                      {progress.checking.slice(0, 20)}
+                    <Spin size="small" style={{ flexShrink: 0 }} />
+                    <Typography.Text
+                      ellipsis
+                      style={{ fontSize: 12, minWidth: 0 }}
+                    >
+                      {progress.checking}
                     </Typography.Text>
                   </Flex>
                 </Tag>
@@ -306,6 +307,7 @@ export default function ContainerRow({
                 type="default"
                 size="small"
                 icon={<LinkOutlined />}
+                style={{ flexShrink: 0 }}
                 onClick={(e) => e.stopPropagation()}
               />
             ) : c.traefik_url ? (
@@ -314,7 +316,7 @@ export default function ContainerRow({
                 target="_blank"
                 rel="noopener noreferrer"
                 ellipsis
-                style={{ maxWidth: 180 }}
+                style={{ maxWidth: 180, flexShrink: 0 }}
                 onClick={(e) => e.stopPropagation()}
               >
                 <LinkOutlined /> {c.traefik_url.replace(/^https?:\/\//, "")}

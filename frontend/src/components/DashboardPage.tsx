@@ -374,7 +374,11 @@ export default function DashboardPage({
             }}
             onClick={() => toggleStackExpand(project)}
           >
-            <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
+            <Typography.Text
+              strong
+              style={{ fontSize: 14, minWidth: 0, maxWidth: "100%" }}
+              ellipsis
+            >
               <AppstoreOutlined /> {project}
             </Typography.Text>
             <div style={{ marginTop: 4 }}>
@@ -433,7 +437,11 @@ export default function DashboardPage({
             align="center"
             style={{ minWidth: 0, flex: 1, overflow: "hidden" }}
           >
-            <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
+            <Typography.Text
+              strong
+              style={{ fontSize: 14, minWidth: 0, maxWidth: "100%" }}
+              ellipsis
+            >
               <AppstoreOutlined /> {project}
             </Typography.Text>
             <Tag color={running === items.length ? "success" : "warning"}>
