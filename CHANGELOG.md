@@ -1,4 +1,26 @@
 # Changelog
+## [0.26.0] - 2026-11-21
+
+### Documentation
+
+- *(openspec)* Propose expose-guard-defaults-api + PLAN-007 (#148)
+- *(openspec)* Archiva expose-guard-defaults-api en specs
+- *(openspec)* Propose expose-check-interval-ui + PLAN-008 (#149)
+- *(openspec)* Archiva expose-check-interval-ui en specs
+- *(openspec)* Propose harden-cron-client-validation + PLAN-009 (#150)
+- *(openspec)* Archiva harden-cron-client-validation en specs
+- *(plans)* Archiva PLAN-007/008/009 (148/149/150 completados)
+- *(handoff)* Estado tras cola 148/149/150
+
+### Features
+
+- *(updates)* Expone los defaults de la guarda por API (#148)
+- *(ui)* Permite editar el intervalo de comprobación (check_interval_ms) en segundos (#149)
+- *(ui)* Endurece la validación cliente del cron y arregla el preset Cada domingo (#150)
+
+### Testing
+
+- *(ui)* Estabiliza el race del error de cron con la revisión desactivada (#141)
 ## [0.25.0] - 2026-11-21
 
 ### Documentation
@@ -31,6 +53,10 @@
 - *(updates)* Valida la expresión cron al guardar e importar la config (#137)
 - *(updates)* Expone los defaults por API y elimina su hardcodeo en la UI (#139)
 - *(ui)* Valida el cron en el formulario y normaliza inputs de 6 campos (#141)
+
+### Miscellaneous Tasks
+
+- Release v0.25.0
 
 ### Testing
 
