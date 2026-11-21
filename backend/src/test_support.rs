@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 
 use crate::config::Config;
 use crate::db::DbPool;
-use crate::models::{BatchProgress, Settings};
+use crate::models::{BatchProgress, Settings, UpdateHistoryEntry};
 use crate::state::{AppState, JwtValidator, RolledBackGuard, TerminalFailed};
 
 /// Socket del sistema (podman instalado a nivel root).
@@ -347,6 +347,31 @@ pub async fn assert_settings_and_extra_lock_free_while_db_pool_saturated<H, T>(
     .await;
     assert_lock_acquirable(extra_label, async move {
         let _guard = extra.lock().await;
+    })
+    .await;
+    handle.abort();
+}
+
+/// Afirma que el mutex de `update_history` sigue siendo adquirible mientras
+/// `handler` está pendiente de una conexión de la pool de BD saturada.
+///
+/// Específico para helpers que publican o borran entradas del historial: a
+/// diferencia de [`assert_settings_and_extra_lock_free_while_db_pool_saturated`],
+/// no exige un mutex de `Settings` adicional. El llamante debe saturar la pool
+/// (`max_size == 1` reteniendo su única conexión) antes de invocar el helper.
+///
+/// Si el handler retiene el guard de `update_history` mientras espera la
+/// conexión, el timeout expira y el test falla (invariante: ningún guard cruza
+/// el `await` de la pool).
+pub async fn assert_update_history_lock_free_while_db_pool_saturated<H>(
+    update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
+    handler: H,
+) where
+    H: Future<Output = ()> + Send + 'static,
+{
+    let handle = spawn_handler_blocked_on_saturated_pool(handler).await;
+    assert_lock_acquirable("update_history.lock()", async move {
+        let _guard = update_history.lock().await;
     })
     .await;
     handle.abort();
