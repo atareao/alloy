@@ -1418,8 +1418,11 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
  * `validate-cron-on-put` — el backend valida el cron y responde 400 con
  * `{"error": ...}`. La UI debe mostrar el mensaje del backend, no uno genérico.
  *
- * En RED falla: `saveUpdateCheck` ignora el body del error y muestra siempre
- * "Error al guardar la revisión de actualizaciones".
+ * Nota: `validate-cron-client-ui` añade un pre-chequeo en el cliente que
+ * bloquea los crons estructuralmente inválidos (p. ej. "not a cron") antes de
+ * enviar el PUT. Para seguir ejercitando la ruta "el backend responde 400",
+ * se usa un cron que pasa el pre-chequeo ligero (5 campos, charset permitido)
+ * pero que el backend rechaza por rango (`99 99 99 99 99`).
  */
 describe("ConfigPage — error de cron inválido desde el backend", () => {
   beforeEach(() => {
@@ -1509,7 +1512,9 @@ describe("ConfigPage — error de cron inválido desde el backend", () => {
     const cronInput = await screen.findByPlaceholderText("0 6 * * *");
     await waitFor(() => expect(cronInput).toHaveValue("*/30 * * * *"));
 
-    fireEvent.change(cronInput, { target: { value: "not a cron" } });
+    // Cron client-valid (5 campos + charset) pero backend-invalid (fuera de
+    // rango): atraviesa el pre-chequeo y es el backend quien responde 400.
+    fireEvent.change(cronInput, { target: { value: "99 99 99 99 99" } });
     fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
 
     expect(
@@ -1639,5 +1644,262 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
         health_window_secs: 15,
       });
     });
+  });
+});
+
+/**
+ * `validate-cron-client-ui` — el formulario valida y normaliza el cron ANTES
+ * de enviar el PUT. Contrato:
+ *  - 6 campos ⇒ se quita el campo de segundos (primero) al salir del campo;
+ *    el PUT envía 5 campos.
+ *  - Cron estructuralmente inválido ⇒ error inline + PUT NO disparado.
+ *  - Cron válido de 5 campos ⇒ sin error + PUT disparado.
+ */
+describe("ConfigPage — validación y normalización del cron en el cliente", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function installCronFetchMock(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              // Distinto del default de `useState("0 6 * * *")` para que la
+              // aserción de precarga sea realmente probatoria (#134).
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 600,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: body?.cron,
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        // Placeholder del cron distinto del valor precargado, para localizar el
+        // Input por placeholder sin ambigüedad.
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+    return calls;
+  }
+
+  async function renderAndOpenCronTab(): Promise<HTMLInputElement> {
+    const calls = installCronFetchMock();
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    // El campo solo se monta con `ucEnabled` resuelto por el GET de precarga,
+    // y su valor debe ser el del backend (`*/30 * * * *`), no el initial state.
+    const cronInput = (await screen.findByPlaceholderText(
+      "15 3 * * *",
+    )) as HTMLInputElement;
+    await waitFor(() => expect(cronInput).toHaveValue("*/30 * * * *"));
+
+    // Expone los calls vía el closure del mock devuelto por installCronFetchMock.
+    (cronInput as unknown as { __calls: FetchCall[] }).__calls = calls;
+    return cronInput;
+  }
+
+  function callsOf(cronInput: HTMLInputElement): FetchCall[] {
+    return (cronInput as unknown as { __calls: FetchCall[] }).__calls;
+  }
+
+  function putCalls(calls: FetchCall[]): FetchCall[] {
+    return calls.filter(
+      (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+    );
+  }
+
+  it("normaliza un cron de 6 campos a 5 al salir del campo y guarda el valor normalizado", async () => {
+    const cronInput = await renderAndOpenCronTab();
+    const calls = callsOf(cronInput);
+
+    fireEvent.change(cronInput, { target: { value: "0 0 6 * * *" } });
+    fireEvent.blur(cronInput);
+
+    // Al salir del campo quedan 5 campos (se descarta el de segundos).
+    await waitFor(() => expect(cronInput).toHaveValue("0 6 * * *"));
+
+    fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
+
+    await waitFor(() => {
+      const puts = putCalls(calls);
+      expect(puts).toHaveLength(1);
+      expect(puts[0].body).toMatchObject({ cron: "0 6 * * *" });
+    });
+  });
+
+  it("un cron malformado muestra error inline y NO dispara el PUT", async () => {
+    const cronInput = await renderAndOpenCronTab();
+    const calls = callsOf(cronInput);
+
+    fireEvent.change(cronInput, { target: { value: "not a cron" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
+
+    expect(
+      await screen.findByText(/expresión cron inválida/i),
+    ).toBeInTheDocument();
+    expect(putCalls(calls)).toHaveLength(0);
+  });
+
+  it("un cron válido de 5 campos no muestra error y dispara el PUT", async () => {
+    const cronInput = await renderAndOpenCronTab();
+    const calls = callsOf(cronInput);
+
+    fireEvent.change(cronInput, { target: { value: "0 6 * * *" } });
+    fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
+
+    await waitFor(() => {
+      const puts = putCalls(calls);
+      expect(puts).toHaveLength(1);
+      expect(puts[0].body).toMatchObject({ cron: "0 6 * * *" });
+    });
+    expect(screen.queryByText(/expresión cron inválida/i)).not.toBeInTheDocument();
+  });
+
+  it("un cron con nombre de día (0 6 * * MON) no muestra error y dispara el PUT", async () => {
+    const cronInput = await renderAndOpenCronTab();
+    const calls = callsOf(cronInput);
+
+    fireEvent.change(cronInput, { target: { value: "0 6 * * MON" } });
+    fireEvent.blur(cronInput);
+    fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
+
+    await waitFor(() => {
+      const puts = putCalls(calls);
+      expect(puts).toHaveLength(1);
+      expect(puts[0].body).toMatchObject({ cron: "0 6 * * MON" });
+    });
+    expect(screen.queryByText(/expresión cron inválida/i)).not.toBeInTheDocument();
+  });
+
+  it("con la revisión desactivada, un cron inválido muestra el error (no-op silencioso)", async () => {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        // Desactivada + cron inválido: el campo cron NO se monta.
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "not a cron",
+              enabled: false,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 600,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    // El campo cron no existe con la revisión desactivada.
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText("15 3 * * *")).not.toBeInTheDocument(),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /desactivar revisión/i }),
+    );
+
+    // El error debe ser visible aunque el bloque de campos esté oculto.
+    expect(
+      await screen.findByText(/expresión cron inválida/i),
+    ).toBeInTheDocument();
+    expect(putCalls(calls)).toHaveLength(0);
   });
 });

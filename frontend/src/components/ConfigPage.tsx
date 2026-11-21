@@ -33,6 +33,45 @@ const CRON_PRESETS = [
   { value: "0 */1 * * *", label: "Cada hora" },
 ];
 
+// Pre-chequeo ligero del cron en el cliente (el backend es la autoridad final).
+// Charset permitido por campo: dígitos, letras (nombres de mes/día) y los
+// operadores `* , - /`. Así un cron que el backend acepta (p. ej. `0 6 * * MON`)
+// no se bloquea en el cliente.
+const CRON_FIELD_RE = /^[0-9A-Za-z*,\-/]+$/;
+
+/**
+ * Normaliza una expresión cron: `trim`; si trae **6 campos** (formato con
+ * segundos) elimina el primero (segundos) y devuelve los 5 canónicos.
+ */
+function normalizeCron(expr: string): string {
+  const trimmed = expr.trim();
+  const fields = trimmed.split(/\s+/);
+  if (fields.length === 6) {
+    return fields.slice(1).join(" ");
+  }
+  return trimmed;
+}
+
+/**
+ * Validación ligera del cron: normaliza primero, exige **exactamente 5 campos**
+ * con el charset permitido. Es un pre-chequeo; el backend valida de verdad.
+ */
+function isValidCronClient(expr: string): boolean {
+  const normalized = normalizeCron(expr);
+  if (!normalized) return false;
+  const fields = normalized.split(/\s+/);
+  if (fields.length !== 5) return false;
+  return fields.every((f) => CRON_FIELD_RE.test(f));
+}
+
+/** Mensaje de error inline para el campo cron, o `null` si es válido. */
+function cronErrorFor(raw: string): string | null {
+  if (raw.trim() === "") return "La expresión cron es obligatoria";
+  if (!isValidCronClient(raw))
+    return "Expresión cron inválida (se esperan 5 campos: min hora día mes semana)";
+  return null;
+}
+
 interface ConfigPageProps {
   config: AppConfig | null;
   setConfig: (c: AppConfig) => void;
@@ -73,6 +112,7 @@ export default function ConfigPage({
   const [ucCron, setUcCron] = useState("");
   const [ucEnabled, setUcEnabled] = useState(false);
   const [ucNotify, setUcNotify] = useState(false);
+  const [cronError, setCronError] = useState<string | null>(null);
 
   // Update check config — fetched separately
   const [checkConfig, setCheckConfig] = useState<UpdateCheckConfig | null>(
@@ -300,6 +340,16 @@ export default function ConfigPage({
   };
 
   const saveUpdateCheck = async () => {
+    // Validación/normalización en cliente: pre-chequeo antes del PUT.
+    // El backend sigue siendo la autoridad final.
+    const normalizedCron = normalizeCron(ucCron);
+    const clientError = cronErrorFor(normalizedCron);
+    if (clientError) {
+      setCronError(clientError);
+      return;
+    }
+    if (normalizedCron !== ucCron) setUcCron(normalizedCron);
+    setCronError(null);
     setSaving("update-check");
     setError(null);
     try {
@@ -307,7 +357,7 @@ export default function ConfigPage({
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cron: ucCron,
+          cron: normalizedCron,
           enabled: ucEnabled,
           notify: ucNotify,
           pull_timeout_secs: pullTimeout,
@@ -967,7 +1017,25 @@ export default function ConfigPage({
                         <Input
                           placeholder={defaults?.cron ?? ""}
                           value={ucCron}
-                          onChange={(e) => setUcCron(e.target.value)}
+                          status={cronError ? "error" : undefined}
+                          aria-invalid={!!cronError}
+                          aria-describedby={
+                            cronError ? "update-check-cron-error" : undefined
+                          }
+                          onChange={(e) => {
+                            // Patrón "touched": no introducimos error mientras el
+                            // usuario escribe si el campo estaba limpio; si ya
+                            // había error, lo recalculamos para limpiarlo al
+                            // corregir.
+                            const v = e.target.value;
+                            setUcCron(v);
+                            if (cronError) setCronError(cronErrorFor(v));
+                          }}
+                          onBlur={() => {
+                            const normalized = normalizeCron(ucCron);
+                            if (normalized !== ucCron) setUcCron(normalized);
+                            setCronError(cronErrorFor(normalized));
+                          }}
                         />
                       </Space>
                       <Flex align="center" gap={8}>
@@ -1093,6 +1161,16 @@ export default function ConfigPage({
                         </Flex>
                       </Space>
                     </Space>
+                  )}
+                  {cronError && (
+                    <Typography.Text
+                      id="update-check-cron-error"
+                      type="danger"
+                      style={{ fontSize: 12, display: "block" }}
+                      role="alert"
+                    >
+                      {cronError}
+                    </Typography.Text>
                   )}
                   <Flex justify="flex-end" style={{ marginTop: 16 }}>
                     <Button

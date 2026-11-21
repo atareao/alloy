@@ -5,7 +5,7 @@
 ### Requirement: Validación del cron en el formulario antes de enviar
 
 El formulario de configuración MUST validar la expresión cron **antes** de enviarla. Si es inválida
-(no tiene **5 campos** o algún campo no respeta la estructura permitida —dígitos y los operadores
+(no tiene **5 campos** o algún campo no respeta la estructura permitida —dígitos, letras (nombres de mes/día) y los operadores
 `* , - /`—), MUST mostrar un **error inline** junto al campo y MUST **NO** enviar el `PUT`
 `/api/update-check/config`. La validación del cliente es un pre-chequeo ligero; el backend sigue siendo
 la autoridad final.
