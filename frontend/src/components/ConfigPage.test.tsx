@@ -1238,13 +1238,19 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    expect(
-      await screen.findByLabelText("Máximo de intentos de arranque"),
-    ).toHaveValue("3");
-    expect(screen.getByLabelText("Intervalo entre intentos (s)")).toHaveValue(
-      "5",
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Máximo de intentos de arranque"),
+      ).toHaveValue("3"),
     );
-    expect(screen.getByLabelText("Ventana de salud (s)")).toHaveValue("30");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Intervalo entre intentos (s)")).toHaveValue(
+        "5",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Ventana de salud (s)")).toHaveValue("30"),
+    );
   });
 
   it("incluye los tres campos en el PUT al guardar la revisión", async () => {
@@ -1252,10 +1258,15 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    fireEvent.change(
-      await screen.findByLabelText("Máximo de intentos de arranque"),
-      { target: { value: "5" } },
+    // Espera a que la precarga asíncrona del GET se aplique antes de editar.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Máximo de intentos de arranque"),
+      ).toHaveValue("3"),
     );
+    fireEvent.change(screen.getByLabelText("Máximo de intentos de arranque"), {
+      target: { value: "5" },
+    });
     fireEvent.change(screen.getByLabelText("Intervalo entre intentos (s)"), {
       target: { value: "10" },
     });
@@ -1354,11 +1365,15 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    expect(
-      await screen.findByLabelText("Override máximo de intentos de arranque"),
-    ).toHaveValue("4");
-    expect(screen.getByLabelText("Override ventana de salud (s)")).toHaveValue(
-      "20",
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Override máximo de intentos de arranque"),
+      ).toHaveValue("4"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Override ventana de salud (s)"),
+      ).toHaveValue("20"),
     );
   });
 
@@ -1367,8 +1382,14 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
+    // Espera a que la precarga asíncrona del GET se aplique antes de editar.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Override máximo de intentos de arranque"),
+      ).toHaveValue("4"),
+    );
     fireEvent.change(
-      await screen.findByLabelText("Override máximo de intentos de arranque"),
+      screen.getByLabelText("Override máximo de intentos de arranque"),
       { target: { value: "6" } },
     );
     fireEvent.change(screen.getByLabelText("Override ventana de salud (s)"), {
