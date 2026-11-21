@@ -1067,6 +1067,9 @@ describe("ConfigPage — defaults desde la API (GET /api/update-check/defaults)"
               cron: "15 3 * * *",
               pull_timeout_secs: 900,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1190,7 +1193,9 @@ describe("ConfigPage — defaults desde la API (GET /api/update-check/defaults)"
     fireEvent.change(screen.getByDisplayValue("1200"), {
       target: { value: "" },
     });
-    expect(screen.queryByDisplayValue("0")).not.toBeInTheDocument();
+    fireEvent.blur(timeoutInput);
+    // El input del timeout conserva el valor previo; no cae a 0.
+    expect((timeoutInput as HTMLInputElement).value).toBe("1200");
 
     // Al guardar, el valor previo (1200) se envía tal cual, no 0.
     fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
@@ -1415,6 +1420,188 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 });
 
 /**
+ * `expose-guard-defaults-api` — el fallback al vaciar los campos de la guarda
+ * debe salir de `GET /api/update-check/defaults`, no de los literales `3/10/30`.
+ *
+ * El mock devuelve guard defaults **distintos** de los canónicos
+ * (`5/20/45`) y la precarga del `GET /config` valores también distintos
+ * (`7/33/90`), de modo que la aserción del fallback es probatoria: si el
+ * frontend siguiera usando los literales, el valor aplicado sería `3/10/30`.
+ */
+describe("ConfigPage — la guarda usa los defaults de la API al vaciar", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderGuardDefaults(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+              // Distintos de los canónicos (3/10/30) y de los defaults de la API
+              // (5/20/45) para que el fallback sea realmente probatorio.
+              update_max_start_attempts: 7,
+              update_start_attempt_interval_secs: 33,
+              update_health_window_secs: 90,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+              update_max_start_attempts: 5,
+              update_start_attempt_interval_secs: 20,
+              update_health_window_secs: 45,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return calls;
+  }
+
+  it("vaciar 'Máximo de intentos de arranque' aplica el default de la API (5), no el literal 3", async () => {
+    const calls = renderGuardDefaults();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Máximo de intentos de arranque");
+    // La precarga del GET /config deja el valor previo 7.
+    await waitFor(() => expect(input).toHaveValue("7"));
+
+    fireEvent.change(input, { target: { value: "9" } });
+    expect(input).toHaveValue("9");
+
+    // Al vaciarlo, el fallback es el de la API (5), no el literal 3.
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).toHaveValue("5");
+    expect(input).not.toHaveValue("3");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ update_max_start_attempts: 5 });
+    });
+  });
+
+  it("vaciar 'Intervalo entre intentos (s)' aplica el default de la API (20), no el literal 10", async () => {
+    const calls = renderGuardDefaults();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Intervalo entre intentos (s)");
+    await waitFor(() => expect(input).toHaveValue("33"));
+
+    fireEvent.change(input, { target: { value: "77" } });
+    expect(input).toHaveValue("77");
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).toHaveValue("20");
+    expect(input).not.toHaveValue("10");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({
+        update_start_attempt_interval_secs: 20,
+      });
+    });
+  });
+
+  it("vaciar 'Ventana de salud (s)' aplica el default de la API (45), no el literal 30", async () => {
+    const calls = renderGuardDefaults();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Ventana de salud (s)");
+    await waitFor(() => expect(input).toHaveValue("90"));
+
+    fireEvent.change(input, { target: { value: "120" } });
+    expect(input).toHaveValue("120");
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).toHaveValue("45");
+    expect(input).not.toHaveValue("30");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ update_health_window_secs: 45 });
+    });
+  });
+});
+
+/**
  * `validate-cron-on-put` — el backend valida el cron y responde 400 con
  * `{"error": ...}`. La UI debe mostrar el mensaje del backend, no uno genérico.
  *
@@ -1457,6 +1644,9 @@ describe("ConfigPage — error de cron inválido desde el backend", () => {
               cron: "0 6 * * *",
               pull_timeout_secs: 600,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1706,6 +1896,9 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
               cron: "15 3 * * *",
               pull_timeout_secs: 900,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1856,6 +2049,9 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
               cron: "15 3 * * *",
               pull_timeout_secs: 900,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
