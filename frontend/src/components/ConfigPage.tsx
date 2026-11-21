@@ -69,7 +69,7 @@ export default function ConfigPage({
   const [valetEnabled, setValetEnabled] = useState(false);
 
   // Update check cron
-  const [ucCron, setUcCron] = useState("0 */6 * * *");
+  const [ucCron, setUcCron] = useState("0 6 * * *");
   const [ucEnabled, setUcEnabled] = useState(false);
   const [ucNotify, setUcNotify] = useState(false);
 
@@ -948,7 +948,7 @@ export default function ConfigPage({
                           Edita directamente si los presets no se ajustan
                         </Typography.Text>
                         <Input
-                          placeholder="0 */6 * * *"
+                          placeholder="0 6 * * *"
                           value={ucCron}
                           onChange={(e) => setUcCron(e.target.value)}
                         />
@@ -975,11 +975,11 @@ export default function ConfigPage({
                           style={{ fontSize: 12 }}
                         >
                           Aumentar para imágenes grandes (&gt;500MB) o
-                          conexiones lentas. Default: 1800 (30 min)
+                          conexiones lentas. Default: 600 (10 min)
                         </Typography.Text>
                         <InputNumber
                           value={pullTimeout}
-                          onChange={(v) => setPullTimeout(Number(v) || 1800)}
+                          onChange={(v) => setPullTimeout(Number(v) || 600)}
                           min={60}
                           max={7200}
                           step={60}

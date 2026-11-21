@@ -45,10 +45,7 @@ pub async fn update_check_worker(
         tick.tick().await;
         let s = settings.lock().await;
         let enabled = s.update_check_enabled.unwrap_or(false);
-        let cron = s
-            .update_check_cron
-            .clone()
-            .unwrap_or_else(|| "0 0 * * *".into()); // default: cada 24h a medianoche
+        let cron = s.effective_update_check_cron();
         drop(s);
 
         if !enabled {
@@ -136,7 +133,7 @@ pub async fn update_check_worker(
         // 3. Revisar cada contenedor secuencialmente y aplicar políticas
         let check_interval_ms = {
             let s = settings.lock().await;
-            s.check_interval_ms.unwrap_or(2000)
+            s.effective_check_interval_ms()
         };
         let mut updated_count = 0u32;
         // Cache de digests por imagen única dentro de este ciclo: evita
@@ -289,7 +286,7 @@ pub async fn update_check_worker(
                 UpdateAction::Pull => {
                     let _in_progress =
                         InProgressGuard::acquire(update_in_progress.clone(), name.clone()).await;
-                    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+                    let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
                     if pull_image(&docker, &image_full, Some(&manifest_digest), pull_timeout).await
                     {
                         // Guard anti-bucle (mismo mecanismo que PullRestart):
@@ -329,7 +326,7 @@ pub async fn update_check_worker(
                 UpdateAction::PullRestart => {
                     let _in_progress =
                         InProgressGuard::acquire(update_in_progress.clone(), name.clone()).await;
-                    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+                    let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
                     let (max_attempts, interval_secs, health_window) = {
                         let s = settings.lock().await;
                         guard_params(&policy, &s)
@@ -477,7 +474,7 @@ pub async fn update_check_worker(
                 UpdateAction::PullRestartStack => {
                     let _in_progress =
                         InProgressGuard::acquire(update_in_progress.clone(), name.clone()).await;
-                    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+                    let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
                     let (max_attempts, interval_secs, health_window) = {
                         let s = settings.lock().await;
                         guard_params(&policy, &s)

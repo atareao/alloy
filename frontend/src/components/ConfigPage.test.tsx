@@ -68,7 +68,7 @@ function installFetchMock(config: AppConfig): FetchCall[] {
       return Promise.resolve(
         new Response(
           JSON.stringify({
-            cron: "0 */6 * * *",
+            cron: "0 6 * * *",
             enabled: false,
             notify: false,
             last_run_at: null,
@@ -930,7 +930,7 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
         return Promise.resolve(
           new Response(
             JSON.stringify({
-              cron: "0 */6 * * *",
+              cron: "0 6 * * *",
               enabled: false,
               notify: false,
               last_run_at: null,
@@ -1026,6 +1026,110 @@ describe("ConfigPage — tarjeta Exportar / Importar", () => {
 });
 
 /**
+ * Consistencia de defaults backend↔UI (change reconcile-update-defaults).
+ *
+ * El formulario debe arrancar con los valores canónicos `0 6 * * *` (cron) y
+ * `600` (timeout de pull) antes de que resuelva el GET /api/update-check/config,
+ * y la etiqueta del timeout debe indicar `600 (10 min)`.
+ */
+describe("ConfigPage — defaults canónicos de updates", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Los campos de cron/timeout solo se montan con la revisión activada. El GET
+  // devuelve los canónicos del backend, pero el placeholder y la etiqueta del
+  // timeout son estáticos: deben coincidir aunque la carga esté en vuelo.
+  function renderWithEnabledUpdates() {
+    const mock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/update-check/config") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "0 6 * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 600,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+  }
+
+  it("usa el cron canónico 0 6 * * * como placeholder inicial", async () => {
+    renderWithEnabledUpdates();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    expect(
+      await screen.findByPlaceholderText("0 6 * * *"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("0 */6 * * *"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("muestra el timeout por defecto canónico 600 (10 min)", async () => {
+    renderWithEnabledUpdates();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    expect(
+      await screen.findByText(/Default: 600 \(10 min\)/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/1800/)).not.toBeInTheDocument();
+  });
+
+  it("vaciar el timeout no cambia el default mostrado (600)", async () => {
+    renderWithEnabledUpdates();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    // El campo arranca precargado con el canónico 600.
+    const timeoutInput = await screen.findByDisplayValue("600");
+
+    // El usuario lo cambia a un valor no-default…
+    fireEvent.change(timeoutInput, { target: { value: "900" } });
+    expect(screen.getByDisplayValue("900")).toBeInTheDocument();
+
+    // …y al vaciarlo se aplica el fallback canónico 600 (no 1800).
+    fireEvent.change(screen.getByDisplayValue("900"), {
+      target: { value: "" },
+    });
+
+    expect(screen.getByDisplayValue("600")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("1800")).not.toBeInTheDocument();
+  });
+});
+
+/**
  * RED (task 1.14) — guarda de arranque (update-rollback-guard).
  *
  * Contrato que deben cumplir estos tests (aún NO implementado):
@@ -1054,7 +1158,7 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
         return Promise.resolve(
           new Response(
             JSON.stringify({
-              cron: "0 */6 * * *",
+              cron: "0 6 * * *",
               enabled: true,
               notify: false,
               last_run_at: null,
@@ -1082,7 +1186,7 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
         return Promise.resolve(
           new Response(
             JSON.stringify({
-              cron: "0 */6 * * *",
+              cron: "0 6 * * *",
               enabled: true,
               notify: false,
               last_run_at: null,
@@ -1134,13 +1238,19 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    expect(
-      await screen.findByLabelText("Máximo de intentos de arranque"),
-    ).toHaveValue("3");
-    expect(screen.getByLabelText("Intervalo entre intentos (s)")).toHaveValue(
-      "5",
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Máximo de intentos de arranque"),
+      ).toHaveValue("3"),
     );
-    expect(screen.getByLabelText("Ventana de salud (s)")).toHaveValue("30");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Intervalo entre intentos (s)")).toHaveValue(
+        "5",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Ventana de salud (s)")).toHaveValue("30"),
+    );
   });
 
   it("incluye los tres campos en el PUT al guardar la revisión", async () => {
@@ -1148,10 +1258,15 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    fireEvent.change(
-      await screen.findByLabelText("Máximo de intentos de arranque"),
-      { target: { value: "5" } },
+    // Espera a que la precarga asíncrona del GET se aplique antes de editar.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Máximo de intentos de arranque"),
+      ).toHaveValue("3"),
     );
+    fireEvent.change(screen.getByLabelText("Máximo de intentos de arranque"), {
+      target: { value: "5" },
+    });
     fireEvent.change(screen.getByLabelText("Intervalo entre intentos (s)"), {
       target: { value: "10" },
     });
@@ -1199,7 +1314,7 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
         return Promise.resolve(
           new Response(
             JSON.stringify({
-              cron: "0 */6 * * *",
+              cron: "0 6 * * *",
               enabled: true,
               notify: false,
               last_run_at: null,
@@ -1250,11 +1365,15 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    expect(
-      await screen.findByLabelText("Override máximo de intentos de arranque"),
-    ).toHaveValue("4");
-    expect(screen.getByLabelText("Override ventana de salud (s)")).toHaveValue(
-      "20",
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Override máximo de intentos de arranque"),
+      ).toHaveValue("4"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Override ventana de salud (s)"),
+      ).toHaveValue("20"),
     );
   });
 
@@ -1263,8 +1382,14 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
+    // Espera a que la precarga asíncrona del GET se aplique antes de editar.
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Override máximo de intentos de arranque"),
+      ).toHaveValue("4"),
+    );
     fireEvent.change(
-      await screen.findByLabelText("Override máximo de intentos de arranque"),
+      screen.getByLabelText("Override máximo de intentos de arranque"),
       { target: { value: "6" } },
     );
     fireEvent.change(screen.getByLabelText("Override ventana de salud (s)"), {

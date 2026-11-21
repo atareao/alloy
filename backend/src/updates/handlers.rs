@@ -698,7 +698,7 @@ pub async fn update_container_h(
         }));
     }
 
-    let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+    let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
     let start_time = std::time::Instant::now();
     tracing::info!(
         "update_container_h: descargando '{}' (timeout: {}s)",
@@ -946,7 +946,7 @@ pub async fn update_all_h(
         }
 
         let old_digest = image_id.as_deref().unwrap_or("").to_string();
-        let pull_timeout = settings.lock().await.pull_timeout_secs.unwrap_or(600);
+        let pull_timeout = settings.lock().await.effective_pull_timeout_secs();
         let start_time = std::time::Instant::now();
         tracing::info!(
             "update_all_h: descargando '{}' (imagen: {}, timeout: {}s)",
@@ -1226,7 +1226,7 @@ async fn check_and_apply_all(
 
     let check_interval = {
         let s = settings.lock().await;
-        s.check_interval_ms.unwrap_or(2000)
+        s.effective_check_interval_ms()
     };
 
     // Pre-build a name→(&ContainerSummary, image_id) map from raw containers
@@ -1526,10 +1526,7 @@ async fn check_and_apply_all(
     {
         let conn = db_pool.get().await.unwrap();
         let mut s = settings.lock().await;
-        let cron = s
-            .update_check_cron
-            .clone()
-            .unwrap_or_else(|| "0 0 * * *".into());
+        let cron = s.effective_update_check_cron();
         let last_check = crate::timezone::now_formatted();
         let next_check = crate::timezone::next_cron_time(&cron).unwrap_or_default();
         for c in &containers {
@@ -1706,7 +1703,7 @@ async fn apply_single_policy(
     let (pull_timeout, guard_max, guard_interval, guard_window) = {
         let s = settings.lock().await;
         let (max, interval, window) = guard_params(policy, &s);
-        (s.pull_timeout_secs.unwrap_or(600), max, interval, window)
+        (s.effective_pull_timeout_secs(), max, interval, window)
     };
     // Desenlace de la guarda, solo cuando `rollback_on_failure` la ejecuta.
     let mut guard_outcome: Option<GuardOutcome> = None;
