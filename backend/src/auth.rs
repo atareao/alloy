@@ -11,6 +11,7 @@ use cookie::{Cookie, SameSite};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use uuid::Uuid;
@@ -508,45 +509,101 @@ pub async fn auth_middleware(
 
 // ── Frontend static file handler ───────────────────────────
 
-pub async fn frontend_handler(req: axum::extract::Request) -> impl IntoResponse {
-    let path = req.uri().path().trim_start_matches('/');
-    let file_path = if path.is_empty() || path.starts_with("api/") {
-        "index.html"
-    } else {
-        path
-    };
-    let full_path = format!("dist/{}", file_path);
-    match tokio::fs::read(&full_path).await {
-        Ok(content) => {
-            let ext = file_path.rsplit('.').next().unwrap_or("");
-            let mime = match ext {
-                "html" => "text/html",
-                "css" => "text/css",
-                "js" => "application/javascript",
-                "json" => "application/json",
-                "png" => "image/png",
-                "svg" => "image/svg+xml",
-                "ico" => "image/x-icon",
-                "woff2" => "font/woff2",
-                "woff" => "font/woff",
-                "ttf" => "font/ttf",
-                _ => "application/octet-stream",
-            };
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", mime)
-                .body(axum::body::Body::from(content))
-                .unwrap()
-        }
-        Err(_) => match tokio::fs::read("dist/index.html").await {
-            Ok(html) => Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "text/html")
-                .body(axum::body::Body::from(html))
-                .unwrap(),
-            Err(_) => (StatusCode::NOT_FOUND, "Frontend not built").into_response(),
-        },
+/// Resuelve de forma segura un `request_path` contra `root`.
+///
+/// Devuelve `Some(path)` **canónico** solo cuando el fichero resuelto existe,
+/// es un fichero regular y queda **dentro** de `root` (tras canonicalizar, lo
+/// que neutraliza segmentos `..`, rutas absolutas y enlaces simbólicos). En
+/// cualquier otro caso devuelve `None`, de modo que el llamante pueda aplicar
+/// el *fallback* SPA.
+///
+/// Los intentos percent-encoded (p. ej. `%2e%2e`) hoy no se decodifican: se
+/// tratan como nombres literales de fichero, por lo que no existen en disco y
+/// `canonicalize` falla, devolviendo `None` sin riesgo. Además, aunque en el
+/// futuro se decodificaran, seguirían siendo seguros: tras `canonicalize` la
+/// comprobación de prefijo (`canon.starts_with(&root_canon)`) descartaría
+/// cualquier ruta que escapara de `root` (defensa en profundidad).
+fn safe_static_path(root: &Path, request_path: &str) -> Option<PathBuf> {
+    // Un byte NUL no es una ruta válida y podría truncar rutas en algunas APIs.
+    if request_path.contains('\0') {
+        return None;
     }
+
+    let root_canon = root.canonicalize().ok()?;
+    let candidate = root_canon.join(request_path.trim_start_matches('/'));
+    let canon = candidate.canonicalize().ok()?;
+
+    if canon.starts_with(&root_canon) && canon.is_file() {
+        Some(canon)
+    } else {
+        None
+    }
+}
+
+/// Devuelve el `content-type` asociado a la extensión de `path`.
+fn content_type_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "html" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Construye una `Response` con `status`, `content-type` y cuerpo dados.
+///
+/// Los headers son literales estáticos válidos, así que la construcción no
+/// debería fallar; si lo hiciera, se degrada a un 500 en lugar de hacer panic.
+fn static_response(status: StatusCode, content_type: &str, content: Vec<u8>) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(axum::body::Body::from(content))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build response",
+            )
+                .into_response()
+        })
+}
+
+/// Sirve un fichero estático desde `root`, confinado a ese directorio.
+///
+/// Si `request_path` resuelve a un fichero válido dentro de `root`, se sirve con
+/// su `content-type`. En caso contrario (ruta inexistente, directorio, intento
+/// de *traversal* o ruta `api/`), se aplica el *fallback* SPA sirviendo
+/// `root/index.html`; si este tampoco existe, se responde `404`.
+async fn serve_static(root: &Path, request_path: &str) -> Response {
+    let trimmed = request_path.trim_start_matches('/');
+    // Se preserva el comportamiento previo: raíz vacía o rutas `api/` sirven
+    // directamente el índice, sin intentar resolverlas en disco.
+    let force_index = trimmed.is_empty() || trimmed.starts_with("api/");
+
+    if !force_index {
+        if let Some(file) = safe_static_path(root, request_path) {
+            if let Ok(content) = tokio::fs::read(&file).await {
+                return static_response(StatusCode::OK, content_type_for(&file), content);
+            }
+        }
+    }
+
+    match tokio::fs::read(root.join("index.html")).await {
+        Ok(html) => static_response(StatusCode::OK, "text/html", html),
+        Err(_) => (StatusCode::NOT_FOUND, "Frontend not built").into_response(),
+    }
+}
+
+/// Handler `.fallback` del router: sirve el frontend desde `dist/`.
+pub async fn frontend_handler(req: axum::extract::Request) -> impl IntoResponse {
+    serve_static(Path::new("dist"), req.uri().path()).await
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -1549,5 +1606,168 @@ mod tests {
         );
         assert_eq!(response.headers()["content-type"], "application/json");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── Servido de estáticos (endurecimiento path traversal) ─
+    //
+    // `frontend_handler` es un envoltorio fino sobre `serve_static`; aquí se
+    // ejercita la lógica resolviendo contra un `root` temporal, que es
+    // equivalente a `dist/` en producción.
+
+    const INDEX_MARKER: &str = "<html>SPA_INDEX_MARKER</html>";
+    const ASSET_BODY: &str = "console.log('asset-marker');";
+    const OUTSIDE_SECRET: &str = "OUTSIDE_SECRET_MARKER";
+
+    /// Crea `root/` con `index.html` y `assets/app.js`, más un fichero
+    /// `outside.txt` situado **fuera** de `root` (no debe ser servible).
+    fn static_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("assets")).expect("mkdir assets");
+        std::fs::write(root.join("index.html"), INDEX_MARKER).expect("write index");
+        std::fs::write(root.join("assets/app.js"), ASSET_BODY).expect("write asset");
+        std::fs::write(dir.path().join("outside.txt"), OUTSIDE_SECRET).expect("write outside");
+        (dir, root)
+    }
+
+    async fn body_string(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn safe_static_path_allows_file_inside_root() {
+        let (_dir, root) = static_fixture();
+        let resolved = safe_static_path(&root, "/assets/app.js");
+        assert!(
+            resolved.is_some(),
+            "un asset dentro de root debe resolverse"
+        );
+        assert!(resolved
+            .expect("resolved")
+            .starts_with(root.canonicalize().expect("canonicalize root")));
+    }
+
+    #[test]
+    fn safe_static_path_rejects_parent_traversal() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/../outside.txt").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_deep_parent_traversal() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/../../etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_absolute_path() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_percent_encoded_traversal() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/%2e%2e/%2e%2e/etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_nul_byte() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "\0").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_directory_root() {
+        // `/` resuelve al propio directorio raíz: no es un fichero, así que se
+        // devuelve `None` y el handler cae al fallback SPA (`index.html`).
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_unknown_client_route() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/dashboard").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_static_path_rejects_symlink_escaping_root() {
+        // Un symlink *dentro* de `root` que apunta a un fichero externo no debe
+        // servirse: `canonicalize` resuelve el enlace a su destino real y la
+        // comprobación de prefijo detecta que queda fuera de `root`.
+        use std::os::unix::fs::symlink;
+
+        let (dir, root) = static_fixture();
+        symlink(dir.path().join("outside.txt"), root.join("link_out.txt")).expect("symlink");
+        assert!(safe_static_path(&root, "/link_out.txt").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_sibling_prefix_directory() {
+        // Un directorio hermano cuyo nombre comparte el prefijo (`dist-evil`
+        // frente a `dist`) no debe confundirse con `root`: la comprobación de
+        // prefijo es por componente de ruta, no por prefijo textual.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dist = dir.path().join("dist");
+        let evil = dir.path().join("dist-evil");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        std::fs::create_dir_all(&evil).expect("mkdir dist-evil");
+        std::fs::write(evil.join("secret.txt"), OUTSIDE_SECRET).expect("write secret");
+        assert!(safe_static_path(&dist, "/../dist-evil/secret.txt").is_none());
+    }
+
+    #[tokio::test]
+    async fn serve_static_serves_existing_asset() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/assets/app.js").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "application/javascript"
+        );
+        assert!(body_string(resp).await.contains(ASSET_BODY));
+    }
+
+    #[tokio::test]
+    async fn serve_static_traversal_falls_back_to_spa_index() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/../outside.txt").await;
+        // No se sirve el fichero externo: cae al fallback SPA.
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains(OUTSIDE_SECRET),
+            "no debe filtrarse el contenido de un fichero fuera de root"
+        );
+        assert!(body.contains(INDEX_MARKER), "debe servir el fallback SPA");
+    }
+
+    #[tokio::test]
+    async fn serve_static_client_route_falls_back_to_spa_index() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/dashboard").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_string(resp).await.contains(INDEX_MARKER));
+    }
+
+    #[tokio::test]
+    async fn serve_static_root_serves_spa_index() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_string(resp).await.contains(INDEX_MARKER));
+    }
+
+    #[tokio::test]
+    async fn serve_static_missing_index_returns_404() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("empty");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        let resp = serve_static(&root, "/dashboard").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
