@@ -295,6 +295,10 @@ mod tests {
         assert_eq!(defaults.cron, "0 6 * * *");
         assert_eq!(defaults.pull_timeout_secs, 600);
         assert_eq!(defaults.check_interval_ms, 2000);
+        // Defaults de la guarda de arranque (consts canónicas).
+        assert_eq!(defaults.update_max_start_attempts, 3);
+        assert_eq!(defaults.update_start_attempt_interval_secs, 10);
+        assert_eq!(defaults.update_health_window_secs, 30);
     }
 
     #[tokio::test]

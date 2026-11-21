@@ -3,6 +3,7 @@ import { useState } from "react";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { ConfigProvider } from "antd";
 import ConfigPage from "./ConfigPage";
+import { CRON_PRESETS } from "../cronPresets";
 import type { AppConfig } from "../types";
 
 // Polyfill ResizeObserver for jsdom (required by antd Card)
@@ -1067,6 +1068,9 @@ describe("ConfigPage — defaults desde la API (GET /api/update-check/defaults)"
               cron: "15 3 * * *",
               pull_timeout_secs: 900,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1190,7 +1194,9 @@ describe("ConfigPage — defaults desde la API (GET /api/update-check/defaults)"
     fireEvent.change(screen.getByDisplayValue("1200"), {
       target: { value: "" },
     });
-    expect(screen.queryByDisplayValue("0")).not.toBeInTheDocument();
+    fireEvent.blur(timeoutInput);
+    // El input del timeout conserva el valor previo; no cae a 0.
+    expect((timeoutInput as HTMLInputElement).value).toBe("1200");
 
     // Al guardar, el valor previo (1200) se envía tal cual, no 0.
     fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
@@ -1415,14 +1421,196 @@ describe("ConfigPage — guarda de arranque (update-rollback-guard)", () => {
 });
 
 /**
+ * `expose-guard-defaults-api` — el fallback al vaciar los campos de la guarda
+ * debe salir de `GET /api/update-check/defaults`, no de los literales `3/10/30`.
+ *
+ * El mock devuelve guard defaults **distintos** de los canónicos
+ * (`5/20/45`) y la precarga del `GET /config` valores también distintos
+ * (`7/33/90`), de modo que la aserción del fallback es probatoria: si el
+ * frontend siguiera usando los literales, el valor aplicado sería `3/10/30`.
+ */
+describe("ConfigPage — la guarda usa los defaults de la API al vaciar", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderGuardDefaults(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+              // Distintos de los canónicos (3/10/30) y de los defaults de la API
+              // (5/20/45) para que el fallback sea realmente probatorio.
+              update_max_start_attempts: 7,
+              update_start_attempt_interval_secs: 33,
+              update_health_window_secs: 90,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+              update_max_start_attempts: 5,
+              update_start_attempt_interval_secs: 20,
+              update_health_window_secs: 45,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return calls;
+  }
+
+  it("vaciar 'Máximo de intentos de arranque' aplica el default de la API (5), no el literal 3", async () => {
+    const calls = renderGuardDefaults();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Máximo de intentos de arranque");
+    // La precarga del GET /config deja el valor previo 7.
+    await waitFor(() => expect(input).toHaveValue("7"));
+
+    fireEvent.change(input, { target: { value: "9" } });
+    expect(input).toHaveValue("9");
+
+    // Al vaciarlo, el fallback es el de la API (5), no el literal 3.
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).toHaveValue("5");
+    expect(input).not.toHaveValue("3");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ update_max_start_attempts: 5 });
+    });
+  });
+
+  it("vaciar 'Intervalo entre intentos (s)' aplica el default de la API (20), no el literal 10", async () => {
+    const calls = renderGuardDefaults();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Intervalo entre intentos (s)");
+    await waitFor(() => expect(input).toHaveValue("33"));
+
+    fireEvent.change(input, { target: { value: "77" } });
+    expect(input).toHaveValue("77");
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).toHaveValue("20");
+    expect(input).not.toHaveValue("10");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({
+        update_start_attempt_interval_secs: 20,
+      });
+    });
+  });
+
+  it("vaciar 'Ventana de salud (s)' aplica el default de la API (45), no el literal 30", async () => {
+    const calls = renderGuardDefaults();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Ventana de salud (s)");
+    await waitFor(() => expect(input).toHaveValue("90"));
+
+    fireEvent.change(input, { target: { value: "120" } });
+    expect(input).toHaveValue("120");
+
+    fireEvent.change(input, { target: { value: "" } });
+    expect(input).toHaveValue("45");
+    expect(input).not.toHaveValue("30");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ update_health_window_secs: 45 });
+    });
+  });
+});
+
+/**
  * `validate-cron-on-put` — el backend valida el cron y responde 400 con
  * `{"error": ...}`. La UI debe mostrar el mensaje del backend, no uno genérico.
  *
- * Nota: `validate-cron-client-ui` añade un pre-chequeo en el cliente que
- * bloquea los crons estructuralmente inválidos (p. ej. "not a cron") antes de
- * enviar el PUT. Para seguir ejercitando la ruta "el backend responde 400",
- * se usa un cron que pasa el pre-chequeo ligero (5 campos, charset permitido)
- * pero que el backend rechaza por rango (`99 99 99 99 99`).
+ * Nota: `harden-cron-client-validation` añade un pre-chequeo en el cliente que
+ * bloquea los crons estructuralmente inválidos y los de valores fuera de rango
+ * (p. ej. "not a cron" o "99 99 99 99 99") antes de enviar el PUT. Para seguir
+ * ejercitando la ruta "el backend responde 400", se usa un cron que pasa el
+ * pre-chequeo endurecido (`0 6 * * 1-5`) pero que el mock del backend rechaza.
  */
 describe("ConfigPage — error de cron inválido desde el backend", () => {
   beforeEach(() => {
@@ -1457,6 +1645,9 @@ describe("ConfigPage — error de cron inválido desde el backend", () => {
               cron: "0 6 * * *",
               pull_timeout_secs: 600,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1512,9 +1703,9 @@ describe("ConfigPage — error de cron inválido desde el backend", () => {
     const cronInput = await screen.findByPlaceholderText("0 6 * * *");
     await waitFor(() => expect(cronInput).toHaveValue("*/30 * * * *"));
 
-    // Cron client-valid (5 campos + charset) pero backend-invalid (fuera de
-    // rango): atraviesa el pre-chequeo y es el backend quien responde 400.
-    fireEvent.change(cronInput, { target: { value: "99 99 99 99 99" } });
+    // Cron client-valid (5 campos, en rango, con rango a-b): atraviesa el
+    // pre-chequeo y es el backend quien responde 400 con su mensaje.
+    fireEvent.change(cronInput, { target: { value: "0 6 * * 1-5" } });
     fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
 
     expect(
@@ -1648,11 +1839,16 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
 });
 
 /**
- * `validate-cron-client-ui` — el formulario valida y normaliza el cron ANTES
- * de enviar el PUT. Contrato:
+ * `harden-cron-client-validation` — el formulario valida y normaliza el cron
+ * ANTES de enviar el PUT, alineado con la gramática de la crate `cron` del
+ * backend (autoridad final). Contrato:
  *  - 6 campos ⇒ se quita el campo de segundos (primero) al salir del campo;
  *    el PUT envía 5 campos.
- *  - Cron estructuralmente inválido ⇒ error inline + PUT NO disparado.
+ *  - Cada campo se valida por rangos (minuto 0–59, hora 0–23, día-del-mes
+ *    1–31, mes 1–12, día-de-semana 1–7), listas `,`, rangos `a-b` no invertidos,
+ *    pasos `1..=máximo` del campo, `?` (solo día-del-mes/día-de-semana y como
+ *    único elemento) y nombres alfabéticos ≥3 letras (solo mes/día-de-semana).
+ *  - Cron inválido ⇒ error inline + PUT NO disparado.
  *  - Cron válido de 5 campos ⇒ sin error + PUT disparado.
  */
 describe("ConfigPage — validación y normalización del cron en el cliente", () => {
@@ -1706,6 +1902,9 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
               cron: "15 3 * * *",
               pull_timeout_secs: 900,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1811,6 +2010,89 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
     expect(screen.queryByText(/expresión cron inválida/i)).not.toBeInTheDocument();
   });
 
+  // Endurecimiento: el cliente valida rangos, listas, pasos (1..máximo) y
+  // rangos no invertidos por campo, no solo la estructura de 5 campos. El
+  // día-de-semana es 1–7 (la crate usa 1=domingo; `0` es inválido).
+  it.each([
+    "99 0 * * *",
+    "0 0 * * 0",
+    "30-10 * * * *",
+    "*/0 * * * *",
+    "*/60 * * * *",
+  ])(
+    "un cron client-inválido (%s) muestra error inline y NO dispara el PUT",
+    async (value) => {
+      const cronInput = await renderAndOpenCronTab();
+      const calls = callsOf(cronInput);
+
+      fireEvent.change(cronInput, { target: { value } });
+      fireEvent.click(
+        screen.getByRole("button", { name: /guardar revisión/i }),
+      );
+
+      expect(
+        await screen.findByText(/expresión cron inválida/i),
+      ).toBeInTheDocument();
+      expect(putCalls(calls)).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    "*/15 * * * *",
+    "0 6 * * MON",
+    "0 6 1 JAN *",
+    "0 6 * * 1-5",
+    "0 6 ? * *",
+    "0 6 * * MON-FRI",
+    "0 6 1,15 * *",
+    "0 6 * * MONDAY",
+    "0 6 1 JANUARY *",
+    "0 0 * * SUN",
+    "0 6 31 * *",
+    "0 6 * 12 *",
+  ])(
+    "un cron client-válido (%s) no muestra error y dispara el PUT",
+    async (value) => {
+      const cronInput = await renderAndOpenCronTab();
+      const calls = callsOf(cronInput);
+
+      fireEvent.change(cronInput, { target: { value } });
+      fireEvent.click(
+        screen.getByRole("button", { name: /guardar revisión/i }),
+      );
+
+      await waitFor(() => {
+        const puts = putCalls(calls);
+        expect(puts).toHaveLength(1);
+        expect(puts[0].body).toMatchObject({ cron: value });
+      });
+      expect(
+        screen.queryByText(/expresión cron inválida/i),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it("el preset «Cada domingo» usa día-de-semana SUN (1–7) y es client-válido", () => {
+    // Regresión del preset roto: `0 0 * * 0` es inválido en la crate (1=domingo).
+    expect(CRON_PRESETS.find((p) => p.label === "Cada domingo")?.value).toBe(
+      "0 0 * * SUN",
+    );
+  });
+
+  it("todos los presets de frecuencia pasan la validación del cliente", async () => {
+    const cronInput = await renderAndOpenCronTab();
+
+    for (const preset of CRON_PRESETS) {
+      fireEvent.change(cronInput, { target: { value: preset.value } });
+      fireEvent.blur(cronInput);
+
+      await waitFor(() => expect(cronInput).toHaveValue(preset.value));
+      expect(
+        screen.queryByText(/expresión cron inválida/i),
+      ).not.toBeInTheDocument();
+    }
+  });
+
   it("un cron con nombre de día (0 6 * * MON) no muestra error y dispara el PUT", async () => {
     const cronInput = await renderAndOpenCronTab();
     const calls = callsOf(cronInput);
@@ -1843,7 +2125,9 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
               enabled: false,
               notify: false,
               last_run_at: null,
-              next_run_at: null,
+              // Señal de que el GET de config se ha aplicado y renderizado:
+              // el bloque "Próxima revisión" queda fuera del gating ucEnabled.
+              next_run_at: "2026-11-22T06:00:00Z",
               pull_timeout_secs: 600,
             }),
           ),
@@ -1856,6 +2140,9 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
               cron: "15 3 * * *",
               pull_timeout_secs: 900,
               check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
             }),
           ),
         );
@@ -1887,10 +2174,11 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
     );
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    // El campo cron no existe con la revisión desactivada.
-    await waitFor(() =>
-      expect(screen.queryByPlaceholderText("15 3 * * *")).not.toBeInTheDocument(),
-    );
+    // El campo cron NO se monta con la revisión desactivada (está bajo el
+    // gating `ucEnabled`), así que no sirve como señal de carga. Se ancla a
+    // "Próxima revisión", que depende de que el GET de config se aplique y se
+    // renderiza fuera de ese gating.
+    await screen.findByText(/próxima revisión/i);
 
     fireEvent.click(
       screen.getByRole("button", { name: /desactivar revisión/i }),
@@ -1901,5 +2189,208 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
       await screen.findByText(/expresión cron inválida/i),
     ).toBeInTheDocument();
     expect(putCalls(calls)).toHaveLength(0);
+  });
+});
+
+/**
+ * `expose-check-interval-ui` — el intervalo de comprobación (`check_interval_ms`)
+ * se edita en **segundos** en el formulario, pero viaja en **milisegundos**:
+ * al cargar se divide entre 1000 y al guardar se multiplica por 1000. La
+ * etiqueta del control refleja el default de `GET /api/update-check/defaults`
+ * (también en segundos), sin literales incrustados.
+ *
+ * El mock usa defaults (`2000 ms` → `2 s`) **distintos** de la config cargada
+ * (`3000 ms` → `3 s`) para que la aserción de la etiqueta sea probatoria: si el
+ * frontend hardcodeara el valor, la etiqueta no mostraría el `2 s` de la API.
+ */
+describe("ConfigPage — edición del intervalo de comprobación (segundos)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function renderCheckInterval(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+              // Distinto del default de la API (2000) para que la etiqueta sea
+              // probatoria: el valor precargado es 3 s, la etiqueta dice 2 s.
+              check_interval_ms: 3000,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return calls;
+  }
+
+  it("carga el intervalo desde la config y lo muestra en segundos (2000 ms → 2)", async () => {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+              check_interval_ms: 2000,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
+              update_max_start_attempts: 3,
+              update_start_attempt_interval_secs: 10,
+              update_health_window_secs: 30,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Intervalo de comprobación (s)");
+    // 2000 ms deben mostrarse como 2 segundos.
+    await waitFor(() => expect(input).toHaveValue("2"));
+  });
+
+  it("poner 5 segundos y guardar envía check_interval_ms = 5000", async () => {
+    const calls = renderCheckInterval();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const input = await screen.findByLabelText("Intervalo de comprobación (s)");
+    await waitFor(() => expect(input).toHaveValue("3"));
+
+    fireEvent.change(input, { target: { value: "5" } });
+    expect(input).toHaveValue("5");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /guardar revisión/i }),
+    );
+
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ check_interval_ms: 5000 });
+    });
+  });
+
+  it("la etiqueta del intervalo refleja el default de la API (2000 ms → 2 s), no el de la config (3 s)", async () => {
+    renderCheckInterval();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    await screen.findByLabelText("Intervalo de comprobación (s)");
+
+    await waitFor(() =>
+      expect(screen.getByText(/Default: 2 s/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/Default: 3 s/)).not.toBeInTheDocument();
   });
 });

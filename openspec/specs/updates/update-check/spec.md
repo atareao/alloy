@@ -276,7 +276,9 @@ Valores canónicos:
 El frontend MUST obtener los defaults de updates desde la API (`GET /api/update-check/defaults`) y MUST
 **NO** hardcodear esos valores. El **placeholder** del cron, la **etiqueta** del timeout y el
 **fallback** al vaciar el campo `pull_timeout_secs` MUST reflejar los valores devueltos por la API. El
-formulario no MUST depender de literales incrustados para estos defaults.
+formulario no MUST depender de literales incrustados para estos defaults. El **fallback** al vaciar los
+campos de la **guarda** (`update_max_start_attempts`, `update_start_attempt_interval_secs`,
+`update_health_window_secs`) MUST reflejar asimismo los valores de la API.
 
 #### Scenario: El formulario de settings arranca con los canónicos
 
@@ -290,6 +292,12 @@ formulario no MUST depender de literales incrustados para estos defaults.
 - **Given** el campo `pull_timeout_secs` con valor y los defaults cargados de la API
 - **When** el usuario lo vacía
 - **Then** el fallback aplicado es el `pull_timeout_secs` devuelto por la API
+
+#### Scenario: Vaciar un campo de la guarda usa el default de la API
+
+- **Given** los campos de la guarda con valor y los defaults cargados de la API
+- **When** el usuario vacía el campo `update_max_start_attempts`
+- **Then** el fallback aplicado es el `update_max_start_attempts` devuelto por la API
 
 ### Requirement: Validación de la expresión cron al guardar la configuración
 
@@ -372,9 +380,12 @@ parseo.
 
 La API MUST exponer los defaults canónicos de la configuración de updates mediante
 `GET /api/update-check/defaults`, que devuelve un objeto
-`{ "cron": <string>, "pull_timeout_secs": <u64>, "check_interval_ms": <u64> }` poblado **desde las
-consts** de `models.rs` (`DEFAULT_UPDATE_CHECK_CRON`, `DEFAULT_PULL_TIMEOUT_SECS`,
-`DEFAULT_CHECK_INTERVAL_MS`). No MUST haber literales de esos valores en el handler.
+`{ "cron": <string>, "pull_timeout_secs": <u64>, "check_interval_ms": <u64>,
+"update_max_start_attempts": <u32>, "update_start_attempt_interval_secs": <u64>,
+"update_health_window_secs": <u64> }` poblado **desde las consts** de `models.rs`
+(`DEFAULT_UPDATE_CHECK_CRON`, `DEFAULT_PULL_TIMEOUT_SECS`, `DEFAULT_CHECK_INTERVAL_MS`,
+`DEFAULT_UPDATE_MAX_START_ATTEMPTS`, `DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS`,
+`DEFAULT_UPDATE_HEALTH_WINDOW_SECS`). No MUST haber literales de esos valores en el handler.
 
 #### Scenario: El endpoint devuelve los canónicos
 
@@ -383,13 +394,36 @@ consts** de `models.rs` (`DEFAULT_UPDATE_CHECK_CRON`, `DEFAULT_PULL_TIMEOUT_SECS
 - **Then** responde **200** con `cron = "0 6 * * *"`, `pull_timeout_secs = 600`,
   `check_interval_ms = 2000` (las consts)
 
+#### Scenario: El endpoint devuelve también los defaults de la guarda
+
+- **Given** el servidor en marcha
+- **When** se consulta `GET /api/update-check/defaults`
+- **Then** responde **200** con `update_max_start_attempts = 3`,
+  `update_start_attempt_interval_secs = 10`, `update_health_window_secs = 30` (las consts)
+
 ### Requirement: Validación del cron en el formulario antes de enviar
 
-El formulario de configuración MUST validar la expresión cron **antes** de enviarla. Si es inválida
-(no tiene **5 campos** o algún campo no respeta la estructura permitida —dígitos, letras (nombres de mes/día) y los operadores
-`* , - /`—), MUST mostrar un **error inline** junto al campo y MUST **NO** enviar el `PUT`
-`/api/update-check/config`. La validación del cliente es un pre-chequeo ligero; el backend sigue siendo
-la autoridad final.
+El formulario de configuración MUST validar la expresión cron **antes** de enviarla, de forma coherente
+con la gramática del backend (crate `cron`), que sigue siendo la **autoridad final**. La validación MUST
+comprobar, en este orden:
+
+- que haya exactamente **5 campos** (`minuto hora día-del-mes mes día-de-semana`) tras normalizar;
+- que cada campo sea una **lista** separada por `,` cuyos elementos sean `*`, `?` (solo en día-del-mes y
+  día-de-semana), un **valor**, o un **rango** `a-b`, admitiendo un **paso** `/n` tras `*`, un valor o un
+  rango (p. ej. `*/n`, `a/n`, `a-b/n`);
+- que los **valores y rangos** estén en rango por campo: minuto `0–59`, hora `0–23`, día-del-mes `1–31`,
+  mes `1–12`, día-de-semana `1–7` (nótese `1–7`, **no** `0–7`); y que los **rangos** no estén invertidos
+  (`a <= b`);
+- que los **pasos** sean enteros con `1 <= n <= máximo` del campo (minuto 59, hora 23, día-del-mes 31,
+  mes 12, día-semana 7);
+- que los **nombres** (solo en mes y día-de-semana) sean alfabéticos de longitud ≥ 3; la validación de
+  nombres es deliberadamente **permisiva** (superset de los alias de la crate) para no bloquear nombres
+  válidos: un nombre que el backend no reconozca lo rechazará el backend.
+
+Si es inválida MUST mostrar un **error inline** junto al campo y MUST **NO** enviar el `PUT`
+`/api/update-check/config`. La validación del cliente es un pre-chequeo; el backend sigue siendo la
+**autoridad final** (si el backend rechazara una expresión que el cliente aceptó, la UI MUST mostrar el
+mensaje de error del backend).
 
 #### Scenario: Cron malformado muestra error inline y no envía el PUT
 
@@ -403,6 +437,47 @@ la autoridad final.
 - **Given** el formulario con un cron válido de 5 campos (p. ej. `0 6 * * *`)
 - **When** el usuario pulsa guardar
 - **Then** no se muestra error de validación y se envía el `PUT`
+
+#### Scenario: Un valor fuera de rango se detecta en el cliente
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario introduce `99 0 * * *` y pulsa guardar
+- **Then** se muestra un error junto al campo
+- **And** **no** se realiza la petición `PUT`
+
+#### Scenario: Un día-de-semana `0` se detecta en el cliente
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario introduce `0 0 * * 0` y pulsa guardar
+- **Then** se muestra un error junto al campo
+- **And** **no** se realiza la petición `PUT`
+
+#### Scenario: Un rango invertido o un paso fuera de rango se detectan en el cliente
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario introduce `30-10 * * * *` (rango invertido) o `*/0 * * * *` o `*/60 * * * *`
+  (paso cero o por encima del máximo del campo)
+- **Then** se muestra un error junto al campo
+- **And** **no** se realiza la petición `PUT`
+
+#### Scenario: Expresiones con rangos, pasos, listas, nombres y `?` son válidas
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario introduce un cron válido como `*/15 * * * *`, `0 6 * * MON`, `0 6 1 JAN *`,
+  `0 6 * * 1-5`, `0 6 ? * *`, `0 6 * * SUN`, `0 6 * * MON-FRI` o `0 6 1,15 * *`
+- **Then** no se muestra error de validación y se envía el `PUT`
+
+#### Scenario: Nombres largos de mes/día-de-semana no se bloquean
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario introduce `0 6 * * MONDAY` o `0 6 1 JANUARY *`
+- **Then** no se muestra error de validación y se envía el `PUT`
+
+#### Scenario: La UI muestra el error del backend si este rechaza un cron aceptado por el cliente
+
+- **Given** un cron que pasa la validación del cliente
+- **When** el backend responde `400` con `{"error": ...}` al `PUT`
+- **Then** la UI muestra ese mensaje de error del backend
 
 ### Requirement: Normalización de expresiones cron de 6 campos en el formulario
 
@@ -422,3 +497,42 @@ backend NO cambia: sigue aceptando solo 5 campos.
 - **Given** el formulario con un cron de 6 campos válido subyacentemente
 - **When** el usuario pulsa guardar
 - **Then** se normaliza a 5 campos antes del envío y el `PUT` no recibe un 400 por formato
+
+### Requirement: Edición del intervalo de comprobación en el formulario
+
+El formulario de configuración de updates MUST permitir editar el intervalo de comprobación
+(`check_interval_ms`) en **segundos**. Al cargar la configuración MUST mostrar el valor recibido
+convertido a segundos (`check_interval_ms / 1000`) y al enviar MUST convertirlo de nuevo a **milisegundos**
+(`segundos * 1000`) en el `PUT /api/update-check/config`. La **etiqueta** del control MUST reflejar el default devuelto por `GET /api/update-check/defaults`
+(convertido a segundos), sin literales incrustados. El valor MUST ser de al menos **1 segundo**.
+
+#### Scenario: Cargar el intervalo desde la configuración
+
+- **Given** la configuración con `check_interval_ms = 2000`
+- **When** se abre el formulario de update
+- **Then** el control del intervalo muestra `2` (segundos)
+
+#### Scenario: Guardar el intervalo lo convierte a milisegundos
+
+- **Given** el formulario con el intervalo puesto a `5` segundos
+- **When** el usuario guarda
+- **Then** el `PUT /api/update-check/config` envía `check_interval_ms = 5000`
+
+#### Scenario: La etiqueta refleja el default de la API
+
+- **Given** los defaults cargados de `GET /api/update-check/defaults` con `check_interval_ms = 2000`
+- **When** el usuario observa el control del intervalo antes de modificarlo
+- **Then** la etiqueta muestra el default en segundos (`2 s`) tomado de la API
+
+### Requirement: Edición del preset «Cada domingo» con día-de-semana válido
+
+El preset «Cada domingo» del formulario MUST generar una expresión cron cuyo día-de-semana sea válido
+para el backend (crate `cron`, que usa día-de-semana `1–7` con `1` = domingo y `0` inválido). El preset
+MUST producir `0 0 * * SUN` (o un equivalente como `0 0 * * 1`) y MUST pasar la validación de cliente.
+
+#### Scenario: El preset «Cada domingo» produce un cron válido
+
+- **Given** el formulario con el auto-update habilitado
+- **When** el usuario elige el preset «Cada domingo»
+- **Then** la expresión resultante (p. ej. `0 0 * * SUN`) no muestra error de validación
+- **And** el backend la acepta (día-de-semana `1–7`, no `0`)
