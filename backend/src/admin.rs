@@ -19,10 +19,7 @@ async fn get_update_check_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
 ) -> Json<UpdateCheckConfig> {
     let s = settings.lock().await;
-    let cron = s
-        .update_check_cron
-        .clone()
-        .unwrap_or_else(|| "0 */6 * * *".into());
+    let cron = s.effective_update_check_cron();
     let next_run_at = compute_next_run(&cron);
     Json(UpdateCheckConfig {
         cron,
@@ -30,8 +27,8 @@ async fn get_update_check_config_h(
         notify: s.update_check_notify.unwrap_or(false),
         last_run_at: s.update_check_last_run_at.clone(),
         next_run_at,
-        pull_timeout_secs: s.pull_timeout_secs,
-        check_interval_ms: s.check_interval_ms,
+        pull_timeout_secs: Some(s.effective_pull_timeout_secs()),
+        check_interval_ms: Some(s.effective_check_interval_ms()),
         update_max_start_attempts: s.update_max_start_attempts,
         update_start_attempt_interval_secs: s.update_start_attempt_interval_secs,
         update_health_window_secs: s.update_health_window_secs,
@@ -257,9 +254,12 @@ mod tests {
     async fn test_get_update_check_config_defaults() {
         let settings = Arc::new(Mutex::new(Settings::default()));
         let result: Json<UpdateCheckConfig> = get_update_check_config_h(State(settings)).await;
-        assert_eq!(result.0.cron, "0 */6 * * *");
+        assert_eq!(result.0.cron, DEFAULT_UPDATE_CHECK_CRON);
         assert!(!result.0.enabled);
         assert!(!result.0.notify);
+        // El GET sirve los valores efectivos (consts), no `None`.
+        assert_eq!(result.0.pull_timeout_secs, Some(DEFAULT_PULL_TIMEOUT_SECS));
+        assert_eq!(result.0.check_interval_ms, Some(DEFAULT_CHECK_INTERVAL_MS));
     }
 
     #[tokio::test]

@@ -244,7 +244,7 @@ pub struct Settings {
     #[serde(default)]
     pub update_check_last_run_at: Option<String>,
 
-    /// Timeout en segundos para el pull de imágenes. Default: 1800 (30 min).
+    /// Timeout en segundos para el pull de imágenes. Default: 600 (10 min).
     /// Aumentar para imágenes muy grandes (>500MB) o conexiones lentas.
     #[serde(default)]
     pub pull_timeout_secs: Option<u64>,
@@ -274,6 +274,13 @@ pub const DEFAULT_UPDATE_MAX_START_ATTEMPTS: u32 = 3;
 pub const DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS: u64 = 10;
 /// Default global: segundos de ventana estable para considerar un arranque sano.
 pub const DEFAULT_UPDATE_HEALTH_WINDOW_SECS: u64 = 30;
+
+/// Único origen del cron del auto-update. Default: todos los días a las 06:00.
+pub const DEFAULT_UPDATE_CHECK_CRON: &str = "0 6 * * *";
+/// Único origen del timeout (segundos) para el pull de imágenes.
+pub const DEFAULT_PULL_TIMEOUT_SECS: u64 = 600;
+/// Único origen del intervalo (ms) entre verificaciones de digest de cada contenedor.
+pub const DEFAULT_CHECK_INTERVAL_MS: u64 = 2000;
 
 pub(crate) const fn default_update_max_start_attempts() -> u32 {
     DEFAULT_UPDATE_MAX_START_ATTEMPTS
@@ -312,6 +319,31 @@ impl Default for Settings {
             update_start_attempt_interval_secs: DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS,
             update_health_window_secs: DEFAULT_UPDATE_HEALTH_WINDOW_SECS,
         }
+    }
+}
+
+impl Settings {
+    /// Cron efectivo del auto-update. Aplica el default canónico cuando el
+    /// valor almacenado es `None` **o vacío** (misma semántica que la
+    /// normalización de `db.rs`); todos los puntos de uso deben llamar aquí
+    /// en lugar de repetir el literal.
+    pub fn effective_update_check_cron(&self) -> String {
+        self.update_check_cron
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_UPDATE_CHECK_CRON.to_string())
+    }
+
+    /// Timeout efectivo (segundos) para el pull de imágenes, con fallback a
+    /// `DEFAULT_PULL_TIMEOUT_SECS` cuando el valor almacenado es `None`.
+    pub fn effective_pull_timeout_secs(&self) -> u64 {
+        self.pull_timeout_secs.unwrap_or(DEFAULT_PULL_TIMEOUT_SECS)
+    }
+
+    /// Intervalo efectivo (ms) entre verificaciones de digest, con fallback a
+    /// `DEFAULT_CHECK_INTERVAL_MS` cuando el valor almacenado es `None`.
+    pub fn effective_check_interval_ms(&self) -> u64 {
+        self.check_interval_ms.unwrap_or(DEFAULT_CHECK_INTERVAL_MS)
     }
 }
 
@@ -390,7 +422,7 @@ pub struct UpdateCheckConfig {
     pub notify: bool,
     pub last_run_at: Option<String>,
     pub next_run_at: Option<String>,
-    /// Timeout en segundos para pull de imágenes. Default: 1800 (30 min).
+    /// Timeout en segundos para pull de imágenes. Default: 600 (10 min).
     #[serde(default)]
     pub pull_timeout_secs: Option<u64>,
     /// Intervalo en ms entre verificaciones de cada contenedor.
@@ -1032,5 +1064,57 @@ mod tests {
         assert_eq!(back.update_max_start_attempts, 4);
         assert_eq!(back.update_start_attempt_interval_secs, 12);
         assert_eq!(back.update_health_window_secs, 45);
+    }
+
+    /// Sin `update_check_cron` el cron efectivo es el default canónico `0 6 * * *`.
+    #[test]
+    fn test_settings_without_cron_uses_canonical_default() {
+        let s = Settings::default();
+        assert_eq!(s.update_check_cron, None);
+        assert_eq!(s.effective_update_check_cron(), DEFAULT_UPDATE_CHECK_CRON);
+        assert_eq!(s.effective_update_check_cron(), "0 6 * * *");
+    }
+
+    /// Un cron vacío se normaliza al default canónico (misma semántica que `db.rs`).
+    #[test]
+    fn test_settings_empty_cron_uses_canonical_default() {
+        let s = Settings {
+            update_check_cron: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(s.update_check_cron.as_deref(), Some(""));
+        assert_eq!(s.effective_update_check_cron(), DEFAULT_UPDATE_CHECK_CRON);
+    }
+
+    /// Sin `pull_timeout_secs` el timeout efectivo es el default canónico `600`.
+    #[test]
+    fn test_settings_without_pull_timeout_uses_canonical_default() {
+        let s = Settings::default();
+        assert_eq!(s.pull_timeout_secs, None);
+        assert_eq!(s.effective_pull_timeout_secs(), DEFAULT_PULL_TIMEOUT_SECS);
+        assert_eq!(s.effective_pull_timeout_secs(), 600);
+    }
+
+    /// Sin `check_interval_ms` el intervalo efectivo es el default canónico `2000`.
+    #[test]
+    fn test_settings_without_check_interval_uses_canonical_default() {
+        let s = Settings::default();
+        assert_eq!(s.check_interval_ms, None);
+        assert_eq!(s.effective_check_interval_ms(), DEFAULT_CHECK_INTERVAL_MS);
+        assert_eq!(s.effective_check_interval_ms(), 2000);
+    }
+
+    /// Valores explícitos de los settings prevalecen sobre los defaults canónicos.
+    #[test]
+    fn test_settings_explicit_update_values_win_over_defaults() {
+        let s = Settings {
+            update_check_cron: Some("0 3 * * *".into()),
+            pull_timeout_secs: Some(120),
+            check_interval_ms: Some(500),
+            ..Default::default()
+        };
+        assert_eq!(s.effective_update_check_cron(), "0 3 * * *");
+        assert_eq!(s.effective_pull_timeout_secs(), 120);
+        assert_eq!(s.effective_check_interval_ms(), 500);
     }
 }

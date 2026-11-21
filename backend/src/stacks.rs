@@ -190,7 +190,7 @@ async fn update_stack_h(
     let (pull_timeout, guard_max, guard_interval, guard_window, rollback_on_failure, notify) = {
         let s = settings.lock().await;
         (
-            s.pull_timeout_secs.unwrap_or(600),
+            s.effective_pull_timeout_secs(),
             s.update_max_start_attempts.max(1),
             s.update_start_attempt_interval_secs,
             s.update_health_window_secs,
