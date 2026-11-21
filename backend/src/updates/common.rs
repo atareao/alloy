@@ -6,44 +6,6 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 
 #[allow(dead_code)]
-#[allow(clippy::too_many_arguments)]
-pub async fn record_update_entry(
-    db_pool: &DbPool,
-    update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
-    container: &str,
-    image: &str,
-    old_digest: &str,
-    new_digest: &str,
-    status: &str,
-    duration_ms: u64,
-) {
-    let entry = UpdateHistoryEntry {
-        container: container.to_string(),
-        image: image.to_string(),
-        old_digest: old_digest.to_string(),
-        new_digest: new_digest.to_string(),
-        timestamp: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
-        status: status.to_string(),
-        duration_ms,
-        attempts: 0,
-    };
-    let mut hist = update_history.lock().await;
-    hist.push(entry);
-    // Best-effort: el historial ya está en memoria; si la BD falla solo se registra.
-    match db_pool.get().await {
-        Ok(conn) => match conn.lock() {
-            Ok(guard) => {
-                if let Err(e) = crate::db::append_update_history(&guard, hist.last().unwrap()) {
-                    tracing::warn!("record_update_entry: no se pudo persistir historial: {e}");
-                }
-            }
-            Err(e) => tracing::warn!("record_update_entry: mutex de DB envenenado: {e}"),
-        },
-        Err(e) => tracing::warn!("record_update_entry: pool de DB no disponible: {e}"),
-    }
-}
-
-#[allow(dead_code)]
 pub async fn notify_update_complete(
     notif_tx: &broadcast::Sender<NotifEvent>,
     settings: &Arc<Mutex<Settings>>,
