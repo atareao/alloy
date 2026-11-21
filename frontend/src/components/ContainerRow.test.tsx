@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { ConfigProvider } from "antd";
 import ContainerRow from "./ContainerRow";
 import { makeContainer, makeIdleProgress } from "./testFixtures";
-import type { ContainerInfo } from "../types";
+import type { BatchProgress, ContainerInfo } from "../types";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   return <ConfigProvider>{children}</ConfigProvider>;
@@ -13,12 +13,14 @@ interface SetupOptions {
   container?: ContainerInfo;
   expanded?: boolean;
   isMobile?: boolean;
+  progress?: BatchProgress;
 }
 
 function setup({
   container = makeContainer(),
   expanded = false,
   isMobile = false,
+  progress = makeIdleProgress(),
 }: SetupOptions = {}) {
   const handlers = {
     onToggleExpand: vi.fn(),
@@ -37,7 +39,7 @@ function setup({
         container={container}
         isMobile={isMobile}
         expanded={expanded}
-        progress={makeIdleProgress()}
+        progress={progress}
         getPolicy={() => undefined}
         setPolicies={vi.fn()}
         loadingActions={{}}
@@ -94,11 +96,90 @@ describe("ContainerRow", () => {
     expect(onStop).toHaveBeenCalledWith("web");
   });
 
-  it("trunca el nombre en la variante móvil", () => {
+  it("muestra el nombre completo sin truncado manual en la variante móvil", () => {
     setup({
       container: makeContainer({ name: "very-long-container-name" }),
       isMobile: true,
     });
-    expect(screen.getByText("very-long...")).toBeInTheDocument();
+    expect(screen.getByText("very-long-container-name")).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\./)).toBeNull();
+  });
+
+  it("muestra el nombre completo sin truncado manual en la variante de escritorio", () => {
+    setup({
+      container: makeContainer({ name: "very-long-container-name" }),
+      isMobile: false,
+    });
+    expect(screen.getByText("very-long-container-name")).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\./)).toBeNull();
+  });
+
+  it("mantiene el nombre y el estado completos en el nodo tipográfico (la elipsis es CSS, no manual)", () => {
+    const name = "very-long-container-name";
+    const status = "Up 3 hours (unhealthy) - a very long status text";
+    setup({ container: makeContainer({ name, status }), isMobile: true });
+
+    // En jsdom no hay layout: `isEllipsis` es false y el Tooltip de antd queda
+    // `disabled`, así que no es verificable. En su lugar comprobamos que el
+    // texto COMPLETO sigue en el DOM (sin recorte manual) y que el nodo lleva
+    // la elipsis CSS de antd.
+    const nameNode = screen.getByText(name).closest(".ant-typography");
+    const statusNode = screen.getByText(status).closest(".ant-typography");
+    expect(nameNode).toHaveTextContent(name);
+    expect(statusNode).toHaveTextContent(status);
+    expect(nameNode).toHaveClass("ant-typography-ellipsis");
+    expect(statusNode).toHaveClass("ant-typography-ellipsis");
+  });
+
+  it("hace encogible el nombre (minWidth: 0) para que la elipsis sea efectiva", () => {
+    setup({
+      container: makeContainer({ name: "very-long-container-name" }),
+      isMobile: true,
+    });
+    const nameEl = screen
+      .getByText("very-long-container-name")
+      .closest(".ant-typography");
+    expect(nameEl).not.toBeNull();
+    expect(nameEl).toHaveStyle({ minWidth: "0px" });
+  });
+
+  it("con un nombre muy largo siguen presentes el badge de actualización y el botón de expansión (regresión de presencia, no de layout)", () => {
+    setup({
+      container: makeContainer({
+        name: "very-long-container-name",
+        has_update: true,
+      }),
+      isMobile: false,
+    });
+    expect(screen.getByText("!")).toBeInTheDocument();
+    expect(screen.getByText("very-long-container-name")).toBeInTheDocument();
+    // El botón de expansión es accesible por el aria-label del icono de antd ("down").
+    expect(
+      screen.getByRole("button", { name: /down/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("muestra el progreso completo (sin recortar) mientras se comprueba el contenedor", () => {
+    const name = "very-long-container-name";
+    setup({
+      container: makeContainer({ name }),
+      progress: {
+        total: 1,
+        checked: 0,
+        updated: 0,
+        errors: 0,
+        checking: name,
+      },
+    });
+    // `isUpdating` exige `checking === name`, así que la etiqueta de progreso
+    // muestra el mismo texto que la cabecera. Localizamos todos los nodos con
+    // ese texto (cabecera + progreso) y comprobamos que ambos están completos.
+    const nodes = screen.getAllByText(name);
+    expect(nodes.length).toBeGreaterThanOrEqual(2);
+    for (const node of nodes) {
+      expect(node.closest(".ant-typography")).toHaveTextContent(name);
+    }
+    // No hay recorte manual del progreso (el `slice(0, 20) + "..."` anterior).
+    expect(screen.queryByText(/\.\.\./)).toBeNull();
   });
 });
