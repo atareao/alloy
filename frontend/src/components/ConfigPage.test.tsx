@@ -2036,7 +2036,9 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
               enabled: false,
               notify: false,
               last_run_at: null,
-              next_run_at: null,
+              // Señal de que el GET de config se ha aplicado y renderizado:
+              // el bloque "Próxima revisión" queda fuera del gating ucEnabled.
+              next_run_at: "2026-11-22T06:00:00Z",
               pull_timeout_secs: 600,
             }),
           ),
@@ -2083,10 +2085,11 @@ describe("ConfigPage — validación y normalización del cron en el cliente", (
     );
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    // El campo cron no existe con la revisión desactivada.
-    await waitFor(() =>
-      expect(screen.queryByPlaceholderText("15 3 * * *")).not.toBeInTheDocument(),
-    );
+    // El campo cron NO se monta con la revisión desactivada (está bajo el
+    // gating `ucEnabled`), así que no sirve como señal de carga. Se ancla a
+    // "Próxima revisión", que depende de que el GET de config se aplique y se
+    // renderiza fuera de ese gating.
+    await screen.findByText(/próxima revisión/i);
 
     fireEvent.click(
       screen.getByRole("button", { name: /desactivar revisión/i }),
