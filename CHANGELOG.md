@@ -1,4 +1,40 @@
 # Changelog
+## [0.25.0] - 2026-11-21
+
+### Documentation
+
+- *(openspec)* Add update-rollback-guard change proposal (specs, design, tasks)
+- *(openspec)* Finalize update-rollback-guard spec, design, tasks and feature doc
+- *(openspec)* Archiva update-rollback-guard en specs
+- *(openspec)* Propose persist-terminal-update-state + PLAN-001 (#130)
+- *(openspec)* Archiva persist-terminal-update-state en specs
+- *(openspec)* Propose clear-suppression-manual-update + PLAN-002 (#132)
+- *(openspec)* Archiva clear-suppression-manual-update en specs
+- *(openspec)* Propose reconcile-update-defaults + PLAN-003 (#135)
+- *(openspec)* Archiva reconcile-update-defaults en specs
+- *(openspec)* Propose validate-cron-on-put + PLAN-004 (#137)
+- *(openspec)* Archiva validate-cron-on-put en specs
+- *(openspec)* Propose expose-update-defaults-api + PLAN-005 (#139)
+- *(openspec)* Archiva expose-update-defaults-api en specs
+- *(openspec)* Propose validate-cron-client-ui + PLAN-006 (#141)
+- *(openspec)* Archiva validate-cron-client-ui en specs
+- *(readme)* Añade --group-add al ejemplo podman run (#143)
+- *(deploy)* Documenta el redeploy de co1 (Dockge) (#145)
+
+### Features
+
+- *(updates)* Add start health guard with retries, digest rollback and terminal state
+- *(ui)* Surface update guard settings, policy overrides and new history states
+- *(updates)* Persiste estados terminales y restaura guards al arrancar (#130)
+- *(updates)* Limpia supresión en intervención manual masiva (#132)
+- *(updates)* Unifica los defaults de cron, timeout y check-interval (#135)
+- *(updates)* Valida la expresión cron al guardar e importar la config (#137)
+- *(updates)* Expone los defaults por API y elimina su hardcodeo en la UI (#139)
+- *(ui)* Valida el cron en el formulario y normaliza inputs de 6 campos (#141)
+
+### Testing
+
+- *(ui)* Estabiliza la precarga asíncrona en ConfigPage.test.tsx (#134)
 ## [0.24.7] - 2026-11-20
 
 ### Bug Fixes
@@ -8,6 +44,10 @@
 ### Documentation
 
 - *(openspec)* Archiva manual-check-summary en specs
+
+### Miscellaneous Tasks
+
+- Release v0.24.7
 ## [0.24.6] - 2026-11-20
 
 ### Bug Fixes
