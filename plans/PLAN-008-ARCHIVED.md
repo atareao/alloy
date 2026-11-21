@@ -53,12 +53,12 @@ Permitir editar `check_interval_ms` (intervalo en ms entre verificaciones de dig
 
 ## Verificación de cierre
 
-- [ ] Spec aprobado (`.approved`).
-- [ ] RED → GREEN → REFACTOR.
-- [ ] Frontend en verde.
-- [ ] `docs/expose-check-interval-ui.md`.
-- [ ] `openspec archive expose-check-interval-ui` + limpieza.
-- [ ] PR a `develop` mergeado e issue #149 cerrado.
+- [x] Spec aprobado (`.approved`).
+- [x] RED → GREEN → REFACTOR.
+- [x] Frontend en verde.
+- [x] `docs/expose-check-interval-ui.md`.
+- [x] `openspec archive expose-check-interval-ui` + limpieza.
+- [x] PR a `develop` mergeado e issue #149 cerrado.
 
 ## Referencias
 

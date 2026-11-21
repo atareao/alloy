@@ -47,12 +47,12 @@ Que el formulario detecte en cliente crons fuera de rango o con sintaxis inváli
 
 ## Verificación de cierre
 
-- [ ] Spec aprobado (`.approved`).
-- [ ] RED → GREEN → REFACTOR.
-- [ ] Frontend en verde.
-- [ ] `docs/harden-cron-client-validation.md`.
-- [ ] `openspec archive harden-cron-client-validation` + limpieza.
-- [ ] PR a `develop` mergeado e issue #150 cerrado.
+- [x] Spec aprobado (`.approved`).
+- [x] RED → GREEN → REFACTOR.
+- [x] Frontend en verde.
+- [x] `docs/harden-cron-client-validation.md`.
+- [x] `openspec archive harden-cron-client-validation` + limpieza.
+- [x] PR a `develop` mergeado e issue #150 cerrado.
 
 ## Referencias
 

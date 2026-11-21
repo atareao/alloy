@@ -48,12 +48,12 @@ Eliminar el hardcodeo en el frontend de los defaults de la guarda de arranque, e
 
 ## Verificación de cierre
 
-- [ ] Spec aprobado (`.approved`).
-- [ ] RED → GREEN → REFACTOR.
-- [ ] Backend y frontend en verde.
-- [ ] `docs/expose-guard-defaults-api.md`.
-- [ ] `openspec archive expose-guard-defaults-api` + limpieza.
-- [ ] PR a `develop` mergeado e issue #148 cerrado.
+- [x] Spec aprobado (`.approved`).
+- [x] RED → GREEN → REFACTOR.
+- [x] Backend y frontend en verde.
+- [x] `docs/expose-guard-defaults-api.md`.
+- [x] `openspec archive expose-guard-defaults-api` + limpieza.
+- [x] PR a `develop` mergeado e issue #148 cerrado.
 
 ## Referencias
 
