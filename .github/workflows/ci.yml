@@ -11,6 +11,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
       - name: Run tests
         run: cargo test --manifest-path backend/Cargo.toml --locked
       - name: Report ignored integration tests
