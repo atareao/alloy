@@ -34,13 +34,8 @@ const emptyResults: BatchResults = {
   errors: [],
 };
 
-interface SetupOptions {
-  containers?: ContainerInfo[];
-  batchPhase?: "idle" | "active";
-}
-
-function setup({
-  containers = [
+function defaultContainers(): ContainerInfo[] {
+  return [
     makeContainer({ id: "id-web", name: "web", has_update: true }),
     makeContainer({
       id: "id-db",
@@ -48,14 +43,44 @@ function setup({
       state: "exited",
       status: "Exited (0) 2 hours ago",
     }),
-  ],
-  batchPhase = "idle",
-}: SetupOptions = {}) {
-  render(
+  ];
+}
+
+interface SetupOptions {
+  containers?: ContainerInfo[];
+  batchPhase?: "idle" | "active";
+  searchQuery?: string;
+  debouncedSearch?: string;
+  stateFilter?: string[];
+  showPendingUpdates?: boolean;
+  page?: number;
+  pageSize?: number;
+  total?: number;
+}
+
+function makeHandlers() {
+  return {
+    setShowSummary: vi.fn(),
+    onCheckAll: vi.fn(),
+    setSearchQuery: vi.fn(),
+    setStateFilter: vi.fn(),
+    setShowPendingUpdates: vi.fn(),
+    onPageChange: vi.fn(),
+    onPageSizeChange: vi.fn(),
+  };
+}
+
+type Handlers = ReturnType<typeof makeHandlers>;
+
+function dashboardElement(
+  overrides: SetupOptions,
+  handlers: Handlers,
+): React.ReactElement {
+  const containers = overrides.containers ?? defaultContainers();
+  return (
     <Wrapper>
       <DashboardPage
         containers={containers}
-        setContainers={vi.fn()}
         progress={{
           total: 0,
           checked: 0,
@@ -64,13 +89,11 @@ function setup({
           checking: "",
         }}
         containersLoaded
-        batchPhase={batchPhase}
+        batchPhase={overrides.batchPhase ?? "idle"}
         checkResults={emptyResults}
         updateResults={emptyResults}
         showSummary={false}
-        setShowSummary={vi.fn()}
         checkConfig={null}
-        onCheckAll={vi.fn()}
         summary={{
           total: containers.length,
           running: containers.filter((c) => c.state === "running").length,
@@ -79,9 +102,23 @@ function setup({
           with_updates: containers.filter((c) => c.has_update).length,
         }}
         highlights={{}}
+        searchQuery={overrides.searchQuery ?? ""}
+        debouncedSearch={overrides.debouncedSearch ?? ""}
+        stateFilter={overrides.stateFilter ?? []}
+        showPendingUpdates={overrides.showPendingUpdates ?? false}
+        total={overrides.total ?? containers.length}
+        page={overrides.page ?? 1}
+        pageSize={overrides.pageSize ?? 20}
+        {...handlers}
       />
-    </Wrapper>,
+    </Wrapper>
   );
+}
+
+function setup(overrides: SetupOptions = {}) {
+  const handlers = makeHandlers();
+  const view = render(dashboardElement(overrides, handlers));
+  return { ...handlers, ...view };
 }
 
 function expandRow(name: string) {
@@ -114,27 +151,72 @@ describe("DashboardPage", () => {
   });
 
   it("filtra por búsqueda", () => {
-    setup();
+    const { setSearchQuery } = setup();
     fireEvent.change(
       screen.getByPlaceholderText("Buscar por nombre, imagen, stack..."),
       { target: { value: "web" } },
     );
-    expect(screen.getByText("web")).toBeInTheDocument();
-    expect(screen.queryByText("db")).toBeNull();
+    // Filtering now happens on the server: DashboardPage only propagates the query.
+    expect(setSearchQuery).toHaveBeenCalledWith("web");
   });
 
   it("filtra por estado", () => {
-    setup();
+    const { setStateFilter } = setup();
     fireEvent.click(screen.getByText("running"));
-    expect(screen.getByText("web")).toBeInTheDocument();
-    expect(screen.queryByText("db")).toBeNull();
+    expect(setStateFilter).toHaveBeenCalledWith(["running"]);
   });
 
   it("filtra por actualizaciones pendientes", () => {
-    setup();
+    const { setShowPendingUpdates } = setup();
     fireEvent.click(screen.getByRole("switch"));
-    expect(screen.getByText("web")).toBeInTheDocument();
-    expect(screen.queryByText("db")).toBeNull();
+    expect(setShowPendingUpdates).toHaveBeenCalledWith(true);
+  });
+
+  it("colapsa las filas expandidas al cambiar de página", async () => {
+    const handlers = makeHandlers();
+    const { rerender } = render(dashboardElement({ page: 1 }, handlers));
+
+    expandRow("web");
+    expect(screen.getByText("Parar")).toBeInTheDocument();
+
+    rerender(dashboardElement({ page: 2 }, handlers));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Parar")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("no colapsa al cambiar searchQuery sin debounce", () => {
+    const handlers = makeHandlers();
+    const { rerender } = render(dashboardElement({}, handlers));
+
+    expandRow("web");
+    expect(screen.getByText("Parar")).toBeInTheDocument();
+
+    // Typing updates searchQuery immediately, but the search is not applied
+    // until it is debounced — rows must stay expanded.
+    rerender(dashboardElement({ searchQuery: "web" }, handlers));
+
+    expect(screen.getByText("Parar")).toBeInTheDocument();
+  });
+
+  it("colapsa al aplicarse la búsqueda debounced", async () => {
+    const handlers = makeHandlers();
+    const { rerender } = render(dashboardElement({}, handlers));
+
+    expandRow("web");
+    expect(screen.getByText("Parar")).toBeInTheDocument();
+
+    rerender(
+      dashboardElement(
+        { searchQuery: "web", debouncedSearch: "web" },
+        handlers,
+      ),
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByText("Parar")).not.toBeInTheDocument(),
+    );
   });
 
   it("reinicia un contenedor llamando a apiFetch con la URL y el método correctos", async () => {

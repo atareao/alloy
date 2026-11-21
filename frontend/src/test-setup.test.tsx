@@ -40,8 +40,12 @@ function mockFetch() {
         ),
       );
     }
-    if (url === "/api/containers") {
-      return Promise.resolve(new Response(JSON.stringify([])));
+    if (url.startsWith("/api/containers")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ items: [], total: 0, page: 1, page_size: 20 }),
+        ),
+      );
     }
     if (url === "/api/state") {
       // Nunca resuelve: evita el bucle infinito del long-poll durante los tests.

@@ -10,6 +10,11 @@ import type {
 export type RealtimeStatus = "sse" | "polling" | "down";
 
 export interface UseRealtimeOptions {
+  /**
+   * Query string (pagination + filters) appended to the stream/state URLs.
+   * Changing it reopens the `EventSource` / long-poll with the new parameters.
+   */
+  query?: string;
   onState: (state: StateResponse) => void;
   onContainerEvent?: (event: ContainerEvent) => void;
   onProgress?: (progress: UpdateProgress) => void;
@@ -67,12 +72,14 @@ export function useRealtime(options: UseRealtimeOptions): {
   }, [options.onError]);
 
   const failuresRef = useRef(0);
+  const query = options.query ?? "";
 
   // ── SSE transport (active only while status === "sse") ────────────
   useEffect(() => {
     if (status !== "sse" || typeof EventSource === "undefined") return;
 
-    const es = new EventSource("/api/stream", { withCredentials: true });
+    const url = query ? `/api/stream?${query}` : "/api/stream";
+    const es = new EventSource(url, { withCredentials: true });
 
     const onSnapshot = (e: Event) => {
       failuresRef.current = 0;
@@ -140,7 +147,7 @@ export function useRealtime(options: UseRealtimeOptions): {
       es.onerror = null;
       es.close();
     };
-  }, [status]);
+  }, [status, query]);
 
   // ── While on the fallback, periodically retry SSE ─────────────────
   useEffect(() => {
@@ -161,7 +168,7 @@ export function useRealtime(options: UseRealtimeOptions): {
       setStatus("down");
       onErrorRef.current?.();
     }, []),
-    { enabled: status === "polling" },
+    { enabled: status === "polling", query },
   );
 
   return { status };

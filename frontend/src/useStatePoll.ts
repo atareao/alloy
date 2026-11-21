@@ -4,9 +4,10 @@ import type { StateResponse } from "./types";
 export function useStatePoll(
   onState: (state: StateResponse) => void,
   onError?: () => void,
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; query?: string },
 ) {
   const enabled = options?.enabled ?? true;
+  const query = options?.query ?? "";
   const abortRef = useRef<AbortController | null>(null);
   const retriesRef = useRef(0);
   const maxRetries = 10;
@@ -31,7 +32,8 @@ export function useStatePoll(
       abortRef.current = controller;
 
       try {
-        const res = await fetch("/api/state", {
+        const url = query ? `/api/state?${query}` : "/api/state";
+        const res = await fetch(url, {
           credentials: "include",
           signal: controller.signal,
         });
@@ -62,5 +64,5 @@ export function useStatePoll(
       if (timer) clearTimeout(timer);
       if (abortRef.current) abortRef.current.abort();
     };
-  }, [enabled]);
+  }, [enabled, query]);
 }

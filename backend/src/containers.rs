@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::sse::{Event, KeepAlive, Sse},
     response::Json,
     routing::{get, post},
@@ -494,20 +494,33 @@ pub async fn pull_image(
     }
 }
 
+/// `GET /api/containers` — listado paginado y filtrado de la flota.
+///
+/// Acepta `page`, `page_size`, `q`, `state` y `has_update` (ver
+/// [`ContainerListQuery`]). Devuelve `{ items, total, page, page_size }`, con
+/// `total` calculado tras filtrar. Parámetros inválidos → HTTP 400.
 async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
     State(db_pool): State<DbPool>,
-) -> Result<Json<Vec<ContainerInfo>>, AppError> {
+    Query(query): Query<ContainerListQuery>,
+) -> Result<Json<PagedContainers>, AppError> {
+    let params = query.normalize()?;
+
     // La lista es la respuesta: si hay que leerla de la BD y esta falla, se
     // devuelve `AppError` (HTTP 500) en lugar de un `200 []` engañoso.
-    let cached = cache.read().await;
-    if let Some(containers) = cached.as_ref() {
-        Ok(Json(containers.clone()))
-    } else {
-        drop(cached);
-        Ok(Json(fetch_containers(&docker, &None, &db_pool).await?))
-    }
+    let containers = {
+        let cached = cache.read().await;
+        match cached.as_ref() {
+            Some(containers) => containers.clone(),
+            None => {
+                drop(cached);
+                fetch_containers(&docker, &None, &db_pool).await?
+            }
+        }
+    };
+
+    Ok(Json(paginate_containers(&containers, &params)))
 }
 
 async fn inspect_container_h(
@@ -966,6 +979,264 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── listado paginado (container-list-pagination) ──────────
+
+    /// Contenedor mínimo para los tests de router del listado.
+    fn make_listed_container(
+        name: &str,
+        state: &str,
+        has_update: bool,
+        project: Option<&str>,
+    ) -> ContainerInfo {
+        ContainerInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            image: format!("{name}:latest"),
+            image_tag: "latest".into(),
+            size_mb: 1.0,
+            status: state.to_string(),
+            state: state.to_string(),
+            has_update,
+            updating: false,
+            compose_project: project.map(str::to_string),
+            ports: vec![],
+            traefik_url: None,
+            registry_url: String::new(),
+            last_check: None,
+            next_check: None,
+            last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
+        }
+    }
+
+    /// Router con el listado montado y la cache ya poblada (sin tocar el daemon).
+    async fn list_app(containers: Vec<ContainerInfo>) -> Router {
+        let state =
+            crate::test_support::test_app_state(crate::config::Config::default(), test_pool());
+        *state.cached_containers.write().await = Some(containers);
+        routes().with_state(state)
+    }
+
+    async fn get_json(app: Router, uri: &str) -> (axum::http::StatusCode, serde_json::Value) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_returns_default_page_of_twentyfive() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(list_app(containers).await, "/api/containers").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["page_size"], 20);
+        assert_eq!(json["total"], 25);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(20));
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_second_page_returns_five() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?page=2&page_size=20",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(5));
+        assert_eq!(json["total"], 25);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_page_beyond_end_is_empty_with_real_total() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(list_app(containers).await, "/api/containers?page=99").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(0));
+        assert_eq!(json["total"], 25);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_page_size_30_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page_size=30",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_page_zero_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page=0",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    // ── casos límite de la query ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_non_numeric_page_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page=abc",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_non_boolean_has_update_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?has_update=maybe",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_negative_page_size_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page_size=-1",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// `4294967296` no cabe en `u32` → la deserialización falla con 400.
+    #[tokio::test]
+    async fn test_list_containers_rejects_u32_overflow_page_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page=4294967296",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// Clave escalar repetida (`?page=1&page=2`): last-wins, no 400.
+    #[tokio::test]
+    async fn test_list_containers_repeated_scalar_uses_last_value() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?page=1&page=2&page_size=20",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["page"], 2, "debe aplicarse el último valor");
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(5));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// Clave desconocida (`?pageSize=50`): se ignora y cae al default.
+    #[tokio::test]
+    async fn test_list_containers_ignores_unknown_query_keys() {
+        let (status, json) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?pageSize=50",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["page_size"], 20, "typo ignorado → default");
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_filters_by_state_and_has_update() {
+        let containers = vec![
+            make_listed_container("web", "running", true, None),
+            make_listed_container("api", "running", false, None),
+            make_listed_container("db", "exited", true, None),
+        ];
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?state=running&has_update=true",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["total"], 1);
+        assert_eq!(json["items"][0]["name"], "web");
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_q_searches_name_image_and_project() {
+        let containers = vec![
+            make_listed_container("web", "running", false, Some("shop")),
+            make_listed_container("db", "running", false, Some("blog")),
+        ];
+        let (status, json) = get_json(list_app(containers).await, "/api/containers?q=BLOG").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["total"], 1);
+        assert_eq!(json["items"][0]["name"], "db");
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_accepts_repeated_state_params() {
+        let containers = vec![
+            make_listed_container("web", "running", false, None),
+            make_listed_container("db", "exited", false, None),
+            make_listed_container("cache", "paused", false, None),
+        ];
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?state=running&state=exited",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["total"], 2);
+        let names: Vec<&str> = json["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"web") && names.contains(&"db"),
+            "deben aparecer running y exited: {names:?}"
+        );
+        assert!(
+            !names.contains(&"cache"),
+            "no debe aparecer paused: {names:?}"
+        );
     }
 
     // ── strip_name ───────────────────────────────────────────
