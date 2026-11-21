@@ -1026,32 +1026,47 @@ describe("ConfigPage — tarjeta Exportar / Importar", () => {
 });
 
 /**
- * Consistencia de defaults backend↔UI (change reconcile-update-defaults).
+ * Consistencia de defaults backend↔UI (change expose-update-defaults-api).
  *
- * El formulario debe arrancar con los valores canónicos `0 6 * * *` (cron) y
- * `600` (timeout de pull) antes de que resuelva el GET /api/update-check/config,
- * y la etiqueta del timeout debe indicar `600 (10 min)`.
+ * El frontend NO debe hardcodear los defaults: el placeholder del cron, la
+ * etiqueta del timeout y el fallback al vaciar `pull_timeout_secs` deben salir
+ * de `GET /api/update-check/defaults`. Para que el test sea probatorio, el mock
+ * devuelve valores **distintos** de los literales históricos (`0 6 * * *` /
+ * `600`): `cron: "15 3 * * *"` y `pull_timeout_secs: 900`. La carga del GET de
+ * config aporta además valores diferentes, de modo que si el frontend siguiera
+ * hardcodeando, las aserciones fallarían.
  */
-describe("ConfigPage — defaults canónicos de updates", () => {
+describe("ConfigPage — defaults desde la API (GET /api/update-check/defaults)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  // Los campos de cron/timeout solo se montan con la revisión activada. El GET
-  // devuelve los canónicos del backend, pero el placeholder y la etiqueta del
-  // timeout son estáticos: deben coincidir aunque la carga esté en vuelo.
+  // Los campos de cron/timeout solo se montan con la revisión activada.
   function renderWithEnabledUpdates() {
     const mock = vi.fn().mockImplementation((url: string) => {
       if (url === "/api/update-check/config") {
         return Promise.resolve(
           new Response(
             JSON.stringify({
-              cron: "0 6 * * *",
+              // Distintos de los defaults de la API para que la aserción de
+              // fallback (900) no coincida por casualidad con la precarga.
+              cron: "*/30 * * * *",
               enabled: true,
               notify: false,
               last_run_at: null,
               next_run_at: null,
-              pull_timeout_secs: 600,
+              pull_timeout_secs: 480,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "15 3 * * *",
+              pull_timeout_secs: 900,
+              check_interval_ms: 2000,
             }),
           ),
         );
@@ -1083,49 +1098,156 @@ describe("ConfigPage — defaults canónicos de updates", () => {
     );
   }
 
-  it("usa el cron canónico 0 6 * * * como placeholder inicial", async () => {
+  // Variante donde el GET de defaults falla: el placeholder debe quedar vacío
+  // (sin parpadeo) y vaciar el timeout NO debe caer a 0 (fuera de min={60}).
+  function renderWithDefaultsUnavailable(): FetchCall[] {
+    const calls: FetchCall[] = [];
+    const mock = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+      const method = opts?.method ?? "GET";
+      const body = opts?.body ? JSON.parse(opts.body as string) : undefined;
+      calls.push({ url, method, body });
+
+      if (url === "/api/update-check/config" && method === "GET") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              pull_timeout_secs: 480,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/config" && method === "PUT") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "*/30 * * * *",
+              enabled: true,
+              notify: false,
+              last_run_at: null,
+              next_run_at: null,
+              ...body,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        return Promise.resolve(new Response("boom", { status: 500 }));
+      }
+      if (url === "/api/update-policies/default") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              action: "pull-restart",
+              cleanup_old_image: false,
+              rollback_on_failure: false,
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(new Response("ok"));
+    });
+    vi.stubGlobal("fetch", mock);
+
+    render(
+      <Wrapper>
+        <ConfigPage
+          config={makeConfig()}
+          setConfig={vi.fn()}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      </Wrapper>,
+    );
+    return calls;
+  }
+
+  it("sin defaults cargados, el placeholder del cron queda vacío (sin parpadeo)", async () => {
+    renderWithDefaultsUnavailable();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    // Se espera a que los GET de montaje se apliquen; el placeholder no debe
+    // mostrar el literal histórico.
+    await screen.findByDisplayValue("*/30 * * * *");
+    expect(screen.queryByPlaceholderText("0 6 * * *")).not.toBeInTheDocument();
+  });
+
+  it("al vaciar el timeout sin defaults cargados conserva el valor previo (no cae a 0)", async () => {
+    const calls = renderWithDefaultsUnavailable();
+
+    fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+
+    const timeoutInput = await screen.findByDisplayValue("480");
+    fireEvent.change(timeoutInput, { target: { value: "1200" } });
+
+    // Vaciar sin default disponible: no debe aplicarse 0 (queda por debajo de
+    // min={60}); se conserva el valor previo en el estado del formulario.
+    fireEvent.change(screen.getByDisplayValue("1200"), {
+      target: { value: "" },
+    });
+    expect(screen.queryByDisplayValue("0")).not.toBeInTheDocument();
+
+    // Al guardar, el valor previo (1200) se envía tal cual, no 0.
+    fireEvent.click(screen.getByRole("button", { name: /guardar revisión/i }));
+    await waitFor(() => {
+      const put = calls.find(
+        (c) => c.url === "/api/update-check/config" && c.method === "PUT",
+      );
+      expect(put).toBeDefined();
+      expect(put!.body).toMatchObject({ pull_timeout_secs: 1200 });
+    });
+  });
+
+  it("usa el cron devuelto por la API como placeholder (no el literal)", async () => {
     renderWithEnabledUpdates();
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
     expect(
-      await screen.findByPlaceholderText("0 6 * * *"),
+      await screen.findByPlaceholderText("15 3 * * *"),
     ).toBeInTheDocument();
     expect(
-      screen.queryByPlaceholderText("0 */6 * * *"),
+      screen.queryByPlaceholderText("0 6 * * *"),
     ).not.toBeInTheDocument();
   });
 
-  it("muestra el timeout por defecto canónico 600 (10 min)", async () => {
+  it("muestra el timeout por defecto devuelto por la API (900 → 15 min)", async () => {
     renderWithEnabledUpdates();
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
     expect(
-      await screen.findByText(/Default: 600 \(10 min\)/),
+      await screen.findByText(/Default: 900 \(15 min\)/),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/1800/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Default: 600 \(10 min\)/)).not.toBeInTheDocument();
   });
 
-  it("vaciar el timeout no cambia el default mostrado (600)", async () => {
+  it("al vaciar el timeout aplica el default de la API (900), no el literal 600", async () => {
     renderWithEnabledUpdates();
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
 
-    // El campo arranca precargado con el canónico 600.
-    const timeoutInput = await screen.findByDisplayValue("600");
+    // El campo arranca precargado con el valor del GET /config (480), distinto
+    // del default de la API.
+    const timeoutInput = await screen.findByDisplayValue("480");
 
     // El usuario lo cambia a un valor no-default…
-    fireEvent.change(timeoutInput, { target: { value: "900" } });
-    expect(screen.getByDisplayValue("900")).toBeInTheDocument();
+    fireEvent.change(timeoutInput, { target: { value: "1200" } });
+    expect(screen.getByDisplayValue("1200")).toBeInTheDocument();
 
-    // …y al vaciarlo se aplica el fallback canónico 600 (no 1800).
-    fireEvent.change(screen.getByDisplayValue("900"), {
+    // …y al vaciarlo se aplica el fallback devuelto por la API (900), no el
+    // literal histórico 600.
+    fireEvent.change(screen.getByDisplayValue("1200"), {
       target: { value: "" },
     });
 
-    expect(screen.getByDisplayValue("600")).toBeInTheDocument();
-    expect(screen.queryByDisplayValue("1800")).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("900")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("600")).not.toBeInTheDocument();
   });
 });
 
@@ -1320,6 +1442,18 @@ describe("ConfigPage — error de cron inválido desde el backend", () => {
               last_run_at: null,
               next_run_at: null,
               pull_timeout_secs: 600,
+            }),
+          ),
+        );
+      }
+      if (url === "/api/update-check/defaults") {
+        // El placeholder del cron sale de la API; se devuelven los canónicos.
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              cron: "0 6 * * *",
+              pull_timeout_secs: 600,
+              check_interval_ms: 2000,
             }),
           ),
         );

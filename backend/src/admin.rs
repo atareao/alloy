@@ -15,6 +15,13 @@ use crate::state::AppState;
 
 // ── Update Check Config ──────────────────────────────────────
 
+/// Defaults canónicos de la configuración de updates
+/// (`GET /api/update-check/defaults`). No depende de `Settings`: expone las
+/// consts tal cual, sin aplicar la lógica efectiva del GET existente.
+async fn get_update_defaults_h() -> Json<UpdateDefaults> {
+    Json(UpdateDefaults::canonical())
+}
+
 async fn get_update_check_config_h(
     State(settings): State<Arc<Mutex<Settings>>>,
 ) -> Json<UpdateCheckConfig> {
@@ -246,6 +253,7 @@ pub fn routes() -> Router<AppState> {
             "/api/update-check/config",
             get(get_update_check_config_h).put(put_update_check_config_h),
         )
+        .route("/api/update-check/defaults", get(get_update_defaults_h))
         .route("/api/update-policies", get(get_update_policies_h))
         .route(
             "/api/update-policies/default",
@@ -278,6 +286,15 @@ mod tests {
         // El GET sirve los valores efectivos (consts), no `None`.
         assert_eq!(result.0.pull_timeout_secs, Some(DEFAULT_PULL_TIMEOUT_SECS));
         assert_eq!(result.0.check_interval_ms, Some(DEFAULT_CHECK_INTERVAL_MS));
+    }
+
+    #[tokio::test]
+    async fn test_get_update_defaults_returns_canonical() {
+        // `GET /api/update-check/defaults` ⇒ 200 (Json) con las consts canónicas.
+        let Json(defaults) = get_update_defaults_h().await;
+        assert_eq!(defaults.cron, "0 6 * * *");
+        assert_eq!(defaults.pull_timeout_secs, 600);
+        assert_eq!(defaults.check_interval_ms, 2000);
     }
 
     #[tokio::test]
