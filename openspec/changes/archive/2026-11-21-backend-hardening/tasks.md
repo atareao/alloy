@@ -33,6 +33,6 @@
 ## 5. Cierre
 
 - [x] 5.1 `docs/backend-hardening.md` (+ nota README sobre `Secure`/`ALLOW_INSECURE_COOKIES`).
-- [ ] 5.2 PR de `feature/backend-hardening` a `develop`, CI verde.
-- [ ] 5.3 `openspec archive backend-hardening` + limpieza.
-- [ ] 5.4 Actualizar #159 (queda el punto 4 → change/PR propio) y renombrar el plan a `plans/PLAN-015-ARCHIVED.md`; actualizar `HANDOFF.md`.
+- [x] 5.2 PR de `feature/backend-hardening` a `develop`, CI verde.
+- [x] 5.3 `openspec archive backend-hardening` + limpieza.
+- [x] 5.4 Actualizar #159 (queda el punto 4 → change/PR propio) y renombrar el plan a `plans/PLAN-015-ARCHIVED.md`; actualizar `HANDOFF.md`.
