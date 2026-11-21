@@ -146,6 +146,8 @@ export interface UpdateCheckConfig {
   update_start_attempt_interval_secs?: number | null;
   /** Ventana de salud (s) que debe mantenerse estable para dar el arranque por bueno. */
   update_health_window_secs?: number | null;
+  /** Intervalo en ms entre verificaciones de digest de cada contenedor. */
+  check_interval_ms?: number | null;
 }
 
 /**

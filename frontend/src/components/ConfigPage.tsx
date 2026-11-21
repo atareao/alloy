@@ -127,6 +127,12 @@ export default function ConfigPage({
   // Pull timeout
   const [pullTimeout, setPullTimeout] = useState(0);
 
+  // Intervalo de comprobación del digest de cada contenedor, en **segundos**
+  // (la API lo expone en ms: se divide al cargar y se multiplica al enviar).
+  // Init neutral (0), igual patrón que `pullTimeout`: el bloque solo se monta
+  // con `ucEnabled`, que se activa en el mismo GET que precarga estos valores.
+  const [checkIntervalSecs, setCheckIntervalSecs] = useState(0);
+
   // Guarda de arranque (update-rollback-guard) — settings globales.
   // Init neutral (0), igual que `pullTimeout`: el bloque de la guarda solo se
   // monta con `ucEnabled`, que se activa en el mismo GET que precarga estos
@@ -151,6 +157,8 @@ export default function ConfigPage({
           setUcStartAttemptInterval(data.update_start_attempt_interval_secs);
         if (data.update_health_window_secs != null)
           setUcHealthWindow(data.update_health_window_secs);
+        if (data.check_interval_ms != null)
+          setCheckIntervalSecs(Math.round(data.check_interval_ms / 1000));
       })
       .catch(() => {});
   }, []);
@@ -367,6 +375,7 @@ export default function ConfigPage({
           update_max_start_attempts: ucMaxStartAttempts,
           update_start_attempt_interval_secs: ucStartAttemptInterval,
           update_health_window_secs: ucHealthWindow,
+          check_interval_ms: checkIntervalSecs * 1000,
         }),
       });
       if (res.ok) {
@@ -383,6 +392,8 @@ export default function ConfigPage({
           setUcStartAttemptInterval(data.update_start_attempt_interval_secs);
         if (data.update_health_window_secs != null)
           setUcHealthWindow(data.update_health_window_secs);
+        if (data.check_interval_ms != null)
+          setCheckIntervalSecs(Math.round(data.check_interval_ms / 1000));
         showSuccess(
           ucEnabled
             ? "✅ Revisión programada activada"
@@ -1083,6 +1094,43 @@ export default function ConfigPage({
                           max={7200}
                           step={60}
                           style={{ width: "100%" }}
+                        />
+                      </Space>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        style={{ width: "100%" }}
+                      >
+                        <Typography.Text strong>
+                          🔍 Intervalo de comprobación (s)
+                        </Typography.Text>
+                        <Typography.Text
+                          type="secondary"
+                          style={{ fontSize: 12 }}
+                        >
+                          Tiempo entre verificaciones de digest de cada
+                          contenedor.
+                          {defaults
+                            ? ` Default: ${Math.round(
+                                defaults.check_interval_ms / 1000,
+                              )} s`
+                            : ""}
+                        </Typography.Text>
+                        <InputNumber
+                          aria-label="Intervalo de comprobación (s)"
+                          value={checkIntervalSecs}
+                          onChange={(v) =>
+                            setCheckIntervalSecs((prev) =>
+                              v == null
+                                ? defaults?.check_interval_ms
+                                  ? Math.round(defaults.check_interval_ms / 1000)
+                                  : prev
+                                : Number(v),
+                            )
+                          }
+                          min={1}
+                          precision={0}
+                          style={{ width: 140 }}
                         />
                       </Space>
                       <Space
