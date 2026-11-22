@@ -83,7 +83,10 @@ jobs:
           # Fuente única de verdad: engines.node de frontend/package.json
           node-version-file: frontend/package.json
           cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          # Incluye el lock y los overrides de pnpm-workspace.yaml para invalidar la caché si cambian.
+          cache-dependency-path: |
+            frontend/pnpm-lock.yaml
+            frontend/pnpm-workspace.yaml
       - name: Install dependencies
         working-directory: frontend
         run: pnpm install --frozen-lockfile
