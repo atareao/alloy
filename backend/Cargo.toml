@@ -28,6 +28,9 @@ async-stream = "0.3"
 cron = "0.15"
 rusqlite = { version = "0.38", features = ["bundled"] }
 deadpool-sqlite = "0.13"
+# Necesario para envolver el `Manager` de `deadpool-sqlite` con uno propio
+# (`PragmaManager`) que aplique los PRAGMAs de sesión por conexión (#210).
+deadpool = { version = "0.13", default-features = false, features = ["managed"] }
 percent-encoding = "2"
 
 [dev-dependencies]
