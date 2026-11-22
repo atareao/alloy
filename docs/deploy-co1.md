@@ -7,7 +7,7 @@ Procedimiento para (re)desplegar Alloy en el servidor `co1` **pinchando una vers
 - **Host**: `co1` (Contabo), accesible por SSH (`ssh co1`).
 - **Runtime**: Docker 28.2.2, stack gestionado por **Dockge** (`louislam/dockge`).
 - **Stack**: `alloy` → `/home/lorenzo/docker/dockge/stacks/alloy/compose.yaml` (+ `.env`).
-- **Imagen**: `ghcr.io/atareao/alloy`, **pinchada a una versión** (p. ej. `:0.26.0`).
+- **Imagen**: `ghcr.io/atareao/alloy`, **pinchada a una versión** (p. ej. `:0.27.0`).
 - **Dominio**: `https://alloy.territoriolinux.es` (Traefik, red `proxy`).
 - **Socket**: `/var/run/docker.sock` montado; `group_add: ["999"]` (GID del socket) para el usuario no privilegiado `app`.
 
@@ -18,13 +18,13 @@ Procedimiento para (re)desplegar Alloy en el servidor `co1` **pinchando una vers
 
 ## Pinchar la versión
 
-1. Elegir la versión objetivo `X.Y.Z` (p. ej. `0.26.0`), la última release publicada.
+1. Elegir la versión objetivo `X.Y.Z` (p. ej. `0.27.0`), la última release publicada.
 2. Editar `compose.yaml` y fijar la imagen:
 
 ```yaml
 services:
   alloy:
-    image: ghcr.io/atareao/alloy:0.26.0
+    image: ghcr.io/atareao/alloy:0.27.0
 ```
 
 ## Procedimiento
@@ -34,14 +34,14 @@ ssh co1
 cd /home/lorenzo/docker/dockge/stacks/alloy
 
 # 1. Traer la imagen de la versión pinchada
-docker pull ghcr.io/atareao/alloy:0.26.0
+docker pull ghcr.io/atareao/alloy:0.27.0
 
 # 2. Redeploy (recrea el contenedor con la nueva imagen)
 docker compose up -d
 
 # 3. Verificar (por TAG, no por digest)
 docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -i alloy
-docker inspect alloy --format '{{.Config.Image}}'   # debe imprimir ghcr.io/atareao/alloy:0.26.0
+docker inspect alloy --format '{{.Config.Image}}'   # debe imprimir ghcr.io/atareao/alloy:0.27.0
 curl -s -o /dev/null -w '%{http_code}\n' https://alloy.territoriolinux.es/
 ```
 
@@ -68,4 +68,17 @@ docker image prune -f   # elimina imágenes antiguas huérfanas
 - `compose.yaml` usa variables de `.env` (`FQDN`, `DOCKER_HOST`, `OIDC_*`). No borrar `.env`.
 - Ejemplo versionado del stack: [`deploy/co1.compose.example.yaml`](../deploy/co1.compose.example.yaml).
 - Hay backups `compose.yaml.bak-*` en el directorio del stack.
+- El directorio del stack es propiedad de `root`: backup y `sed` requieren `sudo` (`sudo cp`, `sudo sed -i`). `docker compose` funciona con tu usuario del grupo `docker`.
 - Desplegar la **última release** = pinchar el tag de la última release publicada (no `:latest`).
+
+## Verificación tras el deploy
+
+```sh
+# 1. La CSP debe venir en la respuesta del dominio
+curl -sS -o /dev/null -D - https://alloy.territoriolinux.es/ | grep -i content-security-policy
+
+# 2. La SPA debe renderizar (DOM con #root poblado)
+google-chrome-stable --headless=new --virtual-time-budget=10000 --dump-dom https://alloy.territoriolinux.es/ | grep -o '<div id="root">'
+```
+
+Si el `grep` de la CSP no imprime nada o `#root` aparece vacío, el deploy no está sirviendo la versión esperada.

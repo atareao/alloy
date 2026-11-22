@@ -2,8 +2,8 @@
 
 ## Estado
 
-Última release: **v0.26.0** (`ghcr.io/atareao/alloy:0.26.0` y `:latest`); `main` **= `0d63204`**.
-`develop` al día tras fusionar #182, #183 y #184 y va por delante de `main`. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
+Última release: **v0.27.0** (`ghcr.io/atareao/alloy:0.27.0` y `:latest`); `main` **= `7b34d4f`**.
+`develop` restaurada y apuntando a `7b34d4f` (ver Notas). co1 corre **0.27.0**. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
 
 ### Completado esta sesión (repo)
 
@@ -38,10 +38,15 @@
 - **#170** `update-history-lock-order` → **PR #184** (`23771a9`).
   - `append_stack_history` y `delete_history_h` liberan el guard antes de la pool; `record_update_entry` eliminado.
   - **541 tests**. Auditoría `@rust-reviewer`: **apto**. Change archivado; `plans/PLAN-025-ARCHIVED.md`; `docs/update-history-lock-order.md`.
+- **Release v0.27.0** → commit `7b34d4f`, merge **PR #186** (`6851750`), tag publicado e imagen en GHCR.
+- **Ops manual (2026-11-22)**: verificado en `co1` con 0.27.0 que la SPA carga con la CSP aplicada.
+  - `curl -I https://alloy.territoriolinux.es/` devuelve la CSP (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`), junto a `x-frame-options: DENY`, `x-content-type-options: nosniff`, `referrer-policy` y HSTS.
+  - La SPA renderiza bajo CSP (`#root` poblado con clases `ant-*`, sin violaciones en la consola de Chrome headless).
+  - `/api/health` → `{"docker":true,"status":"ok"}`; `/api/stream` y `/api/auth/sse-token` sin sesión → 401.
 
 ### Pendiente
 
-- **Ops manual**: verificar en `co1` que la SPA carga con la CSP aplicada.
+- Ninguno.
 
 ### Follow-ups / deuda conocida
 
@@ -60,8 +65,9 @@
 
 ## Entorno
 
-- **co1** (Dockge) en `https://alloy.territoriolinux.es` — corre v0.26.0, sano. Procedimiento: `docs/deploy-co1.md`.
+- **co1** (Dockge) en `https://alloy.territoriolinux.es` — corre v0.27.0, sano. Procedimiento: `docs/deploy-co1.md`.
 
 ## Notas
 
-- No quedan issues abiertos; los PRs se fusionaron con `--merge --delete-branch`; los issues se cerraron con `gh issue close`.
+- No quedan issues abiertos; los PRs se fusionan con `--merge --delete-branch` solo cuando el head es una rama `feature/*` o `hotfix/*`; los issues se cerraron con `gh issue close`.
+- **Nunca** usar `gh pr merge --delete-branch` en un PR cuyo head es `develop`: borra la rama remota (pasó con el PR #186 y rompió "Sync develop with main"; se restauró con `git push origin origin/main:refs/heads/develop`).
