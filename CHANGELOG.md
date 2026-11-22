@@ -1,4 +1,10 @@
 # Changelog
+## [0.29.1] - 2026-11-22
+
+### Miscellaneous Tasks
+
+- Deja de trackear HANDOFF.md y lo añade a .gitignore
+- *(agents)* Deja claro que HANDOFF.md nunca se commitea
 ## [0.29.0] - 2026-11-22
 
 ### Documentation
@@ -14,6 +20,7 @@
 ### Miscellaneous Tasks
 
 - *(plans)* Archiva el plan 029 (histórico paginado, #197)
+- Release v0.29.0
 ## [0.28.0] - 2026-11-22
 
 ### Documentation
