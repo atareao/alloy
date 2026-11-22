@@ -1,7 +1,7 @@
 # frontend/test-coverage Specification
 
 ## Purpose
-TBD - created by archiving change frontend-test-coverage. Update Purpose after archive.
+Esta capability define la cobertura de tests del frontend: ubicación colocada de los tests por componente y cobertura de las acciones de contenedor, los filtros y el renderizado de `ContainerRow`, `ContainerTable`, `InspectModal` y `DashboardPage`.
 
 ## Requirements
 

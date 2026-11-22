@@ -1,7 +1,7 @@
 # frontend/sse Specification
 
 ## Purpose
-TBD - created by archiving change sse-single-connection. Update Purpose after archive.
+This capability describes the single-connection SSE design: one `/api/stream` endpoint merges all backend event types and the frontend consumes it through a single `EventSource`.
 
 ## Requirements
 

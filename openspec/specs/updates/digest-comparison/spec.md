@@ -7,6 +7,8 @@ Centralizar y unificar la lógica de comparación de digests para determinar si 
 
 ### Requirement: needs_update function
 
+La función `needs_update()` SHALL comparar el `last_remote_digest` persistido (con `image_id` como fallback cuando no existe) contra el `config_digest` remoto para determinar si el contenedor requiere actualización.
+
 **Given** un contenedor con `last_remote_digest` en BD  
 **When** se compara con el `config_digest` remoto  
 **Then** `needs_update()` retorna `false` si los short digests (12 chars) son iguales  
@@ -73,6 +75,8 @@ Centralizar y unificar la lógica de comparación de digests para determinar si 
 **And** el handler retorna error sin modificar `last_remote_digest`
 
 ### Requirement: Persist last_remote_digest after successful update
+
+El handler SHALL persistir el `config_digest` remoto como `last_remote_digest` en SQLite tras un update exitoso, con independencia del pathway utilizado.
 
 **Given** un update exitoso via cualquier pathway (API single, check-all, scheduler)  
 **When** el handler completa  

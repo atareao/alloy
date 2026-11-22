@@ -1,7 +1,7 @@
 # ui/config-page Specification
 
 ## Purpose
-TBD - created by archiving change decompose-config-page. Update Purpose after archive.
+Esta capability describe la descomposición de `ConfigPage` en un orquestador delgado, con la validación de cron en un módulo puro y el estado compartido en un hook, preservando el comportamiento observable de la página.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # frontend/deps Specification
 
 ## Purpose
-TBD - created by archiving change deps-minor. Update Purpose after archive.
+Esta capability cubre la actualización de dependencias del frontend (parches, menores y majors) y la consistencia del lockfile, manteniendo la suite en verde y la versión de Node alineada.
 
 ## Requirements
 

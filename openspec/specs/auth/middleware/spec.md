@@ -1,7 +1,7 @@
 # auth/middleware Specification
 
 ## Purpose
-TBD - created by archiving change sse-header-fix. Update Purpose after archive.
+This capability defines how the authentication middleware handles SSE responses: it must detect `text/event-stream` streams and skip all header mutations (including the sliding-session `Set-Cookie`) so the stream is not buffered. It ensures auth processing never interferes with real-time event delivery.
 
 ## Requirements
 

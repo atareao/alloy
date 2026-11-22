@@ -1,7 +1,7 @@
 # auth/sse-ticket Specification
 
 ## Purpose
-TBD - created by archiving change sse-token-auth. Update Purpose after archive.
+Esta capability describe la autenticación efímera de los streams SSE: la emisión de un ticket JWT de corta vida (`GET /api/auth/sse-token`) y su aceptación por el middleware solo en `/api/stream` vía query. Garantiza que el endpoint de eventos pueda autenticarse sin exponer el JWT de sesión y sin aceptar esos tickets en el resto de la API.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # dev/deploy-co1 Specification
 
 ## Purpose
-TBD - created by archiving change pin-deploy-co1-version. Update Purpose after archive.
+Esta capability documenta el procedimiento de despliegue en co1: la imagen se fija a una etiqueta de versión explícita (nunca `:latest`), la verificación se hace por tag y el proceso es reproducible y auditable.
 
 ## Requirements
 

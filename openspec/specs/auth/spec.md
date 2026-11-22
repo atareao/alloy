@@ -1,13 +1,16 @@
 # auth Specification
 
 ## Purpose
-TBD - created by archiving change ws-auth-fix. Update Purpose after archive.
+Define cómo el middleware de autenticación de Alloy valida las peticiones
+entrantes (API REST, streams SSE y upgrades WebSocket) y gestiona la sesión
+deslizante, garantizando que no altera respuestas cuyo handshake no puede
+modificar, como las de status `101 Switching Protocols`.
 
 ## Requirements
 
 ### Requirement: El middleware de auth SHALL no modificar respuestas 101 Switching Protocols
 
-El middleware de autenticación NO DEBE modificar los headers de una respuesta
+El middleware de autenticación MUST NOT modificar los headers de una respuesta
 con status `101 Switching Protocols` (WebSocket upgrade), para no corromper
 el handshake de upgrade.
 

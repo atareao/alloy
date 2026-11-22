@@ -1,7 +1,7 @@
 # ci/action-runtimes Specification
 
 ## Purpose
-TBD - created by archiving change ci-node-24. Update Purpose after archive.
+Esta capability asegura que las GitHub Actions basadas en Node usadas en los workflows declaren un runtime soportado (Node 24), evitando las deprecaciones que rompen o ensucian la CI.
 
 ## Requirements
 
