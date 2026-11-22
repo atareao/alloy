@@ -2,8 +2,8 @@
 
 ## Estado
 
-Última release: **v0.27.0** (`ghcr.io/atareao/alloy:0.27.0` y `:latest`); `main` **= `7b34d4f`**.
-`develop` va por delante de `main` con **#188**, **#189** y **#190** (PRs **#191**, **#192**, **#193**, mergeados). co1 corre **0.27.0**. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
+Última release: **v0.28.0** (`ghcr.io/atareao/alloy:0.28.0` y `:latest`); `main` **= `fb1ad44`**.
+`develop` **= `fb1ad44`** (sincronizada por "Sync develop with main"). co1 corre **0.28.0**, sano. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
 
 ### Completado esta sesión (repo)
 
@@ -55,6 +55,12 @@
   - `Dockerfile` copia el workspace antes de `pnpm install --frozen-lockfile` (fallaba con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`); `ci.yml` cachea también el workspace. **209 tests**.
   - Auditoría `@react-reviewer`: no apto en 1ª ronda (Dockerfile y spec con mecanismo falso), corregido y re-validado.
   - Change archivado: `openspec/specs/frontend/deps-dedupe/spec.md`. Docs: `docs/dedupe-antd-cssinjs.md`, `docs/frontend-deps.md`. Plan: `plans/PLAN-028-ARCHIVED.md`.
+- **Release v0.28.0** → commit `fb1ad44` (`chore: release v0.28.0`), merge **PR #195** (`4b10ce6`), tag `v0.28.0` e imagen `ghcr.io/atareao/alloy:0.28.0` publicados en GHCR (workflow Release verde: x86_64 + aarch64 + docker).
+  - `.vampus.yml` en `0.28.0` tanto en `main` como en `develop` (el job "Sync develop with main" funcionó).
+  - Contenido: #188 (imagen en `InspectModal`), #190 (dedupe `@ant-design/cssinjs` 2.1.2), #189 (doc de oxlint sin warnings).
+- **Deploy co1 0.28.0** → `compose.yaml` pinchado a `ghcr.io/atareao/alloy:0.28.0` (backup `compose.yaml.bak-0.27.0-*`), redeploy hecho.
+  - `docker inspect` → `ghcr.io/atareao/alloy:0.28.0`; logs con `🚀 Alloy en http://0.0.0.0:3066`.
+  - Verificación post-deploy: CSP presente (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`) junto a HSTS y `x-frame-options: DENY`; `/api/health` → `{"docker":true,"status":"ok"}`; SPA renderiza (`<div id="root">` poblado con clases `ant-*`).
 
 ### Pendiente
 
@@ -77,7 +83,7 @@
 
 ## Entorno
 
-- **co1** (Dockge) en `https://alloy.territoriolinux.es` — corre v0.27.0, sano. Procedimiento: `docs/deploy-co1.md`.
+- **co1** (Dockge) en `https://alloy.territoriolinux.es` — corre v0.28.0, sano. Procedimiento: `docs/deploy-co1.md`.
 
 ## Notas
 

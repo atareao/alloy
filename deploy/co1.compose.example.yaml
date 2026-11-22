@@ -5,11 +5,11 @@
 # como referencia desplegada: haría el deploy no reproducible.
 #
 # El tag de versión lo publica .github/workflows/release.yml (publica :${VERSION} y :latest).
-# Versión actual desplegada: 0.27.0
+# Versión actual desplegada: 0.28.0
 
 services:
   alloy:
-    image: ghcr.io/atareao/alloy:0.27.0
+    image: ghcr.io/atareao/alloy:0.28.0
     container_name: alloy
     restart: unless-stopped
     env_file:
