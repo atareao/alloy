@@ -20,10 +20,10 @@ explicación del orden correcto.
 
 1. [x] Issue #206 y change proposal `pre-commit-hook-sdd-trap` (validado: 1 passed).
 2. [x] RED: comprobar con `rg -F` que las cadenas clave no existen en el doc.
-3. [ ] GREEN: escribir la sección con extensiones, definición de proposal activo, mensaje de error
+3. [x] GREEN: escribir la sección con extensiones, definición de proposal activo, mensaje de error
        literal, causa, orden correcto y remedio; excluir explícitamente `--no-verify` como hábito.
-4. [ ] Verificar que lo escrito coincide con `.githooks/pre-commit`.
-5. [ ] `openspec validate --strict --specs` en verde (53 passed) y `openspec validate --changes`.
+4. [x] Verificar que lo escrito coincide con `.githooks/pre-commit`.
+5. [x] `openspec validate --strict --specs` en verde (53 passed) y `openspec validate --changes`.
 6. [ ] Commit gitmoji → archivar change → `docs/` + plan → PR a `develop` → cerrar issue #206 a mano.
 
 ## Verificación
