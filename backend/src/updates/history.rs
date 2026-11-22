@@ -14,7 +14,9 @@ use crate::models::*;
 /// SQLite (no contra el vector en memoria): `total` refleja el histórico
 /// completo —sin el antiguo cap de 100— y el handler no toma
 /// `update_history.lock()`, de modo que una pool saturada no bloquea a los
-/// workers que publican entradas.
+/// workers que publican entradas. `total` e `items` se leen en una única
+/// transacción (`db::load_update_history_page_with_total`), así que describen
+/// la misma instantánea aunque un worker inserte entre medias.
 pub async fn get_history_h(
     State(db_pool): State<DbPool>,
     Query(query): Query<UpdateHistoryQuery>,
@@ -25,10 +27,10 @@ pub async fn get_history_h(
     // memoria: el handler no toma `update_history.lock()`, de modo que una pool
     // saturada no bloquea a los workers que publican entradas.
     let obj = db_pool.get().await.map_err(AppError::from_pool)?;
-    let conn = obj.lock().map_err(AppError::from_pool)?;
+    let mut conn = obj.lock().map_err(AppError::from_pool)?;
 
-    let total = db::count_update_history(&conn, &params).map_err(AppError::from_db)?;
-    let items = db::load_update_history_page(&conn, &params).map_err(AppError::from_db)?;
+    let (total, items) =
+        db::load_update_history_page_with_total(&mut conn, &params).map_err(AppError::from_db)?;
 
     Ok(Json(PagedUpdateHistory {
         items,

@@ -654,7 +654,7 @@ impl AppError {
     ///
     /// Compañero de [`AppError::from_pool`] para que los handlers no repitan
     /// `AppError::Internal(format!(...))` por cada `query_row`/`prepare`:
-    /// `db::count_update_history(...).map_err(AppError::from_db)?`.
+    /// `db::load_update_history_page_with_total(...).map_err(AppError::from_db)?`.
     pub fn from_db<E: std::fmt::Display>(e: E) -> Self {
         AppError::Internal(format!("consulta a base de datos fallida: {e}"))
     }
