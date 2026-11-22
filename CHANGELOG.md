@@ -1,4 +1,67 @@
 # Changelog
+## [0.27.0] - 2026-11-22
+
+### Bug Fixes
+
+- *(updates)* Aplica los overrides de la guarda de la política por defecto (#155)
+
+### Documentation
+
+- *(handoff)* Release v0.26.0 publicado (cola 148/149/150)
+- *(handoff)* Co1 redeployado a v0.26.0
+- *(openspec)* Propose fix-static-path-traversal + PLAN-010 (#164)
+- *(openspec)* Archiva fix-static-path-traversal + PLAN-010 (#164)
+- *(handoff)* #164 resuelto (PR #165); backlog #155-#164
+- *(handoff)* Añade #166 (ellipsis + paginación) al backlog
+- *(handoff)* Menciona #166 en el orden sugerido
+- *(openspec)* Propose apply-default-guard-overrides + PLAN-011 (#155)
+- *(openspec)* Archiva apply-default-guard-overrides + PLAN-011 (#155)
+- *(handoff)* #155 resuelto (PR #167); siguiente #156
+- *(deploy)* Pincha la versión de co1 y corrige el procedimiento (#156)
+- *(handoff)* #156 en curso (PR #168) → siguiente #157
+- *(openspec)* Archiva pin-deploy-co1-version + PLAN-012 (#156)
+- *(handoff)* #156 repo cerrado (PR #168 + archive); pendiente ops co1
+- *(openspec)* Propose decompose-config-page + PLAN-013 (#157)
+- *(openspec)* Doc de la feature + tareas marcadas (#157)
+- *(openspec)* Archiva decompose-config-page + PLAN-013 (#157)
+- *(handoff)* #157 resuelto (PR #169 + archive); siguiente #158
+- *(openspec)* Archiva settings-lock-scope + PLAN-014 + handoff (#158)
+- *(openspec)* Archiva backend-hardening + PLAN-015 + handoff (#159)
+- *(handoff)* Relevo de sse-token-auth (#159 punto 4)
+- *(readme)* Actualiza stack, SQLite y tests (#160)
+- *(handoff)* Cierra #160/#161/#162 y fase 1 de #163
+
+### Features
+
+- *(containers)* Paginación y filtrado en servidor del listado (#166)
+
+### Miscellaneous Tasks
+
+- *(cache)* Rust-cache y cache buildx en CI/release (#161)
+- *(docs)* Actualiza HANDOFF con el cierre del backlog de deuda
+
+### Other
+
+- *(frontend)* Parches y menores sin cruzar majors (#163)
+- *(frontend)* Majors vitest 5, jsdom 31, TypeScript 7 y jest-dom 8 (#163)
+
+### Performance
+
+- *(backend)* No retener settings.lock() durante db_pool.get().await
+- *(backend)* Suelta el guard de update_history antes de la pool (#170)
+
+### Refactor
+
+- *(ui)* Descompone ConfigPage en Cards y hooks (#157)
+- *(lint)* Elimina warnings react(set-state-in-effect) y activa --deny-warnings (#179)
+
+### Styling
+
+- *(frontend)* Elipsis real con tooltip en el nombre, estado y progreso de la fila (#166)
+
+### Testing
+
+- *(frontend)* Tests colocados de Dashboard y Container* (#162)
 ## [0.26.0] - 2026-11-21
 
 ### Documentation
@@ -17,6 +80,10 @@
 - *(updates)* Expone los defaults de la guarda por API (#148)
 - *(ui)* Permite editar el intervalo de comprobación (check_interval_ms) en segundos (#149)
 - *(ui)* Endurece la validación cliente del cron y arregla el preset Cada domingo (#150)
+
+### Miscellaneous Tasks
+
+- Release v0.26.0
 
 ### Testing
 
