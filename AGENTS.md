@@ -47,6 +47,7 @@ El detalle largo de arquitectura, API y stack está en `docs/` (ver la tabla fin
 - No hay terminal web ni logs en tiempo real por SSE — se eliminaron.
 - El frontend usa **Ant Design** v6 y cookies httponly para autenticación (no localStorage).
 - El tema oscuro/claro se configura desde ConfigPage (no en header), persiste en `localStorage("color-scheme")`.
+- **`HANDOFF.md` no se commitea nunca.** Es el relevo entre sesiones: el agente lo escribe/actualiza al cerrar, pero vive solo en el working tree (está en `.gitignore`). No lo añadas con `git add` ni lo incluyas en ningún commit.
 
 ## 4. Dónde está el resto
 

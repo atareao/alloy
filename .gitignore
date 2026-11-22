@@ -26,3 +26,6 @@ backend/config.yaml
 
 # Quadlet local (contiene credenciales reales)
 alloy.container
+
+# Sesión
+HANDOFF.md
