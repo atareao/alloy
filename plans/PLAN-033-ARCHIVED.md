@@ -33,7 +33,7 @@ Por eso `test_pool_two_connections` no puede fallar en este build. Hay que susti
 3. [x] REFACTOR: `cargo fmt`, `cargo clippy -- -D warnings`, `just check`; suite completa.
 4. [x] Auditoría `@rust-reviewer`; corregir hallazgos.
 5. [x] Docs: `docs/architecture.md`; validar `openspec validate --strict --specs` y `--changes`.
-6. [ ] Commit gitmoji + PR a `develop`; cerrar #210 a mano tras el merge. — commit 52c14e8 + PR #214 abierto; pendiente merge y cierre manual de #210
+6. [x] Commit gitmoji + PR a `develop`; cerrar #210 a mano tras el merge.
 7. [x] Archivar el change y limpiar `openspec/changes/db-connection-pragmas/`.
 
 ## Criterios de aceptación
@@ -47,4 +47,4 @@ Por eso `test_pool_two_connections` no puede fallar en este build. Hay que susti
 
 ## Estado
 
-PR #214 abierto a develop (rama feature/db-connection-pragmas-v2). 3 commits: 52c14e8 (código), 38cbf6d (archive), 7ffb835 (Purpose). cargo test 598 passed; just check limpio; openspec validate --strict --specs 54/54. Change archivado en openspec/changes/archive/2026-11-22-db-connection-pragmas.
+Mergeado en develop vía PR #214 (merge commit 41a4b0c); #210 cerrado. Change archivado. Plan archivado.
