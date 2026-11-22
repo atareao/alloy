@@ -1,4 +1,19 @@
 # Changelog
+## [0.29.0] - 2026-11-22
+
+### Documentation
+
+- *(release)* HANDOFF y deploy-co1 a v0.28.0
+- *(openspec)* Propuesta SDD de paginación del histórico (#197)
+- *(handoff)* Cierra la feature del histórico paginado (#197)
+
+### Features
+
+- *(history)* Paginación y filtros del histórico de actualizaciones (#197)
+
+### Miscellaneous Tasks
+
+- *(plans)* Archiva el plan 029 (histórico paginado, #197)
 ## [0.28.0] - 2026-11-22
 
 ### Documentation
@@ -10,6 +25,10 @@
 ### Features
 
 - *(ui)* Imagen del contenedor con elipsis, tooltip y fallback en InspectModal (#188)
+
+### Miscellaneous Tasks
+
+- Release v0.28.0
 
 ### Other
 
