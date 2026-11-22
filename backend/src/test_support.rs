@@ -12,9 +12,18 @@ use bollard::image::CreateImageOptions;
 use bollard::models::{HostConfig, PortBinding};
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::StreamExt;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::OnceCell;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{broadcast, Mutex, Notify, OnceCell, RwLock};
+use tokio::task::JoinHandle;
+
+use crate::config::Config;
+use crate::db::DbPool;
+use crate::models::{BatchProgress, Settings, UpdateHistoryEntry};
+use crate::state::{AppState, JwtValidator, RolledBackGuard, TerminalFailed};
 
 /// Socket del sistema (podman instalado a nivel root).
 const SYSTEM_SOCKET: &str = "/run/podman/podman.sock";
@@ -251,6 +260,153 @@ impl Drop for FixtureContainer {
             });
         })
         .join();
+    }
+}
+
+/// Lanza `handler` y cede el control hasta que la tarea ha alcanzado su primer
+/// `await` sobre la pool de BD.
+///
+/// El llamante debe haber saturado la pool (`max_size == 1` con su única conexión
+/// retenida), de modo que ese primer `await` quede pendiente. La cesión es
+/// determinista (`yield_now` repetido) en lugar de un `sleep` ciego: `yield_now`
+/// devuelve el control al runtime, que pollea la tarea recién lanzada hasta
+/// bloquearla en `db_pool.get()`.
+///
+/// # Panics
+/// Si el handler termina antes de tiempo — señal de que la pool no quedó saturada
+/// y el test no ejercitaría el invariante.
+async fn spawn_handler_blocked_on_saturated_pool<H>(handler: H) -> JoinHandle<()>
+where
+    H: Future<Output = ()> + Send + 'static,
+{
+    let handle = tokio::spawn(handler);
+    // Repetimos la cesión por margen: una sola bastaría en teoría, pero varias
+    // eliminan cualquier dependencia del orden de scheduling del runtime.
+    for _ in 0..16 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !handle.is_finished(),
+        "el handler terminó antes de bloquearse en la pool: la conexión no quedó \
+         saturada y el test no probaría el invariante"
+    );
+    handle
+}
+
+/// Comprueba que `probe` (una adquisición de lock) se completa antes del timeout
+/// mientras el handler sigue pendiente de una conexión de la pool saturada.
+async fn assert_lock_acquirable(label: &str, probe: impl Future<Output = ()>) {
+    let acquired = tokio::time::timeout(Duration::from_millis(300), probe).await;
+    assert!(
+        acquired.is_ok(),
+        "{label} debe adquirirse mientras el handler espera una conexión de la pool saturada"
+    );
+}
+
+/// Afirma que el mutex de `Settings` sigue siendo adquirible mientras `handler`
+/// está pendiente de una conexión de la pool de BD.
+///
+/// El llamante debe crear la pool con `max_size == 1` y retener su única conexión
+/// (saturarla) antes de invocar este helper. El `handler` se lanza en una tarea y
+/// se cede el control de forma determinista hasta que queda bloqueado en la pool;
+/// entonces se intenta `settings.lock().await` con un timeout corto. Si el handler
+/// retiene el guard del mutex mientras espera la conexión, el timeout expira y el
+/// test falla (invariante: ningún guard cruza el `await` de la pool).
+pub async fn assert_settings_lock_free_while_db_pool_saturated<H>(
+    settings: Arc<Mutex<Settings>>,
+    handler: H,
+) where
+    H: Future<Output = ()> + Send + 'static,
+{
+    let handle = spawn_handler_blocked_on_saturated_pool(handler).await;
+    assert_lock_acquirable("settings.lock()", async move {
+        let _guard = settings.lock().await;
+    })
+    .await;
+    handle.abort();
+}
+
+/// Como [`assert_settings_lock_free_while_db_pool_saturated`], pero comprueba
+/// además que un segundo mutex (`extra`, p. ej. `update_history`) también es
+/// adquirible mientras el handler espera una conexión de la pool saturada.
+///
+/// `extra_label` se usa en el mensaje de fallo para identificar qué lock falló.
+pub async fn assert_settings_and_extra_lock_free_while_db_pool_saturated<H, T>(
+    settings: Arc<Mutex<Settings>>,
+    extra: Arc<Mutex<T>>,
+    extra_label: &str,
+    handler: H,
+) where
+    H: Future<Output = ()> + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = spawn_handler_blocked_on_saturated_pool(handler).await;
+    assert_lock_acquirable("settings.lock()", async move {
+        let _guard = settings.lock().await;
+    })
+    .await;
+    assert_lock_acquirable(extra_label, async move {
+        let _guard = extra.lock().await;
+    })
+    .await;
+    handle.abort();
+}
+
+/// Afirma que el mutex de `update_history` sigue siendo adquirible mientras
+/// `handler` está pendiente de una conexión de la pool de BD saturada.
+///
+/// Específico para helpers que publican o borran entradas del historial: a
+/// diferencia de [`assert_settings_and_extra_lock_free_while_db_pool_saturated`],
+/// no exige un mutex de `Settings` adicional. El llamante debe saturar la pool
+/// (`max_size == 1` reteniendo su única conexión) antes de invocar el helper.
+///
+/// Si el handler retiene el guard de `update_history` mientras espera la
+/// conexión, el timeout expira y el test falla (invariante: ningún guard cruza
+/// el `await` de la pool).
+pub async fn assert_update_history_lock_free_while_db_pool_saturated<H>(
+    update_history: Arc<Mutex<Vec<UpdateHistoryEntry>>>,
+    handler: H,
+) where
+    H: Future<Output = ()> + Send + 'static,
+{
+    let handle = spawn_handler_blocked_on_saturated_pool(handler).await;
+    assert_lock_acquirable("update_history.lock()", async move {
+        let _guard = update_history.lock().await;
+    })
+    .await;
+    handle.abort();
+}
+
+/// Construye un [`AppState`] mínimo y autónomo para tests de router/cabeceras.
+///
+/// El cliente Docker es *lazy* (no contacta el daemon hasta la primera llamada),
+/// por lo que apunta a un endpoint HTTP inalcanzable: los tests que no ejercitan
+/// rutas dependientes de Docker no lo necesitan. El resto de campos se rellenan
+/// con valores por defecto; agentes y workers NO se lanzan.
+pub fn test_app_state(config: Config, db: DbPool) -> AppState {
+    let docker = Docker::connect_with_http("http://127.0.0.1:1", 120, API_DEFAULT_VERSION)
+        .expect("cliente Docker lazy para tests");
+    AppState {
+        docker,
+        config,
+        tx: broadcast::channel(8).0,
+        oidc_states: Arc::new(Mutex::new(HashMap::new())),
+        oidc_metadata: None,
+        jwt_validator: JwtValidator::new("http://localhost", "test-client"),
+        update_history: Arc::new(Mutex::new(Vec::new())),
+        update_policies: Arc::new(Mutex::new(Vec::new())),
+        cached_containers: Arc::new(RwLock::new(None)),
+        settings: Arc::new(Mutex::new(Settings::default())),
+        db,
+        update_in_progress: Arc::new(Mutex::new(HashSet::new())),
+        terminal_failed: TerminalFailed::default(),
+        rolled_back: RolledBackGuard::default(),
+        progress_cache: Arc::new(Mutex::new(BatchProgress::default())),
+        cancel_check: Arc::new(AtomicBool::new(false)),
+        state_notify: Arc::new(Notify::new()),
+        progress_tx: broadcast::channel(8).0,
+        notif_tx: broadcast::channel(8).0,
+        container_event_tx: broadcast::channel(8).0,
     }
 }
 

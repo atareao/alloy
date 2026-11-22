@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::HeaderValue,
     response::{
         sse::{Event, Sse},
@@ -25,12 +25,16 @@ use crate::workers::CachedContainers;
 /// Always waits for a notification up to 30 seconds, regardless of cache state.
 /// If `notify_waiters()` was called since the last `notified()` was polled, the
 /// future completes immediately — otherwise it waits until the next notification.
-/// Returns the current cached containers + summary + progress.
+/// Returns the current page (filters/pagination from the query) plus the global
+/// summary and progress. Invalid pagination params → HTTP 400.
 async fn state_h(
     State(cached_containers): State<CachedContainers>,
     State(progress_cache): State<Arc<Mutex<BatchProgress>>>,
     State(state_notify): State<Arc<Notify>>,
-) -> impl IntoResponse {
+    Query(query): Query<ContainerListQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let params = query.normalize()?;
+
     // Always wait for notification (long-poll). If a notification is pending
     // (notify_waiters() was called since last poll), notified() returns immediately.
     // Otherwise, waits up to 30 seconds.
@@ -39,19 +43,13 @@ async fn state_h(
     // Read current state
     let containers = cached_containers.read().await.clone().unwrap_or_default();
     let progress = progress_cache.lock().await.clone();
-    let summary = compute_summary(&containers);
 
-    let mut response = Json(StateResponse {
-        containers,
-        summary,
-        progress,
-    })
-    .into_response();
+    let mut response = Json(build_state_response(containers, progress, &params)).into_response();
     response.headers_mut().insert(
         axum::http::header::CACHE_CONTROL,
         HeaderValue::from_static("no-cache"),
     );
-    response
+    Ok(response)
 }
 
 /// Wait on the state Notify with a timeout, regardless of whether the cache is populated.
@@ -78,10 +76,11 @@ fn json_event<T: serde::Serialize>(name: &str, payload: &T) -> Event {
 /// Build the merged SSE stream served by `GET /api/stream`.
 ///
 /// Emits an initial `snapshot` event (a [`StateResponse`] built from
-/// `cached_containers` + `compute_summary` + `progress_cache`) **before** any
-/// incremental event, then chains the four merged sources:
+/// `cached_containers` + the global `compute_summary` + `progress_cache`, with
+/// `params` filters/pagination applied) **before** any incremental event, then
+/// chains the four merged sources:
 ///
-/// - `StateEvent`  → `snapshot` (full state after each worker refresh)
+/// - `StateEvent`  → `snapshot` (requested page after each worker refresh)
 /// - `ContainerEvent` → `container-event`
 /// - `UpdateProgress` → `update-progress`
 /// - `NotifEvent` → `notification`
@@ -96,16 +95,12 @@ pub(crate) async fn build_event_stream(
     progress_tx: broadcast::Sender<UpdateProgress>,
     notif_tx: broadcast::Sender<NotifEvent>,
     container_event_tx: broadcast::Sender<ContainerEvent>,
+    params: ContainerListParams,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     // ── Initial snapshot (delivered before any incremental event) ──
     let containers = cached_containers.read().await.clone().unwrap_or_default();
     let progress = progress_cache.lock().await.clone();
-    let summary = compute_summary(&containers);
-    let snapshot = StateResponse {
-        containers,
-        summary,
-        progress,
-    };
+    let snapshot = build_state_response(containers, progress, &params);
     let initial = stream::once(async move {
         Ok(Event::default()
             .event("snapshot")
@@ -114,19 +109,17 @@ pub(crate) async fn build_event_stream(
     });
 
     // ── State refreshes are full snapshots (StateEvent carries the full list).
-    // Enrich with summary + current progress so the payload matches StateResponse.
+    // Enrich with the global summary + current progress, then apply the
+    // requested filters/pagination so every `snapshot` matches the subscription.
     let progress_for_state = progress_cache.clone();
+    let params_for_state = params.clone();
     let state_stream = BroadcastStream::new(tx.subscribe()).filter_map(move |res| {
         let progress_cache = progress_for_state.clone();
+        let params = params_for_state.clone();
         async move {
             let evt = res.ok()?;
-            let summary = compute_summary(&evt.containers);
             let progress = progress_cache.lock().await.clone();
-            let resp = StateResponse {
-                containers: evt.containers,
-                summary,
-                progress,
-            };
+            let resp = build_state_response(evt.containers, progress, &params);
             Some(Ok(json_event("snapshot", &resp)))
         }
     });
@@ -165,6 +158,10 @@ pub(crate) async fn build_event_stream(
 
 /// Single multiplexed SSE stream: `GET /api/stream`.
 ///
+/// Accepts the same filters/pagination query as `GET /api/containers`; each
+/// `snapshot` carries only the requested page while `summary` stays global.
+/// Invalid pagination params → HTTP 400.
+///
 /// Authentication is enforced by the shared auth middleware (session cookie);
 /// the middleware leaves `text/event-stream` responses untouched. The
 /// long-poll `GET /api/state` endpoint is left intact as the fallback transport.
@@ -175,8 +172,10 @@ async fn stream_h(
     State(progress_tx): State<broadcast::Sender<UpdateProgress>>,
     State(notif_tx): State<broadcast::Sender<NotifEvent>>,
     State(container_event_tx): State<broadcast::Sender<ContainerEvent>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(
+    Query(query): Query<ContainerListQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
+    let params = query.normalize()?;
+    Ok(Sse::new(
         build_event_stream(
             cached_containers,
             progress_cache,
@@ -184,9 +183,10 @@ async fn stream_h(
             progress_tx,
             notif_tx,
             container_event_tx,
+            params,
         )
         .await,
-    )
+    ))
 }
 
 pub fn routes() -> Router<AppState> {
@@ -350,9 +350,12 @@ mod tests {
 
         let summary = compute_summary(&refreshed);
         let response = StateResponse {
-            containers: refreshed,
+            containers: refreshed.clone(),
             summary,
             progress: progress.clone(),
+            page: 1,
+            page_size: 20,
+            total: refreshed.len(),
         };
 
         assert_eq!(response.containers.len(), 2);
@@ -386,9 +389,12 @@ mod tests {
 
         let summary = compute_summary(&refreshed);
         let response = StateResponse {
-            containers: refreshed,
+            containers: refreshed.clone(),
             summary,
             progress: progress.clone(),
+            page: 1,
+            page_size: 20,
+            total: refreshed.len(),
         };
 
         assert_eq!(response.containers.len(), 2);
@@ -419,9 +425,12 @@ mod tests {
 
         let summary = compute_summary(&refreshed);
         let response = StateResponse {
-            containers: refreshed,
+            containers: refreshed.clone(),
             summary,
             progress: progress.clone(),
+            page: 1,
+            page_size: 20,
+            total: refreshed.len(),
         };
 
         assert!(response.containers.is_empty());
@@ -463,6 +472,27 @@ mod tests {
 
     // ── /api/stream: merged SSE stream (sse-first, task 1.2) ────
 
+    /// Renderiza un único [`Event`] a su representación SSE textual
+    /// (`event: <nombre>\ndata: <json>`), para poder inspeccionar el payload
+    /// sin depender del `Debug` interno de `axum`.
+    async fn render_event(event: Event) -> String {
+        let response =
+            Sse::new(stream::once(async move { Ok::<_, Infallible>(event) })).into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("cuerpo SSE");
+        String::from_utf8(body.to_vec()).expect("SSE en UTF-8")
+    }
+
+    /// Extrae el JSON de la primera línea `data: ` de una representación SSE.
+    fn sse_data_json(text: &str) -> serde_json::Value {
+        let line = text
+            .lines()
+            .find_map(|l| l.strip_prefix("data: "))
+            .unwrap_or_else(|| panic!("sin línea 'data: ' en: {text}"));
+        serde_json::from_str(line).expect("payload JSON válido")
+    }
+
     /// The first item produced by `/api/stream` MUST be a `snapshot` event
     /// carrying a `StateResponse` (containers + summary + progress), emitted
     /// before any incremental event.
@@ -493,6 +523,7 @@ mod tests {
                 progress_tx,
                 notif_tx,
                 container_event_tx,
+                ContainerListParams::default(),
             )
             .await,
         );
@@ -502,15 +533,126 @@ mod tests {
             .expect("first event within timeout")
             .expect("stream yields an item");
         let first = first.expect("event is Ok");
-        let dbg = format!("{:?}", first);
+        let text = render_event(first).await;
 
         assert!(
-            dbg.contains("snapshot"),
-            "first event must be named 'snapshot': {dbg}"
+            text.contains("event: snapshot"),
+            "first event must be named 'snapshot': {text}"
+        );
+        let json = sse_data_json(&text);
+        assert!(
+            json.get("containers").is_some()
+                && json.get("summary").is_some()
+                && json.get("progress").is_some(),
+            "snapshot payload must be a full StateResponse: {json}"
         );
         assert!(
-            dbg.contains("containers") && dbg.contains("summary") && dbg.contains("progress"),
-            "snapshot payload must be a full StateResponse: {dbg}"
+            json.get("page").is_some()
+                && json.get("page_size").is_some()
+                && json.get("total").is_some(),
+            "snapshot payload must expose pagination fields: {json}"
         );
+    }
+
+    /// El `snapshot` del SSE entrega SOLO la página solicitada, con `total` real
+    /// y `summary` global sobre toda la flota.
+    #[tokio::test]
+    async fn test_stream_snapshot_is_paginated() {
+        use crate::models::{
+            BatchProgress, ContainerEvent, NotifEvent, StateEvent, UpdateProgress,
+        };
+        use futures::StreamExt;
+
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_container(&format!("c{i:02}"), "running", false))
+            .collect();
+        let cached: CachedContainers = Arc::new(RwLock::new(Some(containers)));
+        let progress_cache: Arc<Mutex<BatchProgress>> =
+            Arc::new(Mutex::new(BatchProgress::default()));
+        let (tx, _) = broadcast::channel::<StateEvent>(8);
+        let (progress_tx, _) = broadcast::channel::<UpdateProgress>(8);
+        let (notif_tx, _) = broadcast::channel::<NotifEvent>(8);
+        let (container_event_tx, _) = broadcast::channel::<ContainerEvent>(8);
+
+        let params = ContainerListParams {
+            page: 1,
+            page_size: 10,
+            ..Default::default()
+        };
+        let mut stream = Box::pin(
+            build_event_stream(
+                cached,
+                progress_cache,
+                tx,
+                progress_tx,
+                notif_tx,
+                container_event_tx,
+                params,
+            )
+            .await,
+        );
+
+        let first = timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("first event within timeout")
+            .expect("stream yields an item")
+            .expect("event is Ok");
+        let json = sse_data_json(&render_event(first).await);
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(10));
+        assert_eq!(json["total"], 25);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["page_size"], 10);
+        assert_eq!(json["summary"]["total"], 25);
+    }
+
+    /// El `snapshot` aplica los filtros, pero el `summary` sigue siendo global.
+    #[tokio::test]
+    async fn test_stream_snapshot_applies_filter_but_summary_stays_global() {
+        use crate::models::{
+            BatchProgress, ContainerEvent, NotifEvent, StateEvent, UpdateProgress,
+        };
+        use futures::StreamExt;
+
+        let containers = vec![
+            make_container("web", "running", true),
+            make_container("api", "running", true),
+            make_container("db", "exited", false),
+        ];
+        let cached: CachedContainers = Arc::new(RwLock::new(Some(containers)));
+        let progress_cache: Arc<Mutex<BatchProgress>> =
+            Arc::new(Mutex::new(BatchProgress::default()));
+        let (tx, _) = broadcast::channel::<StateEvent>(8);
+        let (progress_tx, _) = broadcast::channel::<UpdateProgress>(8);
+        let (notif_tx, _) = broadcast::channel::<NotifEvent>(8);
+        let (container_event_tx, _) = broadcast::channel::<ContainerEvent>(8);
+
+        let params = ContainerListParams {
+            has_update: Some(true),
+            ..Default::default()
+        };
+        let mut stream = Box::pin(
+            build_event_stream(
+                cached,
+                progress_cache,
+                tx,
+                progress_tx,
+                notif_tx,
+                container_event_tx,
+                params,
+            )
+            .await,
+        );
+
+        let first = timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("first event within timeout")
+            .expect("stream yields an item")
+            .expect("event is Ok");
+        let json = sse_data_json(&render_event(first).await);
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(2));
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["summary"]["total"], 3, "summary global sobre la flota");
     }
 }

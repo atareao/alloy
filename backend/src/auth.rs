@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::{header, HeaderMap, StatusCode},
     middleware,
     response::{IntoResponse, Json, Redirect, Response},
@@ -11,13 +11,19 @@ use cookie::{Cookie, SameSite};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::models::SessionClaims;
+use crate::models::{SessionClaims, SseTicketClaims, SseTicketResponse};
 use crate::state::{AppState, JwtValidator, OidcMetadata, OidcStates};
+
+/// Lifetime of an SSE ticket in seconds.
+const SSE_TICKET_TTL_SECS: u64 = 60;
+/// Purpose marker carried by SSE tickets.
+const SSE_TICKET_PURPOSE: &str = "sse";
 
 // ── OIDC Auth code flow ─────────────────────────────────────
 
@@ -46,6 +52,23 @@ async fn auth_login(
         state,
     );
     Ok(Redirect::to(&auth_url))
+}
+
+/// Construye la cookie de sesión `session`.
+///
+/// Seam puro extraído de `auth_callback` (change `backend-hardening`). Cuando
+/// `secure` es `true` la cookie lleva el flag `Secure` (el navegador solo la
+/// envía por HTTPS); con `false` se omite, para desarrollo local servido por
+/// HTTP plano. La política la decide el llamante a partir de
+/// `Config::allow_insecure_cookies()`.
+fn build_session_cookie(token: String, max_age_secs: i64, secure: bool) -> Cookie<'static> {
+    Cookie::build(("session", token))
+        .path("/")
+        .http_only(true)
+        .secure(secure)
+        .same_site(SameSite::Lax)
+        .max_age(cookie::time::Duration::new(max_age_secs, 0))
+        .build()
 }
 
 async fn auth_callback(
@@ -168,17 +191,19 @@ async fn auth_callback(
             iat: now,
             last_active: now,
             exp: now + max_duration_secs,
+            purpose: None,
         },
         &EncodingKey::from_secret(config.oidc_client_secret().as_ref()),
     )
     .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Session creation failed").into_response())?;
 
-    let cookie = Cookie::build(("session", session_token))
-        .path("/")
-        .http_only(true)
-        .same_site(SameSite::Lax)
-        .max_age(cookie::time::Duration::new(max_duration_secs as i64, 0))
-        .build();
+    // `Secure` por defecto (solo HTTPS); opt-out explícito para desarrollo
+    // local por HTTP vía `ALLOW_INSECURE_COOKIES=1`.
+    let cookie = build_session_cookie(
+        session_token,
+        max_duration_secs as i64,
+        !config.allow_insecure_cookies(),
+    );
     Ok(Response::builder()
         .status(302)
         .header(header::LOCATION, "/")
@@ -304,15 +329,70 @@ fn unauthorized_json(session_expired: bool, detail: &str) -> Response {
         .into_response()
 }
 
+/// Extract the raw `token` query parameter.
+///
+/// The value is returned as-is: it is a base64url JWT, so it does not require
+/// URL-decoding. Empty values are returned as `Some("")` and rejected later by
+/// ticket validation.
+fn query_token(query: Option<&str>) -> Option<&str> {
+    query?.split('&').find_map(|part| {
+        let mut parts = part.splitn(2, '=');
+        if parts.next()? == "token" {
+            parts.next()
+        } else {
+            None
+        }
+    })
+}
+
+/// Issue an ephemeral SSE ticket for `sub`, signed with the session secret.
+fn issue_sse_ticket(sub: &str, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = Utc::now().timestamp() as usize;
+    let claims = SseTicketClaims {
+        sub: sub.to_string(),
+        purpose: SSE_TICKET_PURPOSE.to_string(),
+        iat: now,
+        exp: now + SSE_TICKET_TTL_SECS as usize,
+    };
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_ref()),
+    )
+}
+
+/// Validate an SSE ticket: signature, expiry and `purpose = "sse"`.
+fn validate_sse_ticket(token: &str, secret: &str) -> Result<SseTicketClaims, Response> {
+    // Tickets are short-lived: enforce `exp` strictly (no clock-skew leeway)
+    // and require the registered claims we rely on, instead of inheriting
+    // whatever `jsonwebtoken` defaults to.
+    let mut validation = jsonwebtoken::Validation::default();
+    validation.leeway = 0;
+    validation.validate_exp = true;
+    validation.set_required_spec_claims(&["exp", "sub"]);
+    let data = jsonwebtoken::decode::<SseTicketClaims>(
+        token,
+        &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+        &validation,
+    )
+    .map_err(|_| unauthorized_json(false, "Invalid SSE ticket"))?;
+
+    if data.claims.purpose != SSE_TICKET_PURPOSE {
+        return Err(unauthorized_json(false, "Invalid SSE ticket"));
+    }
+
+    Ok(data.claims)
+}
+
 pub async fn auth_middleware(
     headers: HeaderMap,
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: middleware::Next,
 ) -> Result<Response, Response> {
-    let path = req.uri().path();
+    let path = req.uri().path().to_string();
 
     // Public endpoints: auth routes, login, health
-    // But /api/auth/sse-token requires auth (returns the session token)
+    // But /api/auth/sse-token requires auth (returns an SSE ticket)
     if (path.starts_with("/api/auth/") && path != "/api/auth/sse-token") || path == "/api/health" {
         return Ok(next.run(req).await);
     }
@@ -345,6 +425,13 @@ pub async fn auth_middleware(
         .map_err(|_| Box::new(unauthorized_json(false, "Invalid session token")))?;
 
         let claims = data.claims;
+
+        // SSE tickets (and any other purpose-scoped token) MUST NOT be
+        // accepted as a session token.
+        if claims.purpose.is_some() {
+            return Err(Box::new(unauthorized_json(false, "Invalid session token")));
+        }
+
         let now = Utc::now().timestamp() as usize;
 
         // Check max session duration (since login)
@@ -403,8 +490,8 @@ pub async fn auth_middleware(
         Ok(claims)
     };
 
-    // 1. Check session cookie
-    let token = 'token: {
+    // 1. Session cookie or 2. Authorization Bearer header.
+    let session_token = 'token: {
         if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
             for part in cookie_str.split("; ") {
                 if let Some(value) = part.strip_prefix("session=") {
@@ -412,7 +499,6 @@ pub async fn auth_middleware(
                 }
             }
         }
-        // 2. Check Authorization Bearer header
         if let Some(token) = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -420,25 +506,46 @@ pub async fn auth_middleware(
         {
             break 'token Some(token.to_string());
         }
-        // 3. Check query parameter (for SSE)
-        if let Some(query) = req.uri().query() {
-            if let Some(token) = query.split('&').find_map(|p| {
-                let mut parts = p.splitn(2, '=');
-                if parts.next()? == "token" {
-                    parts.next()
-                } else {
-                    None
-                }
-            }) {
-                break 'token Some(token.to_string());
-            }
-        }
         None::<String>
     };
 
-    let token = token.ok_or_else(|| unauthorized_json(false, "Not authenticated"))?;
+    // 3. SSE tickets are accepted ONLY as the `token` query parameter on
+    //    `/api/stream`. Session tokens sent by query are rejected.
+    //
+    //    On `/api/stream`, a valid ticket takes precedence over an invalid
+    //    session cookie/Bearer so that a stale cookie does not block the
+    //    stream. If the ticket is also invalid, the original session error is
+    //    returned (preserving `session_expired` when applicable).
+    let claims = if path == "/api/stream" {
+        match session_token.as_deref().map(&validate) {
+            Some(Ok(claims)) => Some(claims),
+            Some(Err(session_err)) => match query_token(req.uri().query()) {
+                Some(ticket) => match validate_sse_ticket(ticket, &secret) {
+                    Ok(_) => None,
+                    Err(_) => return Err(*session_err),
+                },
+                None => return Err(*session_err),
+            },
+            None => {
+                let ticket = query_token(req.uri().query())
+                    .ok_or_else(|| unauthorized_json(false, "Not authenticated"))?;
+                validate_sse_ticket(ticket, &secret)?;
+                None
+            }
+        }
+    } else if let Some(token) = session_token {
+        Some(validate(&token).map_err(|e| *e)?)
+    } else {
+        return Err(unauthorized_json(false, "Not authenticated"));
+    };
 
-    let claims = validate(&token).map_err(|e| *e)?;
+    // SSE ticket auth has no session claims to expose or refresh.
+    let Some(claims) = claims else {
+        return Ok(next.run(req).await);
+    };
+
+    // Expose the validated session claims to downstream handlers.
+    req.extensions_mut().insert(claims.clone());
 
     // Run the request
     tracing::info!("🔒 auth_middleware: ejecutando handler para {}", path);
@@ -494,6 +601,7 @@ pub async fn auth_middleware(
         let cookie = Cookie::build(("session", new_token))
             .path("/")
             .http_only(true)
+            .secure(!config.allow_insecure_cookies())
             .same_site(SameSite::Lax)
             .max_age(cookie::time::Duration::new(remaining_secs.max(0), 0))
             .build();
@@ -508,45 +616,101 @@ pub async fn auth_middleware(
 
 // ── Frontend static file handler ───────────────────────────
 
-pub async fn frontend_handler(req: axum::extract::Request) -> impl IntoResponse {
-    let path = req.uri().path().trim_start_matches('/');
-    let file_path = if path.is_empty() || path.starts_with("api/") {
-        "index.html"
-    } else {
-        path
-    };
-    let full_path = format!("dist/{}", file_path);
-    match tokio::fs::read(&full_path).await {
-        Ok(content) => {
-            let ext = file_path.rsplit('.').next().unwrap_or("");
-            let mime = match ext {
-                "html" => "text/html",
-                "css" => "text/css",
-                "js" => "application/javascript",
-                "json" => "application/json",
-                "png" => "image/png",
-                "svg" => "image/svg+xml",
-                "ico" => "image/x-icon",
-                "woff2" => "font/woff2",
-                "woff" => "font/woff",
-                "ttf" => "font/ttf",
-                _ => "application/octet-stream",
-            };
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", mime)
-                .body(axum::body::Body::from(content))
-                .unwrap()
-        }
-        Err(_) => match tokio::fs::read("dist/index.html").await {
-            Ok(html) => Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "text/html")
-                .body(axum::body::Body::from(html))
-                .unwrap(),
-            Err(_) => (StatusCode::NOT_FOUND, "Frontend not built").into_response(),
-        },
+/// Resuelve de forma segura un `request_path` contra `root`.
+///
+/// Devuelve `Some(path)` **canónico** solo cuando el fichero resuelto existe,
+/// es un fichero regular y queda **dentro** de `root` (tras canonicalizar, lo
+/// que neutraliza segmentos `..`, rutas absolutas y enlaces simbólicos). En
+/// cualquier otro caso devuelve `None`, de modo que el llamante pueda aplicar
+/// el *fallback* SPA.
+///
+/// Los intentos percent-encoded (p. ej. `%2e%2e`) hoy no se decodifican: se
+/// tratan como nombres literales de fichero, por lo que no existen en disco y
+/// `canonicalize` falla, devolviendo `None` sin riesgo. Además, aunque en el
+/// futuro se decodificaran, seguirían siendo seguros: tras `canonicalize` la
+/// comprobación de prefijo (`canon.starts_with(&root_canon)`) descartaría
+/// cualquier ruta que escapara de `root` (defensa en profundidad).
+fn safe_static_path(root: &Path, request_path: &str) -> Option<PathBuf> {
+    // Un byte NUL no es una ruta válida y podría truncar rutas en algunas APIs.
+    if request_path.contains('\0') {
+        return None;
     }
+
+    let root_canon = root.canonicalize().ok()?;
+    let candidate = root_canon.join(request_path.trim_start_matches('/'));
+    let canon = candidate.canonicalize().ok()?;
+
+    if canon.starts_with(&root_canon) && canon.is_file() {
+        Some(canon)
+    } else {
+        None
+    }
+}
+
+/// Devuelve el `content-type` asociado a la extensión de `path`.
+fn content_type_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("") {
+        "html" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Construye una `Response` con `status`, `content-type` y cuerpo dados.
+///
+/// Los headers son literales estáticos válidos, así que la construcción no
+/// debería fallar; si lo hiciera, se degrada a un 500 en lugar de hacer panic.
+fn static_response(status: StatusCode, content_type: &str, content: Vec<u8>) -> Response {
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .body(axum::body::Body::from(content))
+        .unwrap_or_else(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to build response",
+            )
+                .into_response()
+        })
+}
+
+/// Sirve un fichero estático desde `root`, confinado a ese directorio.
+///
+/// Si `request_path` resuelve a un fichero válido dentro de `root`, se sirve con
+/// su `content-type`. En caso contrario (ruta inexistente, directorio, intento
+/// de *traversal* o ruta `api/`), se aplica el *fallback* SPA sirviendo
+/// `root/index.html`; si este tampoco existe, se responde `404`.
+async fn serve_static(root: &Path, request_path: &str) -> Response {
+    let trimmed = request_path.trim_start_matches('/');
+    // Se preserva el comportamiento previo: raíz vacía o rutas `api/` sirven
+    // directamente el índice, sin intentar resolverlas en disco.
+    let force_index = trimmed.is_empty() || trimmed.starts_with("api/");
+
+    if !force_index {
+        if let Some(file) = safe_static_path(root, request_path) {
+            if let Ok(content) = tokio::fs::read(&file).await {
+                return static_response(StatusCode::OK, content_type_for(&file), content);
+            }
+        }
+    }
+
+    match tokio::fs::read(root.join("index.html")).await {
+        Ok(html) => static_response(StatusCode::OK, "text/html", html),
+        Err(_) => (StatusCode::NOT_FOUND, "Frontend not built").into_response(),
+    }
+}
+
+/// Handler `.fallback` del router: sirve el frontend desde `dist/`.
+pub async fn frontend_handler(req: axum::extract::Request) -> impl IntoResponse {
+    serve_static(Path::new("dist"), req.uri().path()).await
 }
 
 // ── Helpers ─────────────────────────────────────────────────
@@ -560,33 +724,34 @@ fn url_encode(s: &str) -> String {
 
 // ── Routes ─────────────────────────────────────────────────
 
-/// Returns the current session token as JSON.
-/// This handler is protected by the auth middleware (unlike other auth routes).
-async fn sse_token_h(headers: HeaderMap) -> Response {
-    // Extract token from cookie or Authorization header
-    let token = 'token: {
-        if let Some(cookie_str) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
-            for part in cookie_str.split("; ") {
-                if let Some(value) = part.strip_prefix("session=") {
-                    break 'token value.to_string();
-                }
-            }
-        }
-        if let Some(token) = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-        {
-            break 'token token.to_string();
-        }
-        // If middleware ran, we should have a token, but just in case:
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "No session token found"})),
+/// Issue an ephemeral SSE ticket for the authenticated session.
+///
+/// This handler is protected by the auth middleware (unlike other auth
+/// routes), which validates the session and inserts its `SessionClaims` and
+/// the signing secret into the request extensions.
+async fn sse_token_h(
+    Extension(claims): Extension<SessionClaims>,
+    Extension(secret): Extension<String>,
+) -> Response {
+    match issue_sse_ticket(&claims.sub, &secret) {
+        Ok(token) => (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(SseTicketResponse {
+                token,
+                expires_in: SSE_TICKET_TTL_SECS,
+            }),
         )
-            .into_response();
-    };
-    Json(json!({"token": token})).into_response()
+            .into_response(),
+        Err(e) => {
+            tracing::error!("Failed to issue SSE ticket: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to issue SSE ticket"})),
+            )
+                .into_response()
+        }
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -602,6 +767,37 @@ pub fn routes() -> Router<AppState> {
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
+
+    // ── Cookie de sesión: flag Secure (change backend-hardening) ──
+
+    /// RED (backend-hardening 1.2): con `secure = true` la cookie de sesión DEBE
+    /// llevar el flag `Secure`. Hoy `build_session_cookie` lo ignora (comportamiento
+    /// actual sin `Secure`), así que la aserción falla hasta aplicar el GREEN.
+    #[test]
+    fn build_session_cookie_secure_true_sets_secure_flag() {
+        let cookie = build_session_cookie("token".into(), 3600, true);
+        assert_eq!(
+            cookie.secure(),
+            Some(true),
+            "cookie de sesión con secure=true debe incluir el flag Secure: {cookie}"
+        );
+    }
+
+    /// Contrapartida (verde ya hoy): con `secure = false` la cookie NO debe llevar
+    /// `Secure` (opt-out para desarrollo local por HTTP plano). Además el seam no
+    /// debe cambiar las demás propiedades respecto del comportamiento actual.
+    #[test]
+    fn build_session_cookie_secure_false_omits_secure_flag() {
+        let cookie = build_session_cookie("token".into(), 3600, false);
+        assert!(
+            !cookie.secure().unwrap_or(false),
+            "cookie de sesión con secure=false no debe incluir Secure: {cookie}"
+        );
+        assert_eq!(cookie.name(), "session");
+        assert_eq!(cookie.path(), Some("/"));
+        assert_eq!(cookie.http_only(), Some(true));
+        assert_eq!(cookie.same_site(), Some(SameSite::Lax));
+    }
 
     // ── url_encode ───────────────────────────────────────────
 
@@ -651,6 +847,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: (Utc::now() + exp_offset).timestamp() as usize,
+            purpose: None,
         }
     }
 
@@ -727,6 +924,7 @@ mod tests {
             iat: Utc::now().timestamp() as usize,
             last_active: Utc::now().timestamp() as usize,
             exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+            purpose: None,
         };
         let secret = "my_secret";
         let token = encode(
@@ -895,6 +1093,7 @@ mod tests {
             iat: now - 60,        // 1 minute ago
             last_active: now - 5, // 5 seconds ago
             exp: now + 3600,      // 1 hour from now
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -967,6 +1166,7 @@ mod tests {
             iat: now - 3600,         // 1 hour ago
             last_active: now - 1861, // > 30 min idle (31 min + 1s buffer)
             exp: now + 3600,
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1029,6 +1229,7 @@ mod tests {
             iat: now - 25 * 3600,  // 25 hours ago (> 24h max)
             last_active: now - 10, // 10 seconds ago (within idle)
             exp: now + 3600,
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1180,6 +1381,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: (Utc::now() + Duration::hours(1)).timestamp() as usize,
+            purpose: None,
         };
         let secret = "s3cr3t_k3y!@#$%";
         let token = encode(
@@ -1216,6 +1418,7 @@ mod tests {
             iat: now - 3600,
             last_active: now - 31,
             exp: now + 3600,
+            purpose: None,
         };
         let secret = "test_secret";
         let token = encode(
@@ -1252,6 +1455,7 @@ mod tests {
             iat: now - 3601,
             last_active: now - 10,
             exp: now + 3600,
+            purpose: None,
         };
         let secret = "test_secret";
         let token = encode(
@@ -1287,6 +1491,7 @@ mod tests {
             iat: now,
             last_active: now,
             exp: now + 3600,
+            purpose: None,
         };
         assert_eq!(claims.iat, now);
         assert_eq!(claims.last_active, now);
@@ -1303,6 +1508,7 @@ mod tests {
             iat: now - 1800,
             last_active: now - 120,
             exp: now + 3600,
+            purpose: None,
         };
 
         let refreshed = SessionClaims {
@@ -1327,6 +1533,7 @@ mod tests {
             iat: now - 7200,
             last_active: now - 60,
             exp: now + 3600,
+            purpose: None,
         };
 
         let mut claims = original.clone();
@@ -1357,6 +1564,7 @@ mod tests {
             iat: now - 3600,                          // 1 hour ago
             last_active: now - sliding_threshold - 5, // past sliding threshold
             exp: now + 3600,                          // valid 1 more hour
+            purpose: None,
         };
         let token = encode(
             &Header::default(),
@@ -1472,7 +1680,8 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/ws?token={}", token))
+                    .uri("/api/ws")
+                    .header("cookie", format!("session={}", token))
                     .header("upgrade", "websocket")
                     .header("connection", "upgrade")
                     .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
@@ -1549,5 +1758,693 @@ mod tests {
         );
         assert_eq!(response.headers()["content-type"], "application/json");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── Servido de estáticos (endurecimiento path traversal) ─
+    //
+    // `frontend_handler` es un envoltorio fino sobre `serve_static`; aquí se
+    // ejercita la lógica resolviendo contra un `root` temporal, que es
+    // equivalente a `dist/` en producción.
+
+    const INDEX_MARKER: &str = "<html>SPA_INDEX_MARKER</html>";
+    const ASSET_BODY: &str = "console.log('asset-marker');";
+    const OUTSIDE_SECRET: &str = "OUTSIDE_SECRET_MARKER";
+
+    /// Crea `root/` con `index.html` y `assets/app.js`, más un fichero
+    /// `outside.txt` situado **fuera** de `root` (no debe ser servible).
+    fn static_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(root.join("assets")).expect("mkdir assets");
+        std::fs::write(root.join("index.html"), INDEX_MARKER).expect("write index");
+        std::fs::write(root.join("assets/app.js"), ASSET_BODY).expect("write asset");
+        std::fs::write(dir.path().join("outside.txt"), OUTSIDE_SECRET).expect("write outside");
+        (dir, root)
+    }
+
+    async fn body_string(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn safe_static_path_allows_file_inside_root() {
+        let (_dir, root) = static_fixture();
+        let resolved = safe_static_path(&root, "/assets/app.js");
+        assert!(
+            resolved.is_some(),
+            "un asset dentro de root debe resolverse"
+        );
+        assert!(resolved
+            .expect("resolved")
+            .starts_with(root.canonicalize().expect("canonicalize root")));
+    }
+
+    #[test]
+    fn safe_static_path_rejects_parent_traversal() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/../outside.txt").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_deep_parent_traversal() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/../../etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_absolute_path() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_percent_encoded_traversal() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/%2e%2e/%2e%2e/etc/passwd").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_nul_byte() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "\0").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_directory_root() {
+        // `/` resuelve al propio directorio raíz: no es un fichero, así que se
+        // devuelve `None` y el handler cae al fallback SPA (`index.html`).
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_unknown_client_route() {
+        let (_dir, root) = static_fixture();
+        assert!(safe_static_path(&root, "/dashboard").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn safe_static_path_rejects_symlink_escaping_root() {
+        // Un symlink *dentro* de `root` que apunta a un fichero externo no debe
+        // servirse: `canonicalize` resuelve el enlace a su destino real y la
+        // comprobación de prefijo detecta que queda fuera de `root`.
+        use std::os::unix::fs::symlink;
+
+        let (dir, root) = static_fixture();
+        symlink(dir.path().join("outside.txt"), root.join("link_out.txt")).expect("symlink");
+        assert!(safe_static_path(&root, "/link_out.txt").is_none());
+    }
+
+    #[test]
+    fn safe_static_path_rejects_sibling_prefix_directory() {
+        // Un directorio hermano cuyo nombre comparte el prefijo (`dist-evil`
+        // frente a `dist`) no debe confundirse con `root`: la comprobación de
+        // prefijo es por componente de ruta, no por prefijo textual.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dist = dir.path().join("dist");
+        let evil = dir.path().join("dist-evil");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        std::fs::create_dir_all(&evil).expect("mkdir dist-evil");
+        std::fs::write(evil.join("secret.txt"), OUTSIDE_SECRET).expect("write secret");
+        assert!(safe_static_path(&dist, "/../dist-evil/secret.txt").is_none());
+    }
+
+    #[tokio::test]
+    async fn serve_static_serves_existing_asset() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/assets/app.js").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()[header::CONTENT_TYPE],
+            "application/javascript"
+        );
+        assert!(body_string(resp).await.contains(ASSET_BODY));
+    }
+
+    #[tokio::test]
+    async fn serve_static_traversal_falls_back_to_spa_index() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/../outside.txt").await;
+        // No se sirve el fichero externo: cae al fallback SPA.
+        let body = body_string(resp).await;
+        assert!(
+            !body.contains(OUTSIDE_SECRET),
+            "no debe filtrarse el contenido de un fichero fuera de root"
+        );
+        assert!(body.contains(INDEX_MARKER), "debe servir el fallback SPA");
+    }
+
+    #[tokio::test]
+    async fn serve_static_client_route_falls_back_to_spa_index() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/dashboard").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_string(resp).await.contains(INDEX_MARKER));
+    }
+
+    #[tokio::test]
+    async fn serve_static_root_serves_spa_index() {
+        let (_dir, root) = static_fixture();
+        let resp = serve_static(&root, "/").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(body_string(resp).await.contains(INDEX_MARKER));
+    }
+
+    #[tokio::test]
+    async fn serve_static_missing_index_returns_404() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("empty");
+        std::fs::create_dir_all(&root).expect("mkdir root");
+        let resp = serve_static(&root, "/dashboard").await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ── SSE ticket auth (change sse-token-auth) ──────────────
+
+    fn sse_ticket_config() -> Config {
+        Config {
+            session_idle_timeout_minutes: Some(30),
+            session_max_duration_hours: Some(24),
+            ..Default::default()
+        }
+    }
+
+    fn make_sse_session_token(secret: &str, sub: &str) -> String {
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: sub.into(),
+            name: "SSE User".into(),
+            email: "sse@example.com".into(),
+            iat: now,
+            last_active: now,
+            exp: now + 3600,
+            purpose: None,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("session token")
+    }
+
+    fn make_sse_ticket_with_purpose(
+        secret: &str,
+        sub: &str,
+        purpose: &str,
+        exp_offset_secs: i64,
+    ) -> String {
+        let now = Utc::now().timestamp();
+        let claims = SseTicketClaims {
+            sub: sub.into(),
+            purpose: purpose.into(),
+            iat: now as usize,
+            exp: (now + exp_offset_secs) as usize,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("sse ticket")
+    }
+
+    fn make_sse_ticket(secret: &str, sub: &str, exp_offset_secs: i64) -> String {
+        make_sse_ticket_with_purpose(secret, sub, "sse", exp_offset_secs)
+    }
+
+    fn make_sse_session_token_expired(secret: &str) -> String {
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "expired-user".into(),
+            name: "Expired User".into(),
+            email: "expired@example.com".into(),
+            iat: now - 7200,
+            last_active: now - 3600, // > 30 min idle timeout
+            exp: now + 3600,
+            purpose: None,
+        };
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("expired session token")
+    }
+
+    fn sse_ticket_test_app(secret: &str, config: Config) -> Router {
+        let secret_clone = secret.to_string();
+        let config_clone = config.clone();
+        Router::new()
+            .route("/api/auth/sse-token", get(sse_token_h))
+            .route("/api/stream", get(sse_handler))
+            .route("/api/containers", get(json_handler))
+            .layer(axum::middleware::from_fn(
+                move |headers: HeaderMap,
+                      mut req: axum::extract::Request,
+                      next: middleware::Next| {
+                    let s = secret_clone.clone();
+                    let c = config_clone.clone();
+                    async move {
+                        req.extensions_mut().insert(s);
+                        req.extensions_mut().insert(c);
+                        auth_middleware(headers, req, next).await
+                    }
+                },
+            ))
+    }
+
+    #[tokio::test]
+    async fn test_sse_token_emission_with_session() {
+        let secret = "sse_ticket_emission_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/sse-token")
+                    .header("cookie", format!("session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+
+        let body = body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json body");
+        assert_eq!(json["expires_in"], 60);
+        let ticket = json["token"].as_str().expect("token").to_string();
+        assert_ne!(
+            ticket, session_token,
+            "el ticket no debe ser el JWT de sesión"
+        );
+
+        let decoded = jsonwebtoken::decode::<SseTicketClaims>(
+            &ticket,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        )
+        .expect("ticket válido");
+        assert_eq!(decoded.claims.purpose, "sse");
+        assert_eq!(decoded.claims.exp - decoded.claims.iat, 60);
+    }
+
+    #[tokio::test]
+    async fn test_sse_token_emission_without_session_is_401() {
+        let app = sse_ticket_test_app("sse_no_session_secret", sse_ticket_config());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/sse-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_valid_in_stream() {
+        let secret = "sse_ticket_stream_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_jwt_in_query_is_rejected() {
+        let secret = "sse_query_session_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_outside_stream_is_rejected() {
+        let secret = "sse_outside_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/containers?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_expired_is_rejected() {
+        let secret = "sse_expired_secret";
+        let ticket = make_sse_ticket(secret, "user-1", -10);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_as_cookie_is_rejected() {
+        let secret = "sse_cookie_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .header("cookie", format!("session={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_as_bearer_is_rejected() {
+        let secret = "sse_bearer_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .header("authorization", format!("Bearer {}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_session_cookie_authenticates_stream() {
+        let secret = "sse_cookie_session_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream")
+                    .header("cookie", format!("session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_session_bearer_authenticates_api() {
+        let secret = "test_bearer_session_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/containers")
+                    .header("authorization", format!("Bearer {}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_session_claims_with_purpose_are_rejected() {
+        let secret = "sse_purpose_secret";
+        let now = Utc::now().timestamp() as usize;
+        let claims = SessionClaims {
+            sub: "user-1".into(),
+            name: "SSE User".into(),
+            email: "sse@example.com".into(),
+            iat: now,
+            last_active: now,
+            exp: now + 3600,
+            purpose: Some("sse".into()),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret.as_ref()),
+        )
+        .expect("token");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/containers")
+                    .header("cookie", format!("session={}", token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_sse_ticket_does_not_decode_as_session_claims() {
+        let secret = "sse_decode_secret";
+        let ticket = make_sse_ticket(secret, "user-1", 60);
+        let result = jsonwebtoken::decode::<SessionClaims>(
+            &ticket,
+            &jsonwebtoken::DecodingKey::from_secret(secret.as_ref()),
+            &jsonwebtoken::Validation::default(),
+        );
+        assert!(
+            result.is_err(),
+            "un ticket SSE no debe decodificar como SessionClaims"
+        );
+    }
+
+    // ── Precedencia sesión/ticket en /api/stream ─────────────
+
+    #[tokio::test]
+    async fn test_invalid_session_cookie_with_valid_ticket_authenticates_stream() {
+        let secret = "invalid_cookie_valid_ticket_secret";
+        let ticket = make_sse_ticket(secret, "sse-user", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .header("cookie", "session=not-a-valid-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/event-stream"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_session_cookie_with_invalid_ticket_is_401() {
+        let secret = "invalid_cookie_invalid_ticket_secret";
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream?token=not-a-ticket")
+                    .header("cookie", "session=not-a-valid-jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_expired_session_cookie_with_invalid_ticket_preserves_session_expired() {
+        let secret = "expired_cookie_invalid_ticket_secret";
+        let session_token = make_sse_session_token_expired(secret);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stream?token=not-a-ticket")
+                    .header("cookie", format!("session={}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_string(response).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json body");
+        assert_eq!(
+            json["session_expired"], true,
+            "el error de sesión no debe enmascararse cuando el ticket tampoco es válido"
+        );
+    }
+
+    // ── Ticket inválido por purpose / secreto ────────────────
+
+    #[tokio::test]
+    async fn test_sse_ticket_with_wrong_purpose_is_rejected() {
+        let secret = "wrong_purpose_secret";
+        let ticket = make_sse_ticket_with_purpose(secret, "sse-user", "other", 60);
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_ticket_signed_with_wrong_secret_is_rejected() {
+        let ticket = make_sse_ticket("wrong_secret", "sse-user", 60);
+        let app = sse_ticket_test_app("right_secret", sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/stream?token={}", ticket))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_sse_token_emission_with_bearer_session() {
+        let secret = "sse_bearer_emission_secret";
+        let session_token = make_sse_session_token(secret, "user-1");
+        let app = sse_ticket_test_app(secret, sse_ticket_config());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/auth/sse-token")
+                    .header("authorization", format!("Bearer {}", session_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    // ── query_token ──────────────────────────────────────────
+
+    #[test]
+    fn query_token_extracts_token_from_multiple_params() {
+        assert_eq!(
+            query_token(Some("foo=1&token=abc&bar=2")).map(|s| s.to_string()),
+            Some("abc".to_string())
+        );
+    }
+
+    #[test]
+    fn query_token_returns_none_without_token() {
+        assert_eq!(
+            query_token(Some("foo=1&bar=2")).map(|s| s.to_string()),
+            None
+        );
+    }
+
+    #[test]
+    fn query_token_returns_empty_value() {
+        assert_eq!(
+            query_token(Some("token=")).map(|s| s.to_string()),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn query_token_returns_none_without_query() {
+        assert_eq!(query_token(None).map(|s| s.to_string()), None);
     }
 }

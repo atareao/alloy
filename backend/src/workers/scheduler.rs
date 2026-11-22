@@ -108,22 +108,11 @@ pub async fn update_check_worker(
         let last_remote_digest_map = load_last_remote_digest_map(&db_pool).await;
 
         // 2. Obtener políticas
-        let policies = {
+        let policy_map: HashMap<String, UpdatePolicy> = {
             let p = update_policies.lock().await;
-            let map: HashMap<String, UpdatePolicy> = p
-                .iter()
+            p.iter()
                 .map(|pol| (pol.container.clone(), pol.clone()))
-                .collect();
-            let s = settings.lock().await;
-            let default = (
-                s.default_update_action
-                    .clone()
-                    .unwrap_or_else(|| "pull-restart".into()),
-                s.default_cleanup_old_image.unwrap_or(false),
-                s.default_rollback_on_failure.unwrap_or(false),
-            );
-            drop(s);
-            (map, default)
+                .collect()
         };
         let notify = {
             let s = settings.lock().await;
@@ -257,18 +246,11 @@ pub async fn update_check_worker(
                 continue;
             }
 
-            // Leer política para este contenedor
-            let policy = match policies.0.get(&name) {
+            // Leer política para este contenedor; sin política específica se
+            // construye el fallback desde los defaults de `Settings`.
+            let policy = match policy_map.get(&name) {
                 Some(p) => p.clone(),
-                None => UpdatePolicy {
-                    container: name.clone(),
-                    action: policies.1 .0.parse().unwrap_or(UpdateAction::PullRestart),
-                    cleanup_old_image: policies.1 .1,
-                    rollback_on_failure: policies.1 .2,
-                    notify_events: false,
-                    max_start_attempts: None,
-                    health_window_secs: None,
-                },
+                None => settings.lock().await.fallback_update_policy(name.clone()),
             };
             if policy.action == UpdateAction::None {
                 tokio::time::sleep(tokio::time::Duration::from_millis(check_interval_ms)).await;

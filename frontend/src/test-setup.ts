@@ -1,4 +1,7 @@
-import "@testing-library/jest-dom";
+// jest-dom v8 ya no amplía los matchers de forma global: cada runner tiene su entry.
+// El entry `/vitest` registra los matchers en `expect` y amplía `vitest.Assertion`
+// (vitest 5 dejó de heredar de `jest.Matchers`, que es lo que hacía funcionar el entry raíz).
+import "@testing-library/jest-dom/vitest";
 import { act, cleanup } from "@testing-library/react";
 import { ConfigProvider, message, notification } from "antd";
 import { afterEach } from "vitest";

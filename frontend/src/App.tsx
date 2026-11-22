@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useMediaQuery } from "./useMediaQuery";
 import { useRealtime } from "./useRealtime";
+import { buildContainerQuery, DEFAULT_PAGE_SIZE } from "./containerQuery";
 import { notification } from "antd";
 import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
@@ -14,6 +15,7 @@ import type {
   ContainerEvent,
   ContainerInfo,
   ContainerSummary,
+  PagedContainers,
   StateResponse,
   NotifEvent,
   UpdateProgress,
@@ -50,6 +52,14 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [containersLoaded, setContainersLoaded] = useState(false);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  // Filters live here (not in DashboardPage) so the server query is built in one place.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState<string[]>([]);
+  const [showPendingUpdates, setShowPendingUpdates] = useState(false);
   const [summary, setSummary] = useState<ContainerSummary>({
     total: 0,
     running: 0,
@@ -104,17 +114,66 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     return () => clearInterval(interval);
   }, [authenticated]);
 
-  // Initial eager fetch of containers — avoids waiting for first SSE event
+  // Debounce the search box before it reaches the query (300 ms); once the
+  // search settles, jump back to the first page.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // Canonical query shared by the REST list and the realtime transports.
+  const queryString = useMemo(
+    () =>
+      buildContainerQuery({
+        page,
+        pageSize,
+        q: debouncedQuery,
+        state: stateFilter,
+        hasUpdate: showPendingUpdates,
+      }),
+    [page, pageSize, debouncedQuery, stateFilter, showPendingUpdates],
+  );
+
+  // Eager fetch of the requested page — refetches whenever the query changes.
   useEffect(() => {
     if (!authenticated) return;
-    apiFetch("/api/containers")
+    let cancelled = false;
+    apiFetch(`/api/containers?${queryString}`)
       .then((res) => res.json())
-      .then((data) => {
-        setContainers(data);
+      .then((data: PagedContainers) => {
+        if (cancelled) return;
+        // The client owns `page`/`pageSize`; the server response is only the data.
+        setContainers(data.items);
+        setTotal(data.total);
         setContainersLoaded(true);
       })
-      .catch(() => setContainersLoaded(true));
-  }, [authenticated]);
+      .catch(() => {
+        if (!cancelled) setContainersLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated, queryString]);
+
+  // Filter and page-size changes reset the list to the first page, so the
+  // query never points at a page that may no longer exist.
+  const handleStateFilterChange = useCallback((filter: string[]) => {
+    setStateFilter(filter);
+    setPage(1);
+  }, []);
+
+  const handleShowPendingUpdatesChange = useCallback((value: boolean) => {
+    setShowPendingUpdates(value);
+    setPage(1);
+  }, []);
+
+  const handlePageSizeChange = useCallback((size: number) => {
+    setPageSize(size);
+    setPage(1);
+  }, []);
 
   // ── Cached data for instant tab switching ────────────────
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -206,6 +265,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const onState = useCallback((state: StateResponse) => {
     setContainers(state.containers);
     setContainersLoaded(true);
+    setTotal(state.total);
     setSummary(state.summary);
     setProgress(state.progress);
     setBatchProgress({
@@ -300,6 +360,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   );
 
   useRealtime({
+    query: queryString,
     onState,
     onProgress,
     onNotification,
@@ -323,6 +384,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   useEffect(() => {
     if (!authenticated) return;
+    // `fetchCheckConfig` es async: su `setState` corre después del `await`,
+    // nunca de forma síncrona dentro del efecto. Falso positivo de
+    // react/set-state-in-effect.
+    // oxlint-disable-next-line react/set-state-in-effect
     fetchCheckConfig();
   }, [authenticated, fetchCheckConfig]);
 
@@ -346,7 +411,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       failed: 0,
       errors: [],
     });
-    setBatchProgress({ current: 0, total: containers.length });
+    setBatchProgress({ current: 0, total: summary.total });
     setShowSummary(false);
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -368,7 +433,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       }
     }
     fetchCheckConfig();
-  }, [containers, setContainers, fetchCheckConfig]);
+  }, [summary.total, fetchCheckConfig]);
 
   // Cancel the batch operation
   const cancelBatch = useCallback(async () => {
@@ -477,7 +542,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
             {view === "dashboard" && (
               <DashboardPage
                 containers={containers}
-                setContainers={setContainers}
                 progress={progress}
                 containersLoaded={containersLoaded}
                 batchPhase={batchPhase}
@@ -489,6 +553,18 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                 onCheckAll={checkAll}
                 summary={summary}
                 highlights={highlights}
+                searchQuery={searchQuery}
+                debouncedSearch={debouncedQuery}
+                setSearchQuery={setSearchQuery}
+                stateFilter={stateFilter}
+                setStateFilter={handleStateFilterChange}
+                showPendingUpdates={showPendingUpdates}
+                setShowPendingUpdates={handleShowPendingUpdatesChange}
+                total={total}
+                page={page}
+                pageSize={pageSize}
+                onPageChange={setPage}
+                onPageSizeChange={handlePageSizeChange}
               />
             )}
             {view === "history" && (

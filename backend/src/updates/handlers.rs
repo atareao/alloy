@@ -515,10 +515,20 @@ async fn push_history_entry(
         let mut hist = update_history.lock().await;
         hist.push(entry.clone());
     }
-    if let Ok(conn) = db_pool.get().await {
-        if let Ok(guard) = conn.lock() {
-            let _ = db::append_update_history(&guard, &entry);
-        }
+    // Best-effort: la entrada ya está en memoria; si la BD falla solo se registra.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => {
+                if let Err(e) = db::append_update_history(&guard, &entry) {
+                    tracing::warn!(
+                        "push_history_entry: no se pudo persistir historial de '{}': {e}",
+                        entry.container
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("push_history_entry: mutex de DB envenenado: {e}"),
+        },
+        Err(e) => tracing::warn!("push_history_entry: pool de DB no disponible: {e}"),
     }
 }
 
@@ -663,8 +673,8 @@ pub async fn update_container_h(
             Ok((manifest, config, _)) => {
                 // Use last_remote_digest from DB if available, fallback to image_id
                 let last_remote = {
-                    let conn = db_pool.get().await.unwrap();
-                    let guard = conn.lock().unwrap();
+                    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+                    let guard = conn.lock().map_err(AppError::from_pool)?;
                     crate::db::get_container_last_remote_digest(&guard, &name)
                         .unwrap_or_else(|| image_id.clone())
                 };
@@ -716,15 +726,11 @@ pub async fn update_container_h(
             duration_ms: start_time.elapsed().as_millis() as u64,
             attempts: 0,
         };
-        let mut hist = update_history.lock().await;
-        hist.push(entry);
-        {
-            let conn = db_pool.get().await.unwrap();
-            let conn_lock = conn.lock().unwrap();
-            let _ = db::append_update_history(&conn_lock, hist.last().unwrap());
-            // NOTE: do NOT advance `last_remote_digest` here — the pull failed,
-            // so the running container is still on the old image.
-        }
+        // Best-effort: el historial es un efecto lateral; un fallo de BD NO debe
+        // convertir un pull fallido en un 500 distinto ni abortar la respuesta.
+        // NOTE: do NOT advance `last_remote_digest` here — the pull failed,
+        // so the running container is still on the old image.
+        push_history_entry(&update_history, &db_pool, entry).await;
         return Err(AppError::Internal("pull failed".into()));
     }
     // Record the digest of the image now present in the local cache.
@@ -770,8 +776,8 @@ pub async fn update_container_h(
             // la anterior.
             crate::containers::remove_old_image(&docker, &image_id).await;
             {
-                let conn = db_pool.get().await.unwrap();
-                let conn_lock = conn.lock().unwrap();
+                let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+                let conn_lock = conn.lock().map_err(AppError::from_pool)?;
                 let _ = db::update_container_has_update(&conn_lock, &name, false);
                 let _ = db::update_container_last_remote_digest(&conn_lock, &name, &remote_digest);
             }
@@ -879,7 +885,7 @@ pub async fn update_all_h(
     State(db_pool): State<DbPool>,
     State(terminal_failed): State<TerminalFailed>,
     State(rolled_back): State<RolledBackGuard>,
-) -> Json<Vec<UpdateProgress>> {
+) -> Result<Json<Vec<UpdateProgress>>, AppError> {
     let (guard_max, guard_interval, guard_window, rollback_on_failure, notify) = {
         let s = settings.lock().await;
         (
@@ -977,10 +983,9 @@ pub async fn update_all_h(
                 duration_ms: start_time.elapsed().as_millis() as u64,
                 attempts: 0,
             };
-            let mut hist = update_history.lock().await;
-            hist.push(entry);
-            let conn = db_pool.get().await.unwrap();
-            let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+            // Best-effort: persistir el historial no debe abortar el batch y
+            // perder el array de resultados ya acumulado en `results`.
+            push_history_entry(&update_history, &db_pool, entry).await;
             continue;
         }
         tracing::info!("update_all_h: pull OK para '{}', reiniciando...", name);
@@ -1012,24 +1017,41 @@ pub async fn update_all_h(
                 // Confirmada la nueva imagen sana: ahora sí se puede limpiar la
                 // anterior.
                 crate::containers::remove_old_image(&docker, &old_digest).await;
-                if let Ok(conn) = db_pool.get().await {
-                    match conn.lock() {
+                // Best-effort: persistir flags/digest no altera el array de resultados.
+                match db_pool.get().await {
+                    Ok(conn) => match conn.lock() {
                         Ok(conn_lock) => {
-                            let _ = db::update_container_has_update(&conn_lock, &name, false);
+                            if let Err(e) =
+                                db::update_container_has_update(&conn_lock, &name, false)
+                            {
+                                tracing::warn!(
+                                    "update_all_h: no se pudo limpiar has_update de '{}': {e}",
+                                    name
+                                );
+                            }
                             // Recreate succeeded → the running image is now the remote
                             // config digest; advance `last_remote_digest`.
-                            let _ = db::update_container_last_remote_digest(
+                            if let Err(e) = db::update_container_last_remote_digest(
                                 &conn_lock,
                                 &name,
                                 &remote_digest,
-                            );
+                            ) {
+                                tracing::warn!(
+                                    "update_all_h: no se pudo persistir last_remote_digest de '{}': {e}",
+                                    name
+                                );
+                            }
                         }
                         Err(e) => tracing::error!(
                             "update_all_h: mutex envenenado al persistir digest de '{}': {}",
                             name,
                             e
                         ),
-                    }
+                    },
+                    Err(e) => tracing::warn!(
+                        "update_all_h: pool de DB no disponible persistiendo digest de '{}': {e}",
+                        name
+                    ),
                 }
                 results.push(UpdateProgress {
                     container: name.clone(),
@@ -1125,7 +1147,7 @@ pub async fn update_all_h(
             }
         }
     }
-    Json(results)
+    Ok(Json(results))
 }
 
 pub async fn check_update_h(
@@ -1173,8 +1195,10 @@ pub async fn check_update_h(
     };
     // Persist has_update to database
     if let Some(hu) = has_update {
-        let conn = db_pool.get().await.unwrap();
-        let _ = db::update_container_has_update(&conn.lock().unwrap(), &name, hu);
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let _ = db::update_container_has_update(&guard, &name, hu);
+        drop(guard);
         drop(conn);
     }
     let local_digest = container
@@ -1211,7 +1235,14 @@ async fn check_and_apply_all(
     terminal_failed: &TerminalFailed,
     rolled_back: &RolledBackGuard,
 ) -> Vec<ContainerInfo> {
-    let mut containers = fetch_containers(docker, &None, db_pool).await;
+    // Best-effort: si la BD no está disponible se registra y el batch arranca
+    // con lista vacía (no hay respuesta HTTP que degradar aquí).
+    let mut containers = fetch_containers(docker, &None, db_pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("check_and_apply_all: fetch_containers falló: {e}");
+            Vec::new()
+        });
     let raw_containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
@@ -1243,20 +1274,44 @@ async fn check_and_apply_all(
         })
         .collect();
 
-    // Load last_remote_digest from DB for accurate comparison
-    let last_remote_digest_map: HashMap<String, String> = {
-        let conn = db_pool.get().await.unwrap();
-        let guard = conn.lock().unwrap();
-        crate::db::load_last_remote_digest_map(&guard)
+    // Load last_remote_digest from DB for accurate comparison (best-effort: con
+    // mapa vacío la comparación cae al `image_id`, pero el fallo se registra).
+    let last_remote_digest_map: HashMap<String, String> = match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => crate::db::load_last_remote_digest_map(&guard),
+            Err(e) => {
+                tracing::warn!(
+                    "check_and_apply_all: mutex de DB envenenado leyendo last_remote_digest: {e}"
+                );
+                HashMap::new()
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                "check_and_apply_all: pool de DB no disponible leyendo last_remote_digest: {e}"
+            );
+            HashMap::new()
+        }
     };
 
     // Load last_pulled_digest from DB (local image cache) to skip redundant pulls
+    // (best-effort: sin él se reintenta el pull, pero el fallo se registra).
     let last_pulled_digest_map: HashMap<String, String> = match db_pool.get().await {
         Ok(conn) => match conn.lock() {
             Ok(guard) => crate::db::load_last_pulled_digest_map(&guard),
-            Err(_) => HashMap::new(),
+            Err(e) => {
+                tracing::warn!(
+                    "check_and_apply_all: mutex de DB envenenado leyendo last_pulled_digest: {e}"
+                );
+                HashMap::new()
+            }
         },
-        Err(_) => HashMap::new(),
+        Err(e) => {
+            tracing::warn!(
+                "check_and_apply_all: pool de DB no disponible leyendo last_pulled_digest: {e}"
+            );
+            HashMap::new()
+        }
     };
 
     let mut any_success = false;
@@ -1333,41 +1388,54 @@ async fn check_and_apply_all(
                     has_update,
                 );
 
-                // Update has_update in container and DB
+                // Update has_update in container and DB (best-effort: el fallo se
+                // registra, pero la comprobación del resto continúa).
                 c.has_update = has_update;
-                {
-                    let conn = db_pool.get().await.unwrap();
-                    let conn_lock = conn.lock().unwrap();
-                    if let Err(e) = db::update_container_has_update(&conn_lock, &name, has_update) {
-                        tracing::error!(
-                            "check_and_apply_all: error updating has_update for '{}': {}",
-                            name,
-                            e
-                        );
-                    }
-                    // `last_remote_digest` represents the image the container is
-                    // actually running, so it MUST NOT advance merely because a
-                    // newer remote digest was observed. Seed it once (when there
-                    // was no stored value and no update pending) so subsequent
-                    // cycles have a baseline; the recreate paths persist it after
-                    // a successful recreate.
-                    if should_seed_last_remote_digest(
-                        last_remote_digest_map.contains_key(&name),
-                        has_update,
-                    ) {
-                        if let Err(e) = db::update_container_last_remote_digest(
-                            &conn_lock,
-                            &name,
-                            &config_digest,
-                        ) {
-                            tracing::error!(
-                                "check_and_apply_all: error seeding last_remote_digest for '{}': {}",
-                                name,
-                                e
-                            );
+                match db_pool.get().await {
+                    Ok(conn) => match conn.lock() {
+                        Ok(conn_lock) => {
+                            if let Err(e) =
+                                db::update_container_has_update(&conn_lock, &name, has_update)
+                            {
+                                tracing::error!(
+                                    "check_and_apply_all: error updating has_update for '{}': {}",
+                                    name,
+                                    e
+                                );
+                            }
+                            // `last_remote_digest` represents the image the container is
+                            // actually running, so it MUST NOT advance merely because a
+                            // newer remote digest was observed. Seed it once (when there
+                            // was no stored value and no update pending) so subsequent
+                            // cycles have a baseline; the recreate paths persist it after
+                            // a successful recreate.
+                            if should_seed_last_remote_digest(
+                                last_remote_digest_map.contains_key(&name),
+                                has_update,
+                            ) {
+                                if let Err(e) = db::update_container_last_remote_digest(
+                                    &conn_lock,
+                                    &name,
+                                    &config_digest,
+                                ) {
+                                    tracing::error!(
+                                        "check_and_apply_all: error seeding last_remote_digest for '{}': {}",
+                                        name,
+                                        e
+                                    );
+                                }
+                            }
+                            drop(conn_lock);
                         }
-                    }
-                    drop(conn_lock);
+                        Err(e) => tracing::warn!(
+                            "check_and_apply_all [{}]: mutex de DB envenenado persistiendo has_update: {e}",
+                            name
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        "check_and_apply_all [{}]: pool de DB no disponible persistiendo has_update: {e}",
+                        name
+                    ),
                 }
 
                 // If has_update and running → apply policy inline
@@ -1396,25 +1464,12 @@ async fn check_and_apply_all(
                             .into_iter()
                             .map(|p| (p.container.clone(), p))
                             .collect();
-                        let (default_action, default_cleanup, default_rollback) = {
-                            let s = settings.lock().await;
-                            (
-                                s.default_update_action
-                                    .clone()
-                                    .unwrap_or_else(|| "pull-restart".into()),
-                                s.default_cleanup_old_image.unwrap_or(false),
-                                s.default_rollback_on_failure.unwrap_or(false),
-                            )
+                        // Sin política específica se construye el fallback desde
+                        // los defaults de `Settings`.
+                        let policy = match policy_map.get(&name) {
+                            Some(p) => p.clone(),
+                            None => settings.lock().await.fallback_update_policy(name.clone()),
                         };
-                        let policy = policy_map.get(&name).cloned().unwrap_or(UpdatePolicy {
-                            container: name.clone(),
-                            action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
-                            cleanup_old_image: default_cleanup,
-                            rollback_on_failure: default_rollback,
-                            notify_events: false,
-                            max_start_attempts: None,
-                            health_window_secs: None,
-                        });
                         let mut this_ok = false;
                         let outcome = apply_single_policy(
                             docker,
@@ -1522,29 +1577,54 @@ async fn check_and_apply_all(
         }
     }
 
-    // Update timestamps
-    {
-        let conn = db_pool.get().await.unwrap();
+    // Update timestamps. Compute everything that needs `settings` first so the
+    // (non-`Send`) `conn.lock()` guard is never held across an `.await`.
+    let (last_check, next_check, settings_snapshot) = {
         let mut s = settings.lock().await;
         let cron = s.effective_update_check_cron();
         let last_check = crate::timezone::now_formatted();
         let next_check = crate::timezone::next_cron_time(&cron).unwrap_or_default();
-        for c in &containers {
-            let _ = db::update_container_check_times(
-                &conn.lock().unwrap(),
-                &c.name,
-                &last_check,
-                &next_check,
-            );
-        }
-        s.update_check_last_run_at = Some(last_check);
-        let _ = db::save_settings(&conn.lock().unwrap(), &s);
+        s.update_check_last_run_at = Some(last_check.clone());
+        (last_check, next_check, s.clone())
+    };
+
+    // Best-effort: persiste timestamps y settings; si la BD falla la respuesta
+    // (lista de contenedores) ya está calculada y solo se registra el fallo.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
+            Ok(guard) => {
+                for c in &containers {
+                    if let Err(e) =
+                        db::update_container_check_times(&guard, &c.name, &last_check, &next_check)
+                    {
+                        tracing::warn!(
+                            "check_and_apply_all: no se pudo persistir check_times de '{}': {e}",
+                            c.name
+                        );
+                    }
+                }
+                if let Err(e) = db::save_settings(&guard, &settings_snapshot) {
+                    tracing::warn!("check_and_apply_all: no se pudo persistir settings: {e}");
+                }
+            }
+            Err(e) => tracing::warn!(
+                "check_and_apply_all: mutex de DB envenenado persistiendo timestamps: {e}"
+            ),
+        },
+        Err(e) => tracing::warn!(
+            "check_and_apply_all: pool de DB no disponible persistiendo timestamps: {e}"
+        ),
     }
 
     // Send StateEvent if any success
     if any_success {
         tracing::info!("check_and_apply_all: enviando StateEvent para refrescar frontend");
-        let containers = fetch_containers(docker, &None, db_pool).await;
+        let containers = fetch_containers(docker, &None, db_pool)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("check_and_apply_all: fetch_containers (refresh) falló: {e}");
+                Vec::new()
+            });
         let _ = tx.send(StateEvent { containers });
     }
 
@@ -1776,10 +1856,8 @@ async fn apply_single_policy(
                     duration_ms: start_time.elapsed().as_millis() as u64,
                     attempts: 0,
                 };
-                let mut hist = update_history.lock().await;
-                hist.push(entry);
-                let conn = db_pool.get().await.unwrap();
-                let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+                // Best-effort: persistir el historial no altera el resultado.
+                push_history_entry(update_history, db_pool, entry).await;
             }
         }
         UpdateAction::PullRestart => {
@@ -1896,10 +1974,8 @@ async fn apply_single_policy(
                     duration_ms: start_time.elapsed().as_millis() as u64,
                     attempts: 0,
                 };
-                let mut hist = update_history.lock().await;
-                hist.push(entry);
-                let conn = db_pool.get().await.unwrap();
-                let _ = db::append_update_history(&conn.lock().unwrap(), hist.last().unwrap());
+                // Best-effort: persistir el historial no altera el resultado.
+                push_history_entry(update_history, db_pool, entry).await;
             }
         }
         UpdateAction::PullRestartStack => {
@@ -2086,18 +2162,9 @@ async fn apply_single_policy(
             duration_ms: start_time.elapsed().as_millis() as u64,
             attempts: guard_attempts,
         };
-        let mut hist = update_history.lock().await;
-        hist.push(entry);
-        if let Ok(conn) = db_pool.get().await {
-            if let Ok(guard) = conn.lock() {
-                let _ = db::append_update_history(&guard, hist.last().unwrap());
-            } else {
-                tracing::error!(
-                    "apply_single_policy: mutex de DB poisoned al persistir historial para '{}'",
-                    p.name
-                );
-            }
-        }
+        // Best-effort: el historial ya está en memoria; si la BD falla solo se
+        // registra (push_history_entry lo hace) y el resultado no cambia.
+        push_history_entry(update_history, db_pool, entry).await;
 
         *any_success = true;
 
@@ -2173,31 +2240,14 @@ async fn apply_policies_background(
         .into_iter()
         .map(|p| (p.container.clone(), p))
         .collect();
-    let (default_action, default_cleanup, default_rollback) = {
-        let s = settings.lock().await;
-        (
-            s.default_update_action
-                .clone()
-                .unwrap_or_else(|| "pull-restart".into()),
-            s.default_cleanup_old_image.unwrap_or(false),
-            s.default_rollback_on_failure.unwrap_or(false),
-        )
-    };
-
     let mut any_success = false;
 
     for p in pending {
+        // Sin política específica se construye el fallback desde los defaults
+        // de `Settings`.
         let policy = match policy_map.get(&p.name) {
             Some(pol) => pol.clone(),
-            None => UpdatePolicy {
-                container: p.name.clone(),
-                action: default_action.parse().unwrap_or(UpdateAction::PullRestart),
-                cleanup_old_image: default_cleanup,
-                rollback_on_failure: default_rollback,
-                notify_events: false,
-                max_start_attempts: None,
-                health_window_secs: None,
-            },
+            None => settings.lock().await.fallback_update_policy(p.name.clone()),
         };
         let _ = apply_single_policy(
             docker,
@@ -2229,7 +2279,12 @@ async fn apply_policies_background(
     // Enviar StateEvent para que el frontend refresque inmediatamente
     if any_success {
         tracing::info!("apply_policies_background: enviando StateEvent para refrescar frontend");
-        let containers = fetch_containers(docker, &None, db_pool).await;
+        let containers = fetch_containers(docker, &None, db_pool)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("apply_policies_background: fetch_containers (refresh) falló: {e}");
+                Vec::new()
+            });
         let _ = tx.send(StateEvent { containers });
     }
 }
@@ -2775,6 +2830,86 @@ mod tests {
             update_max_start_attempts: 3,
             update_start_attempt_interval_secs: 10,
             update_health_window_secs: 30,
+            ..Default::default()
+        };
+        let policy = guard_test_policy(None, None);
+        assert_eq!(guard_params(&policy, &settings), (3, 10, 30));
+    }
+
+    // ── guard_params × overrides por defecto (precedencia) ───
+
+    /// Un contenedor SIN política usa el override de la política por defecto
+    /// (sembrado en su `UpdatePolicy` de fallback), no el global.
+    #[test]
+    fn test_guard_params_default_override_applies_to_policy_less_container() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
+            ..Default::default()
+        };
+        // La `UpdatePolicy` de fallback se siembra con los overrides por defecto.
+        let (def_max, def_window) = settings.default_guard_overrides();
+        let policy = guard_test_policy(def_max, def_window);
+        assert_eq!(guard_params(&policy, &settings), (5, 10, 30));
+    }
+
+    /// Escenario «Limpiar» del fallback: sin override por defecto (`None`) la
+    /// política de fallback cae al global (`update_max_start_attempts`).
+    #[test]
+    fn test_guard_params_fallback_without_default_override_uses_global() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: None,
+            ..Default::default()
+        };
+        let policy = settings.fallback_update_policy("web");
+        assert_eq!(guard_params(&policy, &settings), (3, 10, 30));
+    }
+
+    /// Cableado extremo a extremo: el fallback construido por el helper lleva
+    /// los overrides por defecto y `guard_params` los resuelve (sin pasar por
+    /// `guard_test_policy`).
+    #[test]
+    fn test_fallback_update_policy_integrates_with_guard_params() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        };
+        let policy = settings.fallback_update_policy("web");
+        assert_eq!(guard_params(&policy, &settings), (5, 10, 60));
+    }
+
+    /// La política del contenedor gana sobre el override por defecto.
+    #[test]
+    fn test_guard_params_container_policy_override_beats_default() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
+            ..Default::default()
+        };
+        let policy = guard_test_policy(Some(7), None);
+        assert_eq!(guard_params(&policy, &settings), (7, 10, 30));
+    }
+
+    /// Un contenedor CON política sin override cae al global, no al default
+    /// (el override por defecto solo aplica al fallback sin política).
+    #[test]
+    fn test_guard_params_container_policy_without_override_uses_global() {
+        let settings = Settings {
+            update_max_start_attempts: 3,
+            update_start_attempt_interval_secs: 10,
+            update_health_window_secs: 30,
+            default_max_start_attempts: Some(5),
             ..Default::default()
         };
         let policy = guard_test_policy(None, None);

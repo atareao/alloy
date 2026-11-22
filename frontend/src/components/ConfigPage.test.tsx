@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
-import { useState } from "react";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { useEffect, useState } from "react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { ConfigProvider } from "antd";
 import ConfigPage from "./ConfigPage";
 import { CRON_PRESETS } from "../cronPresets";
@@ -1001,6 +1008,87 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
         ),
       ).not.toBeInTheDocument();
     });
+  });
+});
+
+describe("ConfigPage — sincronización desde props", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("precarga los campos y vacía el token al recibir una configuración nueva", async () => {
+    const initial = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100111",
+      telegram_topic_id: "1",
+    });
+    const updated = makeConfig({
+      telegram_configured: true,
+      telegram_chat_id: "-100222",
+      telegram_topic_id: "2",
+    });
+    installFetchMock(initial);
+
+    // Harness con estado propio: simula a App.tsx reenviando la config por la
+    // prop tras el fetch eager (o tras un guardado).
+    const pushConfig: { current: ((c: AppConfig) => void) | null } = {
+      current: null,
+    };
+    function Harness() {
+      const [cfg, setCfg] = useState<AppConfig>(initial);
+      useEffect(() => {
+        pushConfig.current = setCfg;
+      }, []);
+      return (
+        <ConfigPage
+          config={cfg}
+          setConfig={setCfg}
+          colorScheme="dark"
+          setColorScheme={() => {}}
+        />
+      );
+    }
+
+    render(
+      <Wrapper>
+        <Harness />
+      </Wrapper>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("📱 Telegram")).toBeInTheDocument();
+    });
+
+    const card = getCard("📱 Telegram");
+
+    // Precarga desde la prop inicial.
+    expect(
+      within(card).getByPlaceholderText("-1001234567890"),
+    ).toHaveValue("-100111");
+    expect(within(card).getByLabelText("Topic ID (opcional)")).toHaveValue("1");
+
+    // El usuario teclea un token nuevo…
+    const tokenInput = within(card).getByLabelText(
+      "Token del bot de Telegram",
+    );
+    fireEvent.change(tokenInput, { target: { value: "123:typed" } });
+    expect(tokenInput).toHaveValue("123:typed");
+
+    // …y llega una configuración nueva por props.
+    act(() => pushConfig.current!(updated));
+
+    await waitFor(() => {
+      expect(
+        within(card).getByPlaceholderText("-1001234567890"),
+      ).toHaveValue("-100222");
+    });
+    expect(within(card).getByLabelText("Topic ID (opcional)")).toHaveValue("2");
+    expect(
+      within(card).getByLabelText("Token del bot de Telegram"),
+    ).toHaveValue("");
+    expect(
+      within(card).getByRole("switch", { name: "Activar Telegram" }),
+    ).toBeChecked();
   });
 });
 

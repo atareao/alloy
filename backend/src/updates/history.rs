@@ -19,13 +19,19 @@ pub async fn get_history_h(
 pub async fn delete_history_h(
     State(update_history): State<Arc<Mutex<Vec<UpdateHistoryEntry>>>>,
     State(db_pool): State<DbPool>,
-) -> Json<serde_json::Value> {
-    let mut hist = update_history.lock().await;
-    hist.clear();
-    let obj = db_pool.get().await.unwrap();
-    let conn = obj.lock().unwrap();
-    let _ = db::clear_update_history(&conn);
-    Json(serde_json::json!({"status": "cleared"}))
+) -> Result<Json<serde_json::Value>, AppError> {
+    // Limpia la memoria dentro de la sección crítica y suelta el guard antes de
+    // esperar la pool: evita el ciclo lock(update_history) → pool.
+    {
+        let mut hist = update_history.lock().await;
+        hist.clear();
+    }
+    let obj = db_pool.get().await.map_err(AppError::from_pool)?;
+    let conn = obj.lock().map_err(AppError::from_pool)?;
+    if let Err(e) = db::clear_update_history(&conn) {
+        tracing::warn!("delete_history_h: no se pudo persistir el borrado del historial: {e}");
+    }
+    Ok(Json(serde_json::json!({"status": "cleared"})))
 }
 
 #[cfg(test)]
@@ -150,9 +156,46 @@ mod tests {
     async fn test_delete_history_on_empty() {
         let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
         let pool = test_pool();
-        let result: Json<serde_json::Value> =
-            delete_history_h(State(hist.clone()), State(pool)).await;
+        let result: Json<serde_json::Value> = delete_history_h(State(hist.clone()), State(pool))
+            .await
+            .unwrap();
         assert_eq!(result.0["status"], "cleared");
         assert!(hist.lock().await.is_empty());
+    }
+
+    /// `delete_history_h` no debe retener el guard de `update_history` mientras
+    /// espera una conexión de la pool (orden estado → drop → pool).
+    #[tokio::test]
+    async fn test_delete_history_releases_lock_while_pool_saturated() {
+        let pool = crate::db::test_pool_with_max_size(1);
+        let _held = pool
+            .get()
+            .await
+            .expect("conexión única para saturar la pool");
+        let hist: Arc<Mutex<Vec<UpdateHistoryEntry>>> =
+            Arc::new(Mutex::new(vec![UpdateHistoryEntry {
+                container: "web".into(),
+                image: "nginx".into(),
+                old_digest: "a".into(),
+                new_digest: "b".into(),
+                timestamp: "now".into(),
+                status: "success".into(),
+                duration_ms: 100,
+                attempts: 0,
+            }]));
+        let handler_hist = hist.clone();
+        crate::test_support::assert_update_history_lock_free_while_db_pool_saturated(
+            hist.clone(),
+            async move {
+                let _ = delete_history_h(State(handler_hist), State(pool)).await;
+            },
+        )
+        .await;
+        // El handler ya limpió la memoria antes de bloquearse en la pool; tras el
+        // abort del helper el estado en memoria debe seguir vacío.
+        assert!(
+            hist.lock().await.is_empty(),
+            "el historial en memoria debe quedar vacío"
+        );
     }
 }

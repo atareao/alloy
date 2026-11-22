@@ -1,0 +1,42 @@
+# Ejemplo versionado del stack de Alloy en co1 (Dockge).
+# Copia a /home/lorenzo/docker/dockge/stacks/alloy/compose.yaml y ajusta el .env.
+#
+# CLAVE: la imagen se pincha a una VERSIÓN EXPLÍCITA (:X.Y.Z). NUNCA uses :latest
+# como referencia desplegada: haría el deploy no reproducible.
+#
+# El tag de versión lo publica .github/workflows/release.yml (publica :${VERSION} y :latest).
+# Versión actual desplegada: 0.26.0
+
+services:
+  alloy:
+    image: ghcr.io/atareao/alloy:0.26.0
+    container_name: alloy
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # FQDN se usa para los labels de Traefik; OIDC_* llegan por env_file (.env).
+      FQDN: ${FQDN}
+      PORT: "3066"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - alloy-data:/app/data
+    # GID del socket de Docker en el host (999 en co1) para el usuario no privilegiado `app`.
+    group_add:
+      - "999"
+    networks:
+      - proxy
+    labels:
+      # Ajusta los labels a tu Traefik; son ilustrativos.
+      traefik.enable: "true"
+      traefik.http.routers.alloy.rule: Host(`${FQDN}`)
+      traefik.http.routers.alloy.entrypoints: websecure
+      traefik.http.routers.alloy.tls.certresolver: le
+      traefik.http.services.alloy.loadbalancer.server.port: "3066"
+
+networks:
+  proxy:
+    external: true
+
+volumes:
+  alloy-data:

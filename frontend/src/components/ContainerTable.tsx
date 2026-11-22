@@ -4,6 +4,7 @@ import {
   Card,
   Flex,
   Input,
+  Pagination,
   Switch,
   Tag,
   Typography,
@@ -11,6 +12,7 @@ import {
 } from "antd";
 import { SearchOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ContainerInfo } from "../types";
+import { PAGE_SIZE_OPTIONS } from "../containerQuery";
 
 export interface ContainerTableProps {
   sortedGroups: [string, ContainerInfo[]][];
@@ -30,6 +32,12 @@ export interface ContainerTableProps {
   renderGroup: (project: string, items: ContainerInfo[]) => ReactNode;
   renderRow: (c: ContainerInfo) => ReactNode;
   batchPhase: "idle" | "active";
+  // Server-side pagination
+  total: number;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
 }
 
 export default function ContainerTable({
@@ -50,6 +58,11 @@ export default function ContainerTable({
   renderGroup,
   renderRow,
   batchPhase,
+  total,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
 }: ContainerTableProps) {
   return (
     <>
@@ -212,6 +225,29 @@ export default function ContainerTable({
             {noStack.map(renderRow)}
           </Card>
         ))}
+
+      {/* Server-side pagination — hidden during batch, like the filter bar */}
+      {batchPhase === "idle" && (
+        <Flex justify="center" style={{ marginTop: 16 }}>
+          <Pagination
+            current={page}
+            pageSize={pageSize}
+            total={total}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            showSizeChanger
+            showTotal={(t) => `${t} contenedores`}
+            size={isMobile ? "small" : "medium"}
+            onChange={(nextPage, nextPageSize) => {
+              if (nextPageSize !== pageSize) {
+                // Size change resets to the first page.
+                onPageSizeChange(nextPageSize);
+              } else {
+                onPageChange(nextPage);
+              }
+            }}
+          />
+        </Flex>
+      )}
     </>
   );
 }

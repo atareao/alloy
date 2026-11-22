@@ -409,18 +409,39 @@ async fn append_stack_history(
     update_history: &Arc<Mutex<Vec<UpdateHistoryEntry>>>,
     entry: UpdateHistoryEntry,
 ) {
-    let mut hist = update_history.lock().await;
-    hist.push(entry);
-    if let Ok(conn) = db_pool.get().await {
-        match conn.lock() {
+    // Publica en memoria dentro de la sección crítica y suelta el guard antes de
+    // esperar la pool: evita el ciclo lock(update_history) → pool con los handlers
+    // que adquieren la conexión antes que el estado.
+    let last = {
+        let mut hist = update_history.lock().await;
+        hist.push(entry);
+        hist.last().cloned()
+    };
+    let Some(last) = last else {
+        debug_assert!(false, "update_stack_h: push sin último elemento");
+        tracing::warn!("update_stack_h: invariante roto, push sin último elemento");
+        return;
+    };
+    // Best-effort: la entrada ya está en memoria; si la BD falla solo se registra.
+    match db_pool.get().await {
+        Ok(conn) => match conn.lock() {
             Ok(guard) => {
-                let _ = db::append_update_history(&guard, hist.last().unwrap());
+                if let Err(e) = db::append_update_history(&guard, &last) {
+                    tracing::warn!(
+                        "update_stack_h: no se pudo persistir historial de '{}': {e}",
+                        last.container
+                    );
+                }
             }
-            Err(_) => tracing::error!(
-                "update_stack_h: mutex de DB poisoned al persistir historial de '{}'",
-                hist.last().map(|e| e.container.as_str()).unwrap_or("")
+            Err(e) => tracing::error!(
+                "update_stack_h: mutex de DB poisoned al persistir historial de '{}': {e}",
+                last.container
             ),
-        }
+        },
+        Err(e) => tracing::error!(
+            "update_stack_h: pool de DB no disponible al persistir historial de '{}': {e}",
+            last.container
+        ),
     }
 }
 
@@ -728,6 +749,41 @@ mod tests {
         assert_eq!(entry.status, "stack-update");
         assert_eq!(entry.duration_ms, 42);
         assert!(!entry.timestamp.is_empty());
+    }
+
+    /// `append_stack_history` no debe retener el guard de `update_history`
+    /// mientras espera una conexión de la pool (orden estado → drop → pool).
+    #[tokio::test]
+    async fn test_append_stack_history_releases_lock_while_pool_saturated() {
+        let pool = crate::db::test_pool_with_max_size(1);
+        let _held = pool
+            .get()
+            .await
+            .expect("conexión única para saturar la pool");
+        let history: Arc<Mutex<Vec<UpdateHistoryEntry>>> = Arc::new(Mutex::new(Vec::new()));
+        let handler_history = history.clone();
+        let entry = UpdateHistoryEntry {
+            container: "app_web_1".into(),
+            image: "nginx:latest".into(),
+            old_digest: "sha256:old".into(),
+            new_digest: "sha256:new".into(),
+            timestamp: "2024-01-01T00:00:00".into(),
+            status: "stack-update".into(),
+            duration_ms: 1,
+            attempts: 0,
+        };
+        crate::test_support::assert_update_history_lock_free_while_db_pool_saturated(
+            history.clone(),
+            async move {
+                append_stack_history(&pool, &handler_history, entry).await;
+            },
+        )
+        .await;
+        // El handler ya publicó la entrada antes de bloquearse en la pool; tras el
+        // abort del helper el estado en memoria debe conservarla.
+        let stored = history.lock().await;
+        assert_eq!(stored.len(), 1, "la entrada debe permanecer en memoria");
+        assert_eq!(stored[0].container, "app_web_1");
     }
 
     // ── list_stacks_h ────────────────────────────────────────

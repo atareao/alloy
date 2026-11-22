@@ -1,5 +1,7 @@
+use serde::de::{Deserializer, MapAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ContainerInfo {
@@ -113,6 +115,31 @@ pub struct SessionClaims {
     /// Last activity timestamp (epoch seconds).
     /// Used to enforce idle timeout.
     pub last_active: usize,
+    /// Optional purpose marker. Session tokens MUST NOT set it; SSE tickets
+    /// are represented by [`SseTicketClaims`], not this type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
+/// Claims for an ephemeral SSE ticket.
+///
+/// Tickets are signed with the same secret as session tokens but carry
+/// `purpose = "sse"` and a short TTL (60 s). They are only accepted by the
+/// auth middleware as the `token` query parameter on `/api/stream`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SseTicketClaims {
+    pub sub: String,
+    /// Always `"sse"` for tickets issued by `/api/auth/sse-token`.
+    pub purpose: String,
+    pub iat: usize,
+    pub exp: usize,
+}
+
+/// JSON body returned by `GET /api/auth/sse-token`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SseTicketResponse {
+    pub token: String,
+    pub expires_in: u64,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
@@ -266,6 +293,17 @@ pub struct Settings {
     /// Segundos de ventana estable para considerar sano un arranque. Default: 30.
     #[serde(default = "default_update_health_window_secs")]
     pub update_health_window_secs: u64,
+
+    /// Override de la **política por defecto** del nº máximo de intentos de
+    /// arranque sano. `None` = sin override (aplica solo al *fallback* de
+    /// contenedores sin política específica).
+    #[serde(default)]
+    pub default_max_start_attempts: Option<u32>,
+
+    /// Override de la **política por defecto** de la ventana estable de salud
+    /// (segundos). `None` = sin override.
+    #[serde(default)]
+    pub default_health_window_secs: Option<u64>,
 }
 
 /// Default global: nº máximo de intentos de arranque sano antes del rollback.
@@ -348,6 +386,8 @@ impl Default for Settings {
             update_max_start_attempts: DEFAULT_UPDATE_MAX_START_ATTEMPTS,
             update_start_attempt_interval_secs: DEFAULT_UPDATE_START_ATTEMPT_INTERVAL_SECS,
             update_health_window_secs: DEFAULT_UPDATE_HEALTH_WINDOW_SECS,
+            default_max_start_attempts: None,
+            default_health_window_secs: None,
         }
     }
 }
@@ -374,6 +414,36 @@ impl Settings {
     /// `DEFAULT_CHECK_INTERVAL_MS` cuando el valor almacenado es `None`.
     pub fn effective_check_interval_ms(&self) -> u64 {
         self.check_interval_ms.unwrap_or(DEFAULT_CHECK_INTERVAL_MS)
+    }
+
+    /// Overrides de la guarda de la política por defecto (aplican al fallback de
+    /// contenedores sin política específica).
+    pub fn default_guard_overrides(&self) -> (Option<u32>, Option<u64>) {
+        (
+            self.default_max_start_attempts,
+            self.default_health_window_secs,
+        )
+    }
+
+    /// Construye la `UpdatePolicy` de *fallback* para un contenedor **sin**
+    /// política específica: acción/limpieza/rollback de la política por defecto
+    /// y los overrides de la guarda por defecto (`None` si no hay).
+    /// `notify_events: false`.
+    pub fn fallback_update_policy(&self, container: impl Into<String>) -> UpdatePolicy {
+        UpdatePolicy {
+            container: container.into(),
+            action: self
+                .default_update_action
+                .clone()
+                .unwrap_or_else(|| "pull-restart".into())
+                .parse()
+                .unwrap_or(UpdateAction::PullRestart),
+            cleanup_old_image: self.default_cleanup_old_image.unwrap_or(false),
+            rollback_on_failure: self.default_rollback_on_failure.unwrap_or(false),
+            notify_events: false,
+            max_start_attempts: self.default_max_start_attempts,
+            health_window_secs: self.default_health_window_secs,
+        }
     }
 }
 
@@ -567,6 +637,19 @@ pub enum AppError {
     Internal(String),
 }
 
+impl AppError {
+    /// Traduce un fallo de infraestructura de datos (pool agotada/cerrada o
+    /// `Mutex` de conexión envenenado) a un `AppError::Internal` (HTTP 500).
+    ///
+    /// Centraliza la conversión para que los handlers no paniquen con
+    /// `unwrap()`: `db_pool.get().await.map_err(AppError::from_pool)?`.
+    /// Se usa un helper genérico en lugar de un `impl From<PoolError>` para no
+    /// acoplar `models.rs` al tipo concreto de pool.
+    pub fn from_pool<E: std::fmt::Display>(e: E) -> Self {
+        AppError::Internal(format!("base de datos no disponible: {e}"))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, msg) = match &self {
@@ -616,12 +699,305 @@ pub struct BatchProgress {
     pub failed: u32,
 }
 
+/// Tamaños de página aceptados por los endpoints de listado.
+pub const ALLOWED_PAGE_SIZES: [u32; 3] = [10, 20, 50];
+/// Página por defecto (`page`).
+pub const DEFAULT_PAGE: u32 = 1;
+/// Tamaño de página por defecto (`page_size`).
+pub const DEFAULT_PAGE_SIZE: u32 = 20;
+
+/// Parámetros de listado tal y como llegan por query string.
+///
+/// Todos los campos son opcionales para poder distinguir "ausente" de "valor por
+/// defecto"; la validación y normalización se hace con
+/// [`ContainerListQuery::normalize`].
+///
+/// La deserialización es manual (ver el `impl Deserialize` más abajo) porque
+/// `serde_urlencoded` —el deserializador que usa `axum::extract::Query`— no sabe
+/// mapear claves repetidas a un campo escalar. Tolerancias documentadas en ese
+/// `impl`: escalares repetidos → *last-wins*; claves desconocidas → ignoradas.
+#[derive(Clone, Debug, Default)]
+pub struct ContainerListQuery {
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+    /// Substring case-insensitive sobre `name`, `image` y `compose_project`.
+    pub q: Option<String>,
+    /// Estados aceptados. Puede repetirse (`?state=running&state=exited`) y se
+    /// aplica con semántica OR; un conjunto vacío no filtra por estado.
+    pub state: Vec<String>,
+    /// Si es `true`, limita a contenedores con actualización pendiente.
+    pub has_update: Option<bool>,
+}
+
+/// Deserialización manual de [`ContainerListQuery`].
+///
+/// **Por qué no `derive`**: `axum::extract::Query` usa `serde_urlencoded`, que
+/// deserializa el top-level como un mapa de pares clave/valor. Con `derive`, un
+/// campo `Vec<String>` recibe el valor de la **primera** ocurrencia como un
+/// escalar y falla (`invalid type: string "running", expected a sequence`), y un
+/// campo escalar rechaza la segunda ocurrencia (`duplicate field`). Comprobado
+/// empíricamente para `Vec<String>`, `Option<Vec<String>>` y `Vec<(String, String)>`.
+///
+/// Este `visit_map` recorre las entradas en orden —incluidas las claves
+/// repetidas— y acumula todos los valores de `state` en el `Vec`.
+///
+/// # Tolerancia deliberada (difiere del `derive` de serde)
+///
+/// - **Claves escalares repetidas** (`?page=1&page=2`): **last-wins**. La última
+///   ocurrencia sobrescribe a la anterior en vez de provocar un error
+///   (`derive` respondería `400 duplicate field`). Es el comportamiento natural
+///   de una query string y evita romper a clientes que añaden parámetros.
+/// - **Claves desconocidas** (`?pageSize=50`): se **ignoran** a propósito
+///   (tolerancia hacia delante, para añadir parámetros sin romper clientes
+///   antiguos). Consecuencia asumida: un *typo* cae al valor por defecto en vez
+///   de devolver `400`.
+///
+/// Los valores con el tipo equivocado (`?page=abc`, `?has_update=maybe`,
+/// `?page_size=-1`, `?page=4294967296`) sí son un error de deserialización y
+/// producen `400`.
+impl<'de> Deserialize<'de> for ContainerListQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ContainerListQueryVisitor;
+
+        impl<'de> Visitor<'de> for ContainerListQueryVisitor {
+            type Value = ContainerListQuery;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("una query string con page, page_size, q, state y has_update")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut query = ContainerListQuery::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "page" => query.page = Some(map.next_value()?),
+                        "page_size" => query.page_size = Some(map.next_value()?),
+                        "q" => query.q = Some(map.next_value()?),
+                        // Puede aparecer varias veces: se acumulan los valores.
+                        "state" => query.state.push(map.next_value()?),
+                        "has_update" => query.has_update = Some(map.next_value()?),
+                        // Clave desconocida: se ignora (tolerancia hacia delante).
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(ContainerListQueryVisitor)
+    }
+}
+
+impl ContainerListQuery {
+    /// Valida y normaliza la query a [`ContainerListParams`].
+    ///
+    /// Aplica los defaults (`page = 1`, `page_size = 20`) y recorta los filtros
+    /// de texto en blanco (`q`/`state` vacíos se tratan como ausentes).
+    ///
+    /// # Errors
+    ///
+    /// Devuelve [`AppError::BadRequest`] (HTTP 400) si `page` es 0 o si
+    /// `page_size` no pertenece a [`ALLOWED_PAGE_SIZES`].
+    pub fn normalize(self) -> Result<ContainerListParams, AppError> {
+        let page = self.page.unwrap_or(DEFAULT_PAGE);
+        if page == 0 {
+            return Err(AppError::BadRequest(format!(
+                "page debe ser >= 1 (recibido {page})"
+            )));
+        }
+
+        let page_size = self.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
+        if !ALLOWED_PAGE_SIZES.contains(&page_size) {
+            return Err(AppError::BadRequest(format!(
+                "page_size debe ser uno de {ALLOWED_PAGE_SIZES:?} (recibido {page_size})"
+            )));
+        }
+
+        Ok(ContainerListParams {
+            page,
+            page_size,
+            q: normalize_filter(self.q),
+            state: normalize_state_values(self.state),
+            has_update: self.has_update,
+        })
+    }
+}
+
+/// Filtros y paginación ya validados y normalizados.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerListParams {
+    pub page: u32,
+    pub page_size: u32,
+    pub q: Option<String>,
+    /// Conjunto de estados aceptados (semántica OR). Vacío → no filtra por estado.
+    pub state: Vec<String>,
+    pub has_update: Option<bool>,
+}
+
+impl Default for ContainerListParams {
+    fn default() -> Self {
+        Self {
+            page: DEFAULT_PAGE,
+            page_size: DEFAULT_PAGE_SIZE,
+            q: None,
+            state: Vec::new(),
+            has_update: None,
+        }
+    }
+}
+
+/// Recorta un filtro de texto y descarta los que quedan vacíos.
+fn normalize_filter(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Recorta cada estado, descarta los vacíos y deduplica conservando el orden.
+fn normalize_state_values(values: Vec<String>) -> Vec<String> {
+    let mut normalized: Vec<String> = Vec::with_capacity(values.len());
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() || normalized.iter().any(|kept| kept == value) {
+            continue;
+        }
+        normalized.push(value.to_string());
+    }
+    normalized
+}
+
+/// Página de contenedores devuelta por los endpoints de listado.
+#[derive(Clone, Debug, Serialize)]
+pub struct PagedContainers {
+    pub items: Vec<ContainerInfo>,
+    /// Recuento **tras** aplicar los filtros (no de la página).
+    pub total: usize,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+/// Offset de la primera entrada de `page` (base 0) para un `page_size` dado.
+///
+/// Usa aritmética saturante en ambos pasos: `page = u32::MAX` desbordaría `usize`
+/// en plataformas de 32 bits. Con el offset saturado, el `skip` deja la página
+/// vacía sin panickear (que es el comportamiento contratado para una página más
+/// allá del final).
+fn page_offset(page: u32, page_size: u32) -> usize {
+    (page.saturating_sub(1) as usize).saturating_mul(page_size as usize)
+}
+
+/// Filtra, ordena y pagina `containers` según `params`.
+///
+/// El orden es determinista: `compose_project` ascendente (`None` se trata como
+/// cadena vacía, por lo que va primero) y, dentro de cada proyecto, `name`
+/// ascendente. `total` es el recuento **tras** filtrar; una `page` más allá del
+/// final devuelve `items` vacío conservando el `total` real.
+pub fn paginate_containers(
+    containers: &[ContainerInfo],
+    params: &ContainerListParams,
+) -> PagedContainers {
+    let mut filtered: Vec<&ContainerInfo> = containers
+        .iter()
+        .filter(|c| container_matches(c, params))
+        .collect();
+    filtered.sort_by(|a, b| {
+        a.compose_project
+            .as_deref()
+            .unwrap_or("")
+            .cmp(b.compose_project.as_deref().unwrap_or(""))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let total = filtered.len();
+    let offset = page_offset(params.page, params.page_size);
+    let items = filtered
+        .into_iter()
+        .skip(offset)
+        .take(params.page_size as usize)
+        .cloned()
+        .collect();
+
+    PagedContainers {
+        items,
+        total,
+        page: params.page,
+        page_size: params.page_size,
+    }
+}
+
+/// `true` si `c` satisface los filtros de `params`.
+///
+/// `state` se evalúa como pertenencia al conjunto (OR); `has_update` es igualdad
+/// booleana y `q` es un substring case-insensitive sobre `name`, `image` y
+/// `compose_project`.
+fn container_matches(c: &ContainerInfo, params: &ContainerListParams) -> bool {
+    if !params.state.is_empty() && !params.state.iter().any(|state| state == &c.state) {
+        return false;
+    }
+
+    if let Some(has_update) = params.has_update {
+        if c.has_update != has_update {
+            return false;
+        }
+    }
+
+    if let Some(q) = &params.q {
+        let q = q.to_lowercase();
+        let in_name = c.name.to_lowercase().contains(&q);
+        let in_image = c.image.to_lowercase().contains(&q);
+        let in_project = c
+            .compose_project
+            .as_deref()
+            .is_some_and(|p| p.to_lowercase().contains(&q));
+        if !(in_name || in_image || in_project) {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// Construye la respuesta del listado/tiempo real para una flota completa.
+///
+/// El `summary` se calcula sobre **toda** la flota (independientemente de
+/// `params`), mientras que `containers` es solo la página filtrada solicitada.
+pub fn build_state_response(
+    containers: Vec<ContainerInfo>,
+    progress: BatchProgress,
+    params: &ContainerListParams,
+) -> StateResponse {
+    let summary = compute_summary(&containers);
+    let paged = paginate_containers(&containers, params);
+    StateResponse {
+        containers: paged.items,
+        summary,
+        progress,
+        page: paged.page,
+        page_size: paged.page_size,
+        total: paged.total,
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct StateResponse {
     pub containers: Vec<ContainerInfo>,
     pub summary: ContainerSummary,
     #[serde(default)]
     pub progress: BatchProgress,
+    /// Página efectiva entregada en `containers`.
+    pub page: u32,
+    /// Tamaño de página efectivo.
+    pub page_size: u32,
+    /// Número total de contenedores tras aplicar los filtros (no de la página).
+    pub total: usize,
 }
 
 pub fn compute_summary(containers: &[ContainerInfo]) -> ContainerSummary {
@@ -645,6 +1021,7 @@ pub fn compute_summary(containers: &[ContainerInfo]) -> ContainerSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Query;
     use axum::http::StatusCode;
 
     // ── helpers ─────────────────────────────────────────────
@@ -889,6 +1266,9 @@ mod tests {
             containers,
             summary,
             progress,
+            page: 1,
+            page_size: 20,
+            total: 1,
         };
         let json = serde_json::to_value(&response).unwrap();
         assert!(
@@ -902,6 +1282,15 @@ mod tests {
         assert!(
             json.get("progress").is_some(),
             "JSON must contain 'progress' field"
+        );
+        assert!(json.get("page").is_some(), "JSON must contain 'page' field");
+        assert!(
+            json.get("page_size").is_some(),
+            "JSON must contain 'page_size' field"
+        );
+        assert!(
+            json.get("total").is_some(),
+            "JSON must contain 'total' field"
         );
     }
 
@@ -1146,5 +1535,552 @@ mod tests {
         assert_eq!(s.effective_update_check_cron(), "0 3 * * *");
         assert_eq!(s.effective_pull_timeout_secs(), 120);
         assert_eq!(s.effective_check_interval_ms(), 500);
+    }
+
+    // ── default guard overrides (apply-default-guard-overrides) ──
+
+    /// Compat: un JSON de `Settings` sin los campos nuevos deserializa a `None`
+    /// (settings almacenados antes del cambio siguen cargando sin migración).
+    #[test]
+    fn test_settings_without_default_guard_overrides_deserializes_to_none() {
+        let json = r#"{
+            "update_max_start_attempts": 3,
+            "update_start_attempt_interval_secs": 10,
+            "update_health_window_secs": 30
+        }"#;
+        let s: Settings = serde_json::from_str(json)
+            .expect("settings previos deben deserializar sin los campos nuevos");
+        assert_eq!(s.default_max_start_attempts, None);
+        assert_eq!(s.default_health_window_secs, None);
+        assert_eq!(s.update_max_start_attempts, 3);
+        assert_eq!(s.update_health_window_secs, 30);
+    }
+
+    /// El helper devuelve el par de overrides de la política por defecto.
+    #[test]
+    fn test_default_guard_overrides_returns_pair() {
+        let s = Settings {
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        };
+        assert_eq!(s.default_guard_overrides(), (Some(5), Some(60)));
+        assert_eq!(Settings::default().default_guard_overrides(), (None, None));
+    }
+
+    // ── fallback_update_policy (apply-default-guard-overrides) ──
+
+    /// El fallback de un contenedor sin política toma acción/limpieza/rollback
+    /// de la política por defecto y siembra los overrides de la guarda.
+    #[test]
+    fn test_fallback_update_policy_seeds_defaults_and_guard_overrides() {
+        let s = Settings {
+            default_update_action: Some("pull-restart-stack".into()),
+            default_cleanup_old_image: Some(true),
+            default_rollback_on_failure: Some(true),
+            default_max_start_attempts: Some(5),
+            default_health_window_secs: Some(60),
+            ..Default::default()
+        };
+        let p = s.fallback_update_policy("web");
+        assert_eq!(p.container, "web");
+        assert_eq!(p.action, UpdateAction::PullRestartStack);
+        assert!(p.cleanup_old_image);
+        assert!(p.rollback_on_failure);
+        assert!(!p.notify_events);
+        assert_eq!(p.max_start_attempts, Some(5));
+        assert_eq!(p.health_window_secs, Some(60));
+    }
+
+    /// Sin política por defecto ni overrides: `pull-restart`, limpieza/rollback
+    /// a `false` y guarda sin override (`None`).
+    #[test]
+    fn test_fallback_update_policy_falls_back_to_sane_defaults() {
+        let p = Settings::default().fallback_update_policy("web");
+        assert_eq!(p.action, UpdateAction::PullRestart);
+        assert!(!p.cleanup_old_image);
+        assert!(!p.rollback_on_failure);
+        assert!(!p.notify_events);
+        assert_eq!(p.max_start_attempts, None);
+        assert_eq!(p.health_window_secs, None);
+    }
+
+    /// Una acción por defecto inválida cae a `pull-restart` (no revienta).
+    #[test]
+    fn test_fallback_update_policy_invalid_action_falls_back_to_pull_restart() {
+        let s = Settings {
+            default_update_action: Some("no-such-action".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.fallback_update_policy("web").action,
+            UpdateAction::PullRestart
+        );
+    }
+
+    // ── paginación/filtrado del listado (container-list-pagination) ────
+
+    /// Contenedor de test con proyecto de compose explícito.
+    fn make_project_container(
+        name: &str,
+        state: &str,
+        has_update: bool,
+        project: Option<&str>,
+    ) -> ContainerInfo {
+        ContainerInfo {
+            compose_project: project.map(str::to_string),
+            ..make_container(name, state, has_update)
+        }
+    }
+
+    /// Flota de `n` contenedores `running` sin actualización en el proyecto `alpha`.
+    fn make_fleet(n: usize) -> Vec<ContainerInfo> {
+        (0..n)
+            .map(|i| make_project_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect()
+    }
+
+    fn normalize(query: ContainerListQuery) -> ContainerListParams {
+        query.normalize().expect("query válida")
+    }
+
+    #[test]
+    fn test_paginate_default_page_returns_first_twenty_of_twentyfive() {
+        let fleet = make_fleet(25);
+        let paged = paginate_containers(&fleet, &ContainerListParams::default());
+        assert_eq!(paged.page, 1);
+        assert_eq!(paged.page_size, 20);
+        assert_eq!(paged.total, 25);
+        assert_eq!(paged.items.len(), 20);
+    }
+
+    #[test]
+    fn test_paginate_second_page_returns_remaining_five() {
+        let fleet = make_fleet(25);
+        let params = ContainerListParams {
+            page: 2,
+            ..Default::default()
+        };
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.items.len(), 5);
+        assert_eq!(paged.total, 25);
+    }
+
+    #[test]
+    fn test_paginate_page_beyond_end_is_empty_and_keeps_real_total() {
+        let fleet = make_fleet(25);
+        let params = ContainerListParams {
+            page: 99,
+            ..Default::default()
+        };
+        let paged = paginate_containers(&fleet, &params);
+        assert!(paged.items.is_empty());
+        assert_eq!(paged.total, 25);
+    }
+
+    /// El offset debe saturar en vez de desbordar `usize` (relevante en 32 bits).
+    #[test]
+    fn test_page_offset_saturates_for_u32_max_page() {
+        let offset = page_offset(u32::MAX, 50);
+        assert!(
+            offset >= u32::MAX as usize,
+            "el offset debe quedar más allá de cualquier flota real, got {offset}"
+        );
+    }
+
+    #[test]
+    fn test_page_offset_matches_plain_arithmetic_when_no_overflow() {
+        assert_eq!(page_offset(1, 20), 0);
+        assert_eq!(page_offset(2, 20), 20);
+        assert_eq!(page_offset(3, 10), 20);
+    }
+
+    /// `page = u32::MAX` no desborda ni panickea: página vacía con `total` real.
+    #[test]
+    fn test_paginate_page_u32_max_returns_empty_page_with_real_total() {
+        let fleet = make_fleet(25);
+        let params = ContainerListParams {
+            page: u32::MAX,
+            ..Default::default()
+        };
+        let paged = paginate_containers(&fleet, &params);
+        assert!(paged.items.is_empty());
+        assert_eq!(paged.total, 25);
+        assert_eq!(paged.page, u32::MAX);
+    }
+
+    #[test]
+    fn test_paginate_q_matches_name_case_insensitively() {
+        let fleet = vec![
+            make_container("web", "running", false),
+            make_container("db", "running", false),
+            make_container("cache", "running", false),
+        ];
+        let params = normalize(ContainerListQuery {
+            q: Some("WEB".into()),
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 1);
+        assert_eq!(paged.items[0].name, "web");
+    }
+
+    #[test]
+    fn test_paginate_q_matches_image() {
+        let fleet = vec![
+            make_container("web", "running", false),
+            make_container("db", "running", false),
+        ];
+        let params = normalize(ContainerListQuery {
+            q: Some("web:lat".into()),
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 1);
+        assert_eq!(paged.items[0].name, "web");
+    }
+
+    #[test]
+    fn test_paginate_q_matches_compose_project() {
+        let fleet = vec![
+            make_project_container("web", "running", false, Some("shop")),
+            make_project_container("db", "running", false, Some("blog")),
+        ];
+        let params = normalize(ContainerListQuery {
+            q: Some("SHOP".into()),
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 1);
+        assert_eq!(paged.items[0].name, "web");
+    }
+
+    #[test]
+    fn test_paginate_filters_by_single_state_in_set() {
+        let fleet = vec![
+            make_container("web", "running", false),
+            make_container("db", "exited", false),
+            make_container("cache", "running", false),
+        ];
+        let params = normalize(ContainerListQuery {
+            state: vec!["running".into()],
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 2);
+        assert!(paged.items.iter().all(|c| c.state == "running"));
+    }
+
+    /// `state` es multi-valor: se conservan los contenedores cuyo estado está en
+    /// el conjunto (semántica OR), descartando el resto.
+    #[test]
+    fn test_paginate_filters_by_state_set_or_semantics() {
+        let fleet = vec![
+            make_container("web", "running", false),
+            make_container("db", "exited", false),
+            make_container("cache", "paused", false),
+            make_container("api", "running", false),
+        ];
+        let params = normalize(ContainerListQuery {
+            state: vec!["running".into(), "exited".into()],
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 3);
+        assert!(
+            paged
+                .items
+                .iter()
+                .all(|c| c.state == "running" || c.state == "exited"),
+            "no debe incluir 'paused': {:?}",
+            paged.items.iter().map(|c| &c.state).collect::<Vec<_>>()
+        );
+        assert!(!paged.items.iter().any(|c| c.name == "cache"));
+    }
+
+    /// Conjunto de estados vacío → no filtra por estado.
+    #[test]
+    fn test_paginate_empty_state_set_does_not_filter() {
+        let fleet = vec![
+            make_container("web", "running", false),
+            make_container("db", "exited", false),
+            make_container("cache", "paused", false),
+        ];
+        let params = normalize(ContainerListQuery {
+            state: vec![],
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 3);
+    }
+
+    #[test]
+    fn test_paginate_filters_by_has_update() {
+        let fleet = vec![
+            make_container("web", "running", true),
+            make_container("db", "running", false),
+            make_container("cache", "exited", true),
+        ];
+        let params = normalize(ContainerListQuery {
+            has_update: Some(true),
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 2);
+        assert!(paged.items.iter().all(|c| c.has_update));
+    }
+
+    #[test]
+    fn test_paginate_combined_filters_and_pagination() {
+        // 30 running, 12 con actualización → page_size=10&page=2 → 2 items.
+        let mut fleet: Vec<ContainerInfo> = (0..30)
+            .map(|i| make_project_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        for c in fleet.iter_mut().take(12) {
+            c.has_update = true;
+        }
+        fleet.push(make_container("other", "exited", true)); // no debe contar
+        let params = normalize(ContainerListQuery {
+            state: vec!["running".into()],
+            has_update: Some(true),
+            page: Some(2),
+            page_size: Some(10),
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 12);
+        assert_eq!(paged.items.len(), 2);
+    }
+
+    #[test]
+    fn test_paginate_orders_by_project_then_name() {
+        let fleet = vec![
+            make_project_container("b", "running", false, Some("beta")),
+            make_project_container("z", "running", false, Some("alpha")),
+            make_project_container("a", "running", false, Some("alpha")),
+            make_project_container("a", "running", false, Some("beta")),
+        ];
+        let paged = paginate_containers(&fleet, &ContainerListParams::default());
+        let order: Vec<(Option<&str>, &str)> = paged
+            .items
+            .iter()
+            .map(|c| (c.compose_project.as_deref(), c.name.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (Some("alpha"), "a"),
+                (Some("alpha"), "z"),
+                (Some("beta"), "a"),
+                (Some("beta"), "b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_paginate_order_is_stable_across_calls() {
+        let fleet = vec![
+            make_project_container("web", "running", false, Some("beta")),
+            make_project_container("api", "running", false, Some("alpha")),
+            make_project_container("db", "running", false, Some("alpha")),
+        ];
+        let params = ContainerListParams {
+            page_size: 10,
+            ..Default::default()
+        };
+        let first = paginate_containers(&fleet, &params);
+        let second = paginate_containers(&fleet, &params);
+        let names =
+            |p: &PagedContainers| p.items.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&first), names(&second));
+    }
+
+    #[test]
+    fn test_paginate_projects_are_contiguous() {
+        let fleet = vec![
+            make_project_container("b1", "running", false, Some("beta")),
+            make_project_container("a1", "running", false, Some("alpha")),
+            make_project_container("b2", "running", false, Some("beta")),
+            make_project_container("a2", "running", false, Some("alpha")),
+        ];
+        let paged = paginate_containers(&fleet, &ContainerListParams::default());
+        let projects: Vec<&str> = paged
+            .items
+            .iter()
+            .filter_map(|c| c.compose_project.as_deref())
+            .collect();
+        assert_eq!(projects, vec!["alpha", "alpha", "beta", "beta"]);
+    }
+
+    #[test]
+    fn test_paginate_total_counts_only_filtered() {
+        let fleet = vec![
+            make_container("web", "running", false),
+            make_container("db", "exited", false),
+        ];
+        let params = normalize(ContainerListQuery {
+            state: vec!["exited".into()],
+            ..Default::default()
+        });
+        let paged = paginate_containers(&fleet, &params);
+        assert_eq!(paged.total, 1);
+    }
+
+    #[test]
+    fn test_paginate_empty_input() {
+        let paged = paginate_containers(&[], &ContainerListParams::default());
+        assert!(paged.items.is_empty());
+        assert_eq!(paged.total, 0);
+        assert_eq!(paged.page, 1);
+        assert_eq!(paged.page_size, 20);
+    }
+
+    // ── query: deserialización, normalización y validación ─────
+
+    #[test]
+    fn test_query_normalize_defaults() {
+        let params = normalize(ContainerListQuery::default());
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 20);
+        assert_eq!(params.q, None);
+        assert!(params.state.is_empty());
+        assert_eq!(params.has_update, None);
+    }
+
+    #[test]
+    fn test_query_deserializes_defaults_from_empty_query_string() {
+        let uri: axum::http::Uri = "/api/containers".parse().expect("uri válida");
+        let Query(query) = Query::<ContainerListQuery>::try_from_uri(&uri).expect("query vacía");
+        let params = normalize(query);
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 20);
+    }
+
+    #[test]
+    fn test_query_deserializes_all_params() {
+        let uri: axum::http::Uri =
+            "/api/containers?page=2&page_size=50&q=web&state=running&has_update=true"
+                .parse()
+                .expect("uri válida");
+        let Query(query) = Query::<ContainerListQuery>::try_from_uri(&uri).expect("query válida");
+        let params = normalize(query);
+        assert_eq!(params.page, 2);
+        assert_eq!(params.page_size, 50);
+        assert_eq!(params.q.as_deref(), Some("web"));
+        assert_eq!(params.state, vec!["running".to_string()]);
+        assert_eq!(params.has_update, Some(true));
+    }
+
+    /// `state` puede repetirse: `?state=running&state=exited` llega como dos valores.
+    #[test]
+    fn test_query_deserializes_repeated_state_values() {
+        let uri: axum::http::Uri = "/api/containers?state=running&state=exited"
+            .parse()
+            .expect("uri válida");
+        let Query(query) = Query::<ContainerListQuery>::try_from_uri(&uri).expect("query válida");
+        let params = normalize(query);
+        assert_eq!(
+            params.state,
+            vec!["running".to_string(), "exited".to_string()]
+        );
+    }
+
+    /// Un único `state` sigue funcionando.
+    #[test]
+    fn test_query_deserializes_single_state_value() {
+        let uri: axum::http::Uri = "/api/containers?state=running".parse().expect("uri válida");
+        let Query(query) = Query::<ContainerListQuery>::try_from_uri(&uri).expect("query válida");
+        let params = normalize(query);
+        assert_eq!(params.state, vec!["running".to_string()]);
+    }
+
+    /// Sin `state` → conjunto vacío (no filtra).
+    #[test]
+    fn test_query_deserializes_absent_state_as_empty_set() {
+        let uri: axum::http::Uri = "/api/containers?page=1".parse().expect("uri válida");
+        let Query(query) = Query::<ContainerListQuery>::try_from_uri(&uri).expect("query válida");
+        let params = normalize(query);
+        assert!(params.state.is_empty());
+    }
+
+    /// `normalize` recorta cada valor, descarta los vacíos y deduplica.
+    #[test]
+    fn test_query_normalize_trims_and_dedups_state_values() {
+        let query = ContainerListQuery {
+            state: vec![
+                "  ".into(),
+                " running ".into(),
+                "running".into(),
+                "exited".into(),
+                "".into(),
+            ],
+            ..Default::default()
+        };
+        let params = normalize(query);
+        assert_eq!(
+            params.state,
+            vec!["running".to_string(), "exited".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_query_normalize_page_zero_is_bad_request() {
+        let query = ContainerListQuery {
+            page: Some(0),
+            ..Default::default()
+        };
+        let err = query.normalize().expect_err("page=0 debe rechazarse");
+        assert!(matches!(&err, AppError::BadRequest(_)));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_query_normalize_invalid_page_size_is_bad_request() {
+        let query = ContainerListQuery {
+            page_size: Some(30),
+            ..Default::default()
+        };
+        let err = query.normalize().expect_err("page_size=30 debe rechazarse");
+        assert!(matches!(&err, AppError::BadRequest(_)));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_query_normalize_accepts_all_allowed_page_sizes() {
+        for size in ALLOWED_PAGE_SIZES {
+            let query = ContainerListQuery {
+                page_size: Some(size),
+                ..Default::default()
+            };
+            assert_eq!(normalize(query).page_size, size);
+        }
+    }
+
+    #[test]
+    fn test_query_normalize_trims_blank_filters() {
+        let query = ContainerListQuery {
+            q: Some("  ".into()),
+            state: vec!["  ".into()],
+            ..Default::default()
+        };
+        let params = normalize(query);
+        assert_eq!(params.q, None);
+        assert!(params.state.is_empty());
+    }
+
+    #[test]
+    fn test_state_response_serialization_exposes_pagination_fields() {
+        let response = StateResponse {
+            containers: vec![],
+            summary: compute_summary(&[]),
+            progress: BatchProgress::default(),
+            page: 3,
+            page_size: 50,
+            total: 123,
+        };
+        let json = serde_json::to_value(&response).expect("serializa");
+        assert_eq!(json["page"], 3);
+        assert_eq!(json["page_size"], 50);
+        assert_eq!(json["total"], 123);
     }
 }

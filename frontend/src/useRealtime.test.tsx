@@ -10,6 +10,7 @@ import type {
 } from "./types";
 
 interface HarnessProps {
+  query?: string;
   onState: (s: StateResponse) => void;
   onContainerEvent?: (e: ContainerEvent) => void;
   onProgress?: (p: UpdateProgress) => void;
@@ -24,6 +25,9 @@ function Harness(props: HarnessProps) {
 
 const stateResponse: StateResponse = {
   containers: [],
+  total: 1,
+  page: 1,
+  page_size: 20,
   summary: {
     total: 1,
     running: 1,
@@ -54,6 +58,21 @@ describe("useRealtime", () => {
     expect(es.url).toBe("/api/stream");
     expect(es.withCredentials).toBe(true);
     expect(screen.getByTestId("status").textContent).toBe("sse");
+  });
+
+  it("reopens the stream with the new query when it changes", () => {
+    const { rerender } = render(
+      <Harness onState={vi.fn()} query="page=1&page_size=20" />,
+    );
+    expect(EventSourceMock.last()!.url).toBe("/api/stream?page=1&page_size=20");
+
+    rerender(<Harness onState={vi.fn()} query="page=2&page_size=20" />);
+
+    expect(EventSourceMock.instances).toHaveLength(2);
+    expect(EventSourceMock.instances[0].closed).toBe(true);
+    expect(EventSourceMock.last()!.url).toBe(
+      "/api/stream?page=2&page_size=20",
+    );
   });
 
   it("processes a snapshot event into onState", () => {

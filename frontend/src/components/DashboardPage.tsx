@@ -31,7 +31,6 @@ import type { BatchResults } from "./BatchProgress";
 // ── Props ────────────────────────────────────────────────────
 interface DashboardPageProps {
   containers: ContainerInfo[];
-  setContainers: React.Dispatch<React.SetStateAction<ContainerInfo[]>>;
   progress: BatchProgress;
   containersLoaded: boolean;
   // Batch state (managed in App to survive tab switches)
@@ -45,6 +44,21 @@ interface DashboardPageProps {
   summary: ContainerSummary;
   /** Names of containers to briefly highlight after a realtime state change. */
   highlights?: Record<string, boolean>;
+  // Server-side filters (owned by App, which builds the query)
+  searchQuery: string;
+  /** Search value already debounced by App — used to reset list state. */
+  debouncedSearch: string;
+  setSearchQuery: (q: string) => void;
+  stateFilter: string[];
+  setStateFilter: (f: string[]) => void;
+  showPendingUpdates: boolean;
+  setShowPendingUpdates: (v: boolean) => void;
+  // Server-side pagination (owned by App)
+  total: number;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
 }
 
 /** Keyframes for the transient container highlight (desktop + mobile). */
@@ -76,6 +90,18 @@ export default function DashboardPage({
   onCheckAll,
   summary,
   highlights,
+  searchQuery,
+  debouncedSearch,
+  setSearchQuery,
+  stateFilter,
+  setStateFilter,
+  showPendingUpdates,
+  setShowPendingUpdates,
+  total,
+  page,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
 }: DashboardPageProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
 
@@ -99,9 +125,18 @@ export default function DashboardPage({
   const [expandedStacks, setExpandedStacks] = useState<Record<string, boolean>>(
     {},
   );
-  const [searchQuery, setSearchQuery] = useState("");
-  const [stateFilter, setStateFilter] = useState<string[]>([]);
-  const [showPendingUpdates, setShowPendingUpdates] = useState(false);
+
+  // Collapse expanded rows/stacks whenever the page or the *debounced* search
+  // (or another filter) changes, so we never keep expansion state for
+  // containers that left the page. Using the debounced value means typing does
+  // not collapse rows until the search is actually applied.
+  const listKey = `${page}|${pageSize}|${debouncedSearch}|${stateFilter.join(",")}|${showPendingUpdates}`;
+  const [lastListKey, setLastListKey] = useState(listKey);
+  if (lastListKey !== listKey) {
+    setLastListKey(listKey);
+    setExpandedRows({});
+    setExpandedStacks({});
+  }
 
   // ── Computed ──────────────────────────────────────────────
   const containerInfo = useMemo(() => {
@@ -118,32 +153,20 @@ export default function DashboardPage({
     return checkConfig?.next_run_at ?? null;
   }, [checkConfig]);
 
+  // Filtering happens on the server; keep active filters in the tag list so
+  // they remain visible and removable even when absent from the current page.
   const availableStates = useMemo(
-    () => Array.from(new Set(containers.map((c) => c.state))).sort(),
-    [containers],
+    () =>
+      Array.from(
+        new Set([...containers.map((c) => c.state), ...stateFilter]),
+      ).sort(),
+    [containers, stateFilter],
   );
-
-  const filteredContainers = useMemo(() => {
-    return containers.filter((c) => {
-      if (showPendingUpdates && !c.has_update) return false;
-      if (stateFilter.length > 0 && !stateFilter.includes(c.state))
-        return false;
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        return (
-          c.name.toLowerCase().includes(q) ||
-          c.image.toLowerCase().includes(q) ||
-          (c.compose_project || "").toLowerCase().includes(q)
-        );
-      }
-      return true;
-    });
-  }, [containers, searchQuery, stateFilter, showPendingUpdates]);
 
   const { sortedGroups, noStack } = useMemo(() => {
     const grouped: Record<string, ContainerInfo[]> = {};
     const ungrouped: ContainerInfo[] = [];
-    for (const c of filteredContainers) {
+    for (const c of containers) {
       if (c.compose_project) {
         (grouped[c.compose_project] ||= []).push(c);
       } else {
@@ -154,7 +177,7 @@ export default function DashboardPage({
       a.localeCompare(b),
     );
     return { sortedGroups: sorted, noStack: ungrouped };
-  }, [filteredContainers]);
+  }, [containers]);
 
   const statsRunning = summary.running;
   const statsStopped = summary.stopped;
@@ -196,9 +219,6 @@ export default function DashboardPage({
 
   useEffect(() => {
     if (!logsContainer) return;
-    setLogs([]);
-    setLogError(null);
-    setLogTimeout(false);
     const timeoutId = setTimeout(() => {
       setLogTimeout(true);
     }, 5000);
@@ -267,7 +287,11 @@ export default function DashboardPage({
 
   const handleLogs = (name: string) => {
     setLogsContainer(name);
+    // Los reseteos viven en el event handler (no en el efecto) para no
+    // encadenar renders: el efecto solo sincroniza con el EventSource.
     setLogs([]);
+    setLogError(null);
+    setLogTimeout(false);
   };
 
   const handleRemove = async (name: string) => {
@@ -374,7 +398,11 @@ export default function DashboardPage({
             }}
             onClick={() => toggleStackExpand(project)}
           >
-            <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
+            <Typography.Text
+              strong
+              style={{ fontSize: 14, minWidth: 0, maxWidth: "100%" }}
+              ellipsis
+            >
               <AppstoreOutlined /> {project}
             </Typography.Text>
             <div style={{ marginTop: 4 }}>
@@ -433,7 +461,11 @@ export default function DashboardPage({
             align="center"
             style={{ minWidth: 0, flex: 1, overflow: "hidden" }}
           >
-            <Typography.Text strong style={{ fontSize: 14 }} ellipsis>
+            <Typography.Text
+              strong
+              style={{ fontSize: 14, minWidth: 0, maxWidth: "100%" }}
+              ellipsis
+            >
               <AppstoreOutlined /> {project}
             </Typography.Text>
             <Tag color={running === items.length ? "success" : "warning"}>
@@ -467,7 +499,7 @@ export default function DashboardPage({
                 fontSize: isMobile ? 14 : 20,
               }}
             >
-              {containers.length}
+              {summary.total}
             </Typography.Text>
             <Typography.Text
               type="secondary"
@@ -569,6 +601,11 @@ export default function DashboardPage({
         renderGroup={renderGroup}
         renderRow={renderRow}
         batchPhase={batchPhase}
+        total={total}
+        page={page}
+        pageSize={pageSize}
+        onPageChange={onPageChange}
+        onPageSizeChange={onPageSizeChange}
       />
 
       {/* Inspect modal */}

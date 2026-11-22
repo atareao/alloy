@@ -22,13 +22,17 @@ Paquetes actualizados y versión mínima parcheada:
 |---|---|---|---|
 | undici | 7.30.0 | 7.30.2 | `jsdom` (dev/test) |
 | vite | 8.1.5 | 8.3.6 | devDependency directa |
-| vitest | 4.1.11 | 4.1.12 | devDependency directa |
-| @vitest/mocker | 4.1.11 | 4.1.12 | `vitest` |
+| vitest | 4.1.11 | 5.1.1 | devDependency directa |
+| @vitest/mocker | 4.1.11 | 5.1.1 | `vitest` |
 | postcss | 8.5.15 | 8.5.32 | `vite` |
 | source-map-js | 1.2.1 | 1.2.2 | `postcss` / `css-tree` |
 | rustls | 0.23.42 | 0.23.46 | `bollard` / `reqwest` |
 
 `launch-editor` (avisos atribuidos a `vite`) desaparece: `vite` 8.3.6 ya no lo usa.
+
+> Nota: la remediación de seguridad se aplicó sobre la serie 4 de `vitest`. El salto a la
+> serie 5 (`vitest`/`@vitest/mocker` 5.1.1), a `jsdom` 31.0.1 y a `@testing-library/jest-dom`
+> 8.0.0 llegó después con el change `deps-major` (fase 2).
 
 ## Configuración
 
@@ -49,8 +53,8 @@ gh api repos/atareao/alloy/dependabot/alerts --jq '[.[]|select(.state=="open")]|
 - `pnpm-lock.yaml` se regeneró con `pnpm@11.21.0` (la versión de `packageManager`) y se validó
   con `pnpm install --frozen-lockfile`; los *specifiers* del importer se mantuvieron en los
   valores del manifest para no romper el build Docker.
-- Se conserva `@testing-library/jest-dom` en `6.9.1` (la `6.10.0` está deprecada por breaking
-  changes).
+- Se conserva `@testing-library/jest-dom` en la serie 6 dentro de esta remediación; en el
+  change `deps-major` (fase 2) se sube a `8.0.0` (la capa a la `6.10.0` deprecada ya no aplica).
 
 ## Follow-ups
 

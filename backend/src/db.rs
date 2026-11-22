@@ -114,11 +114,16 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
+/// Crea una pool de test `:memory:` a partir de una `PoolConfig` y le aplica el
+/// esquema real (`apply_schema`), de modo que el esquema de test no pueda divergir
+/// del de producción. La conexión en memoria vive mientras la pool la retenga.
 #[cfg(test)]
-pub fn test_pool() -> DbPool {
-    let pool = PoolConfig::new(":memory:")
+fn pool_with_schema(builder: PoolConfig) -> DbPool {
+    let pool = builder
         .create_pool(Runtime::Tokio1)
         .expect("Failed to create test pool");
+    // `apply_schema` es síncrono; se ejecuta en su propio hilo con runtime para no
+    // exigir un contexto Tokio al llamante.
     let conn = std::thread::spawn({
         let pool = pool.clone();
         move || {
@@ -132,6 +137,25 @@ pub fn test_pool() -> DbPool {
     });
     conn.join().unwrap();
     pool
+}
+
+#[cfg(test)]
+pub fn test_pool() -> DbPool {
+    pool_with_schema(PoolConfig::new(":memory:"))
+}
+
+/// Pool de test con `max_size` conexiones. Con `max_size == 1` permite saturar la
+/// pool (una única conexión ocupada por el test) para comprobar que ningún handler
+/// bloquea el mutex de `Settings` mientras espera una conexión.
+#[cfg(test)]
+pub fn test_pool_with_max_size(max_size: usize) -> DbPool {
+    // `deadpool_sqlite::PoolConfig` es el `deadpool::managed::PoolConfig` reexportado
+    // (el `Config` de SQLite se importa como `PoolConfig` en la cabecera).
+    let config = PoolConfig {
+        path: ":memory:".into(),
+        pool: Some(deadpool_sqlite::PoolConfig::new(max_size)),
+    };
+    pool_with_schema(config)
 }
 
 // ── Containers ───────────────────────────────────────────────
@@ -570,6 +594,12 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
             .get("update_health_window_secs")
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_UPDATE_HEALTH_WINDOW_SECS),
+        default_max_start_attempts: map
+            .get("default_max_start_attempts")
+            .and_then(|v| v.parse().ok()),
+        default_health_window_secs: map
+            .get("default_health_window_secs")
+            .and_then(|v| v.parse().ok()),
     })
 }
 
@@ -628,6 +658,14 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         (
             "update_health_window_secs",
             Some(settings.update_health_window_secs.to_string()),
+        ),
+        (
+            "default_max_start_attempts",
+            settings.default_max_start_attempts.map(|v| v.to_string()),
+        ),
+        (
+            "default_health_window_secs",
+            settings.default_health_window_secs.map(|v| v.to_string()),
         ),
     ];
 

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     response::sse::{Event, KeepAlive, Sse},
     response::Json,
     routing::{get, post},
@@ -46,11 +46,19 @@ pub async fn find_container_by_name(
         .ok_or_else(|| AppError::NotFound(format!("Container '{}' not found", name)))
 }
 
+/// Recupera la lista de contenedores enriquecida con el estado persistido en
+/// la base de datos.
+///
+/// El resultado depende de la BD (flags `has_update`, timestamps y digests
+/// persistidos), por lo que un fallo de pool o de `Mutex` de conexión se
+/// propaga como [`AppError`] en lugar de degradar silenciosamente a `[]`. Los
+/// call-sites best-effort (workers, refrescos de estado) deciden entonces si
+/// registran el fallo y continúan.
 pub async fn fetch_containers(
     docker: &Docker,
     allowed: &Option<Vec<String>>,
     db_pool: &DbPool,
-) -> Vec<ContainerInfo> {
+) -> Result<Vec<ContainerInfo>, AppError> {
     let containers = docker
         .list_containers(Some(ListContainersOptions::<String> {
             all: true,
@@ -84,101 +92,70 @@ pub async fn fetch_containers(
 
     // Step 2: Read persisted has_update from DB
     let has_update_map: std::collections::HashMap<String, bool> = {
-        let conn = db_pool.get().await.unwrap();
-        let guard = conn.lock().unwrap();
-        let prepare_result = guard.prepare("SELECT name, has_update FROM containers");
-        let mut stmt = match prepare_result {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("fetch_containers: DB prepare failed: {}", e);
-                return Vec::new();
-            }
-        };
-        let rows = match stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let hu: i32 = row.get(1)?;
-            Ok((name, hu != 0))
-        }) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("fetch_containers: DB query failed: {}", e);
-                return Vec::new();
-            }
-        };
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let mut stmt = guard
+            .prepare("SELECT name, has_update FROM containers")
+            .map_err(AppError::from_pool)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let hu: i32 = row.get(1)?;
+                Ok((name, hu != 0))
+            })
+            .map_err(AppError::from_pool)?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
     // Step 2b: Read persisted last_check / next_check from DB
     let check_times_map = {
-        let conn = match db_pool.get().await {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("fetch_containers: check_times DB error");
-                return Vec::new();
-            }
-        };
-        let guard = conn.lock().unwrap();
-        let mut stmt = match guard.prepare(
-            "SELECT name, last_check, next_check FROM containers WHERE last_check IS NOT NULL",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let rows = match stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let lc: Option<String> = row.get(1)?;
-            let nc: Option<String> = row.get(2)?;
-            Ok((name, (lc, nc)))
-        }) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let mut stmt = guard
+            .prepare(
+                "SELECT name, last_check, next_check FROM containers WHERE last_check IS NOT NULL",
+            )
+            .map_err(AppError::from_pool)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let lc: Option<String> = row.get(1)?;
+                let nc: Option<String> = row.get(2)?;
+                Ok((name, (lc, nc)))
+            })
+            .map_err(AppError::from_pool)?;
         let map: std::collections::HashMap<_, _> = rows.filter_map(|r| r.ok()).collect();
         map
     };
 
     // Step 2c: Read persisted last_remote_digest from DB
     let last_remote_digest_map: std::collections::HashMap<String, String> = {
-        let conn = match db_pool.get().await {
-            Ok(c) => c,
-            Err(_) => {
-                tracing::warn!("fetch_containers: last_remote_digest DB error");
-                return Vec::new();
-            }
-        };
-        let guard = conn.lock().unwrap();
-        let mut stmt = match guard.prepare(
-            "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let rows = match stmt.query_map([], |row| {
-            let name: String = row.get(0)?;
-            let digest: String = row.get(1)?;
-            Ok((name, digest))
-        }) {
-            Ok(r) => r,
-            Err(_) => return Vec::new(),
-        };
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        let mut stmt = guard
+            .prepare(
+                "SELECT name, last_remote_digest FROM containers WHERE last_remote_digest != ''",
+            )
+            .map_err(AppError::from_pool)?;
+        let rows = stmt
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let digest: String = row.get(1)?;
+                Ok((name, digest))
+            })
+            .map_err(AppError::from_pool)?;
         rows.filter_map(|r| r.ok()).collect()
     };
 
     // Step 2c-bis: Read persisted last_pulled_digest (local image cache) from DB
-    let last_pulled_digest_map: std::collections::HashMap<String, String> =
-        match db_pool.get().await {
-            Ok(conn) => match conn.lock() {
-                Ok(guard) => crate::db::load_last_pulled_digest_map(&guard),
-                Err(_) => std::collections::HashMap::new(),
-            },
-            Err(_) => {
-                tracing::warn!("fetch_containers: last_pulled_digest DB error");
-                std::collections::HashMap::new()
-            }
-        };
+    let last_pulled_digest_map: std::collections::HashMap<String, String> = {
+        let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+        let guard = conn.lock().map_err(AppError::from_pool)?;
+        crate::db::load_last_pulled_digest_map(&guard)
+    };
 
     // Step 3: Build ContainerInfo list (now all image names are resolved)
-    containers
+    Ok(containers
         .iter()
         .filter_map(|c| {
             let name = c
@@ -319,7 +296,7 @@ pub async fn fetch_containers(
                     .unwrap_or_default(),
             })
         })
-        .collect()
+        .collect())
 }
 
 /// Remove an old image by its digest/ID after a successful update.
@@ -517,18 +494,33 @@ pub async fn pull_image(
     }
 }
 
+/// `GET /api/containers` — listado paginado y filtrado de la flota.
+///
+/// Acepta `page`, `page_size`, `q`, `state` y `has_update` (ver
+/// [`ContainerListQuery`]). Devuelve `{ items, total, page, page_size }`, con
+/// `total` calculado tras filtrar. Parámetros inválidos → HTTP 400.
 async fn list_containers_h(
     State(cache): State<CachedContainers>,
     State(docker): State<Docker>,
     State(db_pool): State<DbPool>,
-) -> Json<Vec<ContainerInfo>> {
-    let cached = cache.read().await;
-    if let Some(containers) = cached.as_ref() {
-        Json(containers.clone())
-    } else {
-        drop(cached);
-        Json(fetch_containers(&docker, &None, &db_pool).await)
-    }
+    Query(query): Query<ContainerListQuery>,
+) -> Result<Json<PagedContainers>, AppError> {
+    let params = query.normalize()?;
+
+    // La lista es la respuesta: si hay que leerla de la BD y esta falla, se
+    // devuelve `AppError` (HTTP 500) en lugar de un `200 []` engañoso.
+    let containers = {
+        let cached = cache.read().await;
+        match cached.as_ref() {
+            Some(containers) => containers.clone(),
+            None => {
+                drop(cached);
+                fetch_containers(&docker, &None, &db_pool).await?
+            }
+        }
+    };
+
+    Ok(Json(paginate_containers(&containers, &params)))
 }
 
 async fn inspect_container_h(
@@ -758,7 +750,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let result = fetch_containers(&docker, &None, &pool).await;
+        let result = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         assert!(!result.is_empty(), "Should have at least one container");
         assert!(
             result.iter().any(|c| c.name == f.name()),
@@ -773,7 +767,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let containers = fetch_containers(&docker, &None, &pool).await;
+        let containers = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         let c = containers
             .iter()
             .find(|c| c.name == f.name())
@@ -795,7 +791,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let containers = fetch_containers(&docker, &None, &pool).await;
+        let containers = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         for c in &containers {
             // Every container must have these basic fields
             assert!(!c.id.is_empty(), "ID should not be empty for {}", c.name);
@@ -840,7 +838,9 @@ mod tests {
         let f2 = FixtureContainer::run("alloy-it").await;
         let allowed_names = vec![f1.name().to_string(), f2.name().to_string()];
         let allowed = Some(allowed_names.clone());
-        let containers = fetch_containers(&docker, &allowed, &pool).await;
+        let containers = fetch_containers(&docker, &allowed, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         for c in &containers {
             assert!(
                 allowed_names.contains(&c.name),
@@ -862,7 +862,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let allowed = Some(Vec::new());
-        let containers = fetch_containers(&docker, &allowed, &pool).await;
+        let containers = fetch_containers(&docker, &allowed, &pool)
+            .await
+            .expect("fetch_containers should succeed");
         assert!(
             containers.is_empty(),
             "Empty allowed list should return nothing"
@@ -955,7 +957,9 @@ mod tests {
         let docker = podman_client();
         let pool = test_pool();
         let f = FixtureContainer::run("alloy-it").await;
-        let containers = fetch_containers(&docker, &None, &pool).await;
+        let containers = fetch_containers(&docker, &None, &pool)
+            .await
+            .expect("fetch_containers should succeed");
 
         assert!(
             containers
@@ -975,6 +979,264 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ── listado paginado (container-list-pagination) ──────────
+
+    /// Contenedor mínimo para los tests de router del listado.
+    fn make_listed_container(
+        name: &str,
+        state: &str,
+        has_update: bool,
+        project: Option<&str>,
+    ) -> ContainerInfo {
+        ContainerInfo {
+            id: name.to_string(),
+            name: name.to_string(),
+            image: format!("{name}:latest"),
+            image_tag: "latest".into(),
+            size_mb: 1.0,
+            status: state.to_string(),
+            state: state.to_string(),
+            has_update,
+            updating: false,
+            compose_project: project.map(str::to_string),
+            ports: vec![],
+            traefik_url: None,
+            registry_url: String::new(),
+            last_check: None,
+            next_check: None,
+            last_remote_digest: String::new(),
+            last_pulled_digest: String::new(),
+        }
+    }
+
+    /// Router con el listado montado y la cache ya poblada (sin tocar el daemon).
+    async fn list_app(containers: Vec<ContainerInfo>) -> Router {
+        let state =
+            crate::test_support::test_app_state(crate::config::Config::default(), test_pool());
+        *state.cached_containers.write().await = Some(containers);
+        routes().with_state(state)
+    }
+
+    async fn get_json(app: Router, uri: &str) -> (axum::http::StatusCode, serde_json::Value) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_returns_default_page_of_twentyfive() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(list_app(containers).await, "/api/containers").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["page_size"], 20);
+        assert_eq!(json["total"], 25);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(20));
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_second_page_returns_five() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?page=2&page_size=20",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(5));
+        assert_eq!(json["total"], 25);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_page_beyond_end_is_empty_with_real_total() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(list_app(containers).await, "/api/containers?page=99").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(0));
+        assert_eq!(json["total"], 25);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_page_size_30_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page_size=30",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_page_zero_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page=0",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    // ── casos límite de la query ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_non_numeric_page_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page=abc",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_non_boolean_has_update_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?has_update=maybe",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_rejects_negative_page_size_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page_size=-1",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// `4294967296` no cabe en `u32` → la deserialización falla con 400.
+    #[tokio::test]
+    async fn test_list_containers_rejects_u32_overflow_page_with_400() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?page=4294967296",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// Clave escalar repetida (`?page=1&page=2`): last-wins, no 400.
+    #[tokio::test]
+    async fn test_list_containers_repeated_scalar_uses_last_value() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:02}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?page=1&page=2&page_size=20",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["page"], 2, "debe aplicarse el último valor");
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(5));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// Clave desconocida (`?pageSize=50`): se ignora y cae al default.
+    #[tokio::test]
+    async fn test_list_containers_ignores_unknown_query_keys() {
+        let (status, json) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?pageSize=50",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["page_size"], 20, "typo ignorado → default");
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_filters_by_state_and_has_update() {
+        let containers = vec![
+            make_listed_container("web", "running", true, None),
+            make_listed_container("api", "running", false, None),
+            make_listed_container("db", "exited", true, None),
+        ];
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?state=running&has_update=true",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["total"], 1);
+        assert_eq!(json["items"][0]["name"], "web");
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_q_searches_name_image_and_project() {
+        let containers = vec![
+            make_listed_container("web", "running", false, Some("shop")),
+            make_listed_container("db", "running", false, Some("blog")),
+        ];
+        let (status, json) = get_json(list_app(containers).await, "/api/containers?q=BLOG").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["total"], 1);
+        assert_eq!(json["items"][0]["name"], "db");
+    }
+
+    #[tokio::test]
+    async fn test_list_containers_accepts_repeated_state_params() {
+        let containers = vec![
+            make_listed_container("web", "running", false, None),
+            make_listed_container("db", "exited", false, None),
+            make_listed_container("cache", "paused", false, None),
+        ];
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?state=running&state=exited",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["total"], 2);
+        let names: Vec<&str> = json["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .filter_map(|v| v["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"web") && names.contains(&"db"),
+            "deben aparecer running y exited: {names:?}"
+        );
+        assert!(
+            !names.contains(&"cache"),
+            "no debe aparecer paused: {names:?}"
+        );
     }
 
     // ── strip_name ───────────────────────────────────────────
