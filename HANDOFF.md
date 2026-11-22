@@ -3,7 +3,7 @@
 ## Estado
 
 Última release: **v0.27.0** (`ghcr.io/atareao/alloy:0.27.0` y `:latest`); `main` **= `7b34d4f`**.
-`develop` restaurada y apuntando a `7b34d4f` (ver Notas). co1 corre **0.27.0**. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
+`develop` va por delante de `main` con **#188**, **#189** y **#190** (PRs **#191**, **#192**, **#193**, mergeados). co1 corre **0.27.0**. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
 
 ### Completado esta sesión (repo)
 
@@ -43,6 +43,18 @@
   - `curl -I https://alloy.territoriolinux.es/` devuelve la CSP (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`), junto a `x-frame-options: DENY`, `x-content-type-options: nosniff`, `referrer-policy` y HSTS.
   - La SPA renderiza bajo CSP (`#root` poblado con clases `ant-*`, sin violaciones en la consola de Chrome headless).
   - `/api/health` → `{"docker":true,"status":"ok"}`; `/api/stream` y `/api/auth/sse-token` sin sesión → 401.
+- **#188** `inspect-modal-image` → **PR #191** (`423a3b9`).
+  - Imagen del contenedor en `InspectModal` con elipsis + tooltip, `minWidth: 0` y fallback `image:tag`; `InfoRow` extraído y tipos reutilizados (`Pick<ContainerInfo,...>`).
+  - **209 tests** frontend. Auditoría `@react-reviewer`: **apto** en 2ª ronda (bloqueantes: test de no-desbordamiento y test falso-verde).
+  - Change archivado: `openspec/specs/ui/inspect-modal/spec.md`. Doc: `docs/inspect-modal-image.md`. Plan: `plans/PLAN-026-ARCHIVED.md`.
+- **#189** `oxlint` → **PR #193**.
+  - Verificación + doc: `pnpm run lint` (`oxlint --deny-warnings`) exit 0 con 0 diagnósticos; el job `frontend` de `ci.yml` lo hace cumplir.
+  - Doc: `docs/oxlint-zero-warnings.md` (131 reglas: 129 `correctness` + 2 explícitas). Plan: `plans/PLAN-027-ARCHIVED.md`.
+- **#190** `dedupe-antd-cssinjs` → **PR #192** (`1c7f2d2`).
+  - `overrides` en `frontend/pnpm-workspace.yaml` fijando `@ant-design/cssinjs@2.1.2` (pnpm ≥11 ignora el campo `pnpm` de `package.json`); lock con una sola versión; bundle −7,6 kB.
+  - `Dockerfile` copia el workspace antes de `pnpm install --frozen-lockfile` (fallaba con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`); `ci.yml` cachea también el workspace. **209 tests**.
+  - Auditoría `@react-reviewer`: no apto en 1ª ronda (Dockerfile y spec con mecanismo falso), corregido y re-validado.
+  - Change archivado: `openspec/specs/frontend/deps-dedupe/spec.md`. Docs: `docs/dedupe-antd-cssinjs.md`, `docs/frontend-deps.md`. Plan: `plans/PLAN-028-ARCHIVED.md`.
 
 ### Pendiente
 
@@ -50,9 +62,9 @@
 
 ### Follow-ups / deuda conocida
 
-- Mostrar la imagen del contenedor dentro de `InspectModal` (la parte 1 la dejó fuera de la fila).
-- `oxlint` ya con `--deny-warnings`; vigilar que no aparezcan warnings nuevas.
-- Duplicado upstream de `@ant-design/cssinjs` (2.1.2 + 2.2.0) introducido por antd 6.7.1.
+- El tooltip de la imagen truncada en `InspectModal` no es accesible por teclado (falta `tabIndex={0}`/`aria-label`; limitación de AntD ya presente en `ContainerRow`). Ver `docs/inspect-modal-image.md`.
+- El campo `ID:` de `InspectModal` sigue sin elipsis y puede desbordar.
+- Revisar el override de `@ant-design/cssinjs` cuando antd amplíe su rango `~2.1.2` (ver `docs/dedupe-antd-cssinjs.md`).
 
 ### Backlog pendiente (sin empezar)
 
@@ -61,7 +73,7 @@
 ## Baselines de verificación
 
 - Backend: `cargo test` → **541 OK**; `just check` limpio.
-- Frontend: `npx vitest run` → **201 OK**; `pnpm exec tsc -b`, `lint`, `build` limpios.
+- Frontend: `npx vitest run` → **209 OK**; `pnpm exec tsc -b`, `lint`, `build` limpios.
 
 ## Entorno
 
@@ -71,3 +83,4 @@
 
 - No quedan issues abiertos; los PRs se fusionan con `--merge --delete-branch` solo cuando el head es una rama `feature/*` o `hotfix/*`; los issues se cerraron con `gh issue close`.
 - **Nunca** usar `gh pr merge --delete-branch` en un PR cuyo head es `develop`: borra la rama remota (pasó con el PR #186 y rompió "Sync develop with main"; se restauró con `git push origin origin/main:refs/heads/develop`).
+- `pnpm` ≥11 lee los `overrides` de `frontend/pnpm-workspace.yaml`, no del campo `pnpm` de `package.json`; el `Dockerfile` debe copiar ese fichero antes de `pnpm install --frozen-lockfile`.
