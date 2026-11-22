@@ -9,19 +9,51 @@ import {
   Tag,
   Typography,
 } from "antd";
-import type { InspectData } from "../types";
+import type { ReactNode } from "react";
+import type { ContainerInfo, InspectData } from "../types";
 
 const { Text, Link } = Typography;
+
+const LABEL_WIDTH = 140;
+
+interface InfoRowProps {
+  label: string;
+  children: ReactNode;
+}
+
+/** Fila etiqueta/valor compartida por el bloque «General» del modal. */
+function InfoRow({ label, children }: InfoRowProps) {
+  return (
+    <Flex align="center" gap={8} style={{ minWidth: 0 }}>
+      <Text
+        style={{
+          fontSize: 14,
+          fontWeight: 500,
+          width: LABEL_WIDTH,
+          flexShrink: 0,
+        }}
+      >
+        {label}
+      </Text>
+      <Flex
+        align="center"
+        style={{ flex: 1, minWidth: 0 }}
+        data-testid="info-row-value"
+      >
+        {children}
+      </Flex>
+    </Flex>
+  );
+}
 
 interface InspectModalProps {
   opened: boolean;
   onClose: () => void;
   containerName: string | null;
-  containerInfo: {
-    image: string;
-    image_tag: string;
-    registry_url: string;
-  } | null;
+  containerInfo: Pick<
+    ContainerInfo,
+    "image" | "image_tag" | "registry_url"
+  > | null;
   inspectData: InspectData | null;
   loading: boolean;
   error: string | null;
@@ -74,69 +106,58 @@ export default function InspectModal({
     },
   ];
 
+  const imageValue =
+    inspectData?.image ||
+    (containerInfo
+      ? `${containerInfo.image}:${containerInfo.image_tag}`
+      : "");
+
   const generalTab = (
     <Space direction="vertical" size="small" style={{ width: "100%" }}>
       {inspectData ? (
         <>
-          <Flex align="center" gap={8}>
-            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-              ID:
-            </Text>
+          <InfoRow label="ID:">
             <Text style={{ fontFamily: "monospace", fontSize: 11 }}>
               {inspectData.id}
             </Text>
-          </Flex>
-          <Flex align="center" gap={8}>
-            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-              Nombre:
-            </Text>
+          </InfoRow>
+          <InfoRow label="Nombre:">
             <Text style={{ fontSize: 14 }}>{inspectData.name}</Text>
-          </Flex>
-          <Flex align="center" gap={8}>
-            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-              Imagen:
+          </InfoRow>
+          <InfoRow label="Imagen:">
+            <Text
+              ellipsis={{ tooltip: imageValue }}
+              style={{ fontSize: 14, minWidth: 0 }}
+            >
+              {imageValue}
             </Text>
-            <Text style={{ fontSize: 14 }}>{inspectData.image}</Text>
-          </Flex>
-          <Flex align="center" gap={8}>
-            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-              Creado:
-            </Text>
+          </InfoRow>
+          <InfoRow label="Creado:">
             <Text style={{ fontSize: 14 }}>{inspectData.created}</Text>
-          </Flex>
-          <Flex align="center" gap={8}>
-            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-              Estado:
-            </Text>
+          </InfoRow>
+          <InfoRow label="Estado:">
             <Tag color={inspectData.state === "running" ? "success" : "error"}>
               {inspectData.state}
             </Tag>
-          </Flex>
-          <Flex align="center" gap={8}>
-            <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-              Status:
-            </Text>
+          </InfoRow>
+          <InfoRow label="Status:">
             <Text style={{ fontSize: 14 }}>{inspectData.status}</Text>
-          </Flex>
+          </InfoRow>
           {inspectData.restart_policy && (
-            <Flex align="center" gap={8}>
-              <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-                Reinicio:
+            <InfoRow label="Reinicio:">
+              <Text style={{ fontSize: 14 }}>
+                {inspectData.restart_policy}
               </Text>
-              <Text style={{ fontSize: 14 }}>{inspectData.restart_policy}</Text>
-            </Flex>
+            </InfoRow>
           )}
           {inspectData.health && (
-            <Flex align="center" gap={8}>
-              <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-                Health:
-              </Text>
+            <InfoRow label="Health:">
               <Tag
                 color={inspectData.health === "healthy" ? "success" : "warning"}
               >
                 {inspectData.health}
               </Tag>
-            </Flex>
+            </InfoRow>
           )}
           <Divider style={{ margin: "8px 0" }} />
           {containerInfo && (
@@ -144,33 +165,24 @@ export default function InspectModal({
               <Text style={{ fontSize: 14, fontWeight: 500 }}>
                 Información adicional
               </Text>
-              <Flex align="center" gap={8}>
-                <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-                  Imagen:
-                </Text>
+              <InfoRow label="Imagen:">
                 <Text style={{ fontSize: 14 }}>{containerInfo.image}</Text>
-              </Flex>
-              <Flex align="center" gap={8}>
-                <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-                  Tag:
-                </Text>
+              </InfoRow>
+              <InfoRow label="Tag:">
                 <Text style={{ fontSize: 14 }}>{containerInfo.image_tag}</Text>
-              </Flex>
+              </InfoRow>
               {containerInfo.registry_url && (
-                <Flex align="center" gap={8}>
-                  <Text style={{ fontSize: 14, fontWeight: 500, width: 140 }}>
-                    Registry:
-                  </Text>
+                <InfoRow label="Registry:">
                   <Link
                     href={containerInfo.registry_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    style={{ fontSize: 14 }}
+                    style={{ fontSize: 14, minWidth: 0 }}
                     ellipsis
                   >
                     Ver en registry
                   </Link>
-                </Flex>
+                </InfoRow>
               )}
             </>
           )}
