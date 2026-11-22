@@ -169,6 +169,12 @@ El estado se persiste en archivos JSON en `data/`. Se cargan al startup y se gua
 
 Cargados al startup via `load_json::<T>()` y guardados via `json_writer()` (flush + rename atómico).
 
+#### 7.1. Conexiones SQLite (pool) y PRAGMAs de sesión
+
+`db.rs` gestiona una pool SQLite (`DbPool`, basada en `deadpool`). Los PRAGMAs de SQLite son **por conexión**, así que `PragmaManager` —que envuelve el `Manager` de `deadpool_sqlite`— aplica `busy_timeout=5000` y `foreign_keys=ON` con `configure_connection()` a **cada** conexión recién creada, antes de entregarla como válida (si falla, la conexión no se entrega). De este modo handlers, workers y tests reciben siempre una conexión ya configurada, sin depender de los defaults de la crate.
+
+`init_db` solicita `PRAGMA journal_mode=WAL` y **verifica el modo devuelto**: si no es `wal` (p. ej. `delete` en un sistema de ficheros sin soporte WAL) emite un `tracing::warn!` accionable con el modo efectivo y su consecuencia (modo rollback más contencioso; `busy_timeout=5000` evita el `SQLITE_BUSY` inmediato), sin abortar el arranque.
+
 #### 8. Configuration
 
 Cargada desde `config.yaml` (YAML) con override de variables de entorno. Soporta **Podman Secrets** (`/run/secrets/<name>`):
