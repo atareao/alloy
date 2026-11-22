@@ -21,7 +21,7 @@ Dejar constancia verificable de que la baseline de lint está limpia con
 
 ## Tareas
 
-- [ ] `cd frontend && pnpm run lint` → sin warnings.
-- [ ] Verificar el paso de lint en `.github/workflows/ci.yml`.
-- [ ] Escribir `docs/oxlint-zero-warnings.md`.
-- [ ] Actualizar `HANDOFF.md` y cerrar #189.
+- [x] `cd frontend && pnpm run lint` → sin warnings.
+- [x] Verificar el paso de lint en `.github/workflows/ci.yml`.
+- [x] Escribir `docs/oxlint-zero-warnings.md`.
+- [ ] Actualizar `HANDOFF.md` y cerrar #189 (lo hace el orquestador).
