@@ -2,7 +2,7 @@
 
 - **Issue**: #197 (https://github.com/atareao/alloy/issues/197)
 - **Change OpenSpec**: `update-history-pagination`
-- **Estado**: implementada y verificada (TDD RED → GREEN, backend y frontend); auditorías `@rust-reviewer` y `@react-reviewer` sin hallazgos bloqueantes; pendiente de archivado del change y de PR a `develop`.
+- **Estado**: COMPLETADA — implementada, verificada y auditada; mergeada en `develop` vía PR #198; change archivado en `openspec/specs/`; issue #197 cerrado.
 - **Base gitflow**: rama `feature/update-history-pagination` desde `develop`; PR a `develop`.
 
 ## Objetivo
