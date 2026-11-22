@@ -30,6 +30,8 @@ echo -e "${YELLOW}🔍 [PRE-COMMIT] Verificando workflow SDD...${NC}"
 if has_staged_source_changes; then
   if ! has_active_proposal >/dev/null 2>&1; then
     echo -e "${RED}❌ [PRE-COMMIT] COMMIT RECHAZADO: Cambios en código fuente sin change proposal activo.${NC}"
+    echo -e "${RED}   Causa probable: archivaste el change antes de commitear (openspec archive borra el proposal).${NC}"
+    echo -e "${RED}   Orden correcto: commit → archive.${NC}"
     echo -e "${RED}   Sigue el workflow SDD:${NC}"
     echo -e "${RED}   1. Crea un change proposal: openspec change <feature-name>${NC}"
     echo -e "${RED}   2. Completa proposal.md y obtén aprobación del usuario${NC}"
