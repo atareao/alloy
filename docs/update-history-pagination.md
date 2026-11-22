@@ -140,10 +140,12 @@ cd frontend && pnpm exec tsc -b && pnpm run lint && pnpm run test && pnpm run bu
 - `AppError::Internal` (y por tanto `from_db`/`from_pool`) incluye el detalle del
   error en el cuerpo del `500`. Es un patrón **preexistente** de todo el
   proyecto; conviene corregirlo de forma global, no aquí.
-- `total` e `items` se obtienen en **dos consultas** sobre la misma conexión: un
-  `append` concurrente puede desincronizarlos momentáneamente (TOCTOU clásico de
-  paginación). Inherente al diseño; sólo importaría si se exigiera consistencia
-  estricta (envolver en una lectura transaccional).
+- ~~`total` e `items` se obtienen en **dos consultas** (TOCTOU clásico de paginación:
+  un `append` concurrente podía desincronizarlos y hacer que el cliente viera una
+  página vacía o perdiera la fila recién insertada).~~ **Resuelto**: ambas
+  consultas se ejecutan en una única transacción de lectura (`BEGIN DEFERRED`,
+  WAL) en `db::load_update_history_page_with_total`, de modo que describen la
+  misma instantánea sin bloquear a los escritores.
 - La clave de fila puede colisionar en teoría si coinciden `timestamp`,
   `container`, `image` y `status` (timestamp con precisión de segundo). El `id`
   no se expone por decisión de diseño.

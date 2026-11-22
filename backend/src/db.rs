@@ -545,7 +545,10 @@ fn escape_like(value: &str) -> String {
 /// `total` es el recuento **tras** filtrar y **sin** límite superior: no aplica
 /// el antiguo recorte de 100 filas. El filtro `q` es case-insensitive solo en
 /// ASCII (ver [`update_history_filter`]).
-pub fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> SqlResult<usize> {
+///
+/// Uso interno: la lectura pública coherente es
+/// [`load_update_history_page_with_total`].
+fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> SqlResult<usize> {
     let (where_clause, values) = update_history_filter(params);
     let sql = format!("SELECT COUNT(*) FROM update_history{where_clause}");
     let count: i64 = conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
@@ -557,7 +560,10 @@ pub fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> 
 /// Orden determinista `timestamp DESC, id DESC` (desempata por inserción) y
 /// ventana `LIMIT`/`OFFSET` derivada de `params.page`/`params.page_size`. El
 /// filtro `q` es case-insensitive solo en ASCII (ver [`update_history_filter`]).
-pub fn load_update_history_page(
+///
+/// Uso interno: la lectura pública coherente es
+/// [`load_update_history_page_with_total`].
+fn load_update_history_page(
     conn: &Connection,
     params: &UpdateHistoryParams,
 ) -> SqlResult<Vec<UpdateHistoryEntry>> {
@@ -592,6 +598,25 @@ pub fn load_update_history_page(
         result.push(r?);
     }
     Ok(result)
+}
+
+/// Recuento y página resueltos en una única transacción de lectura.
+///
+/// El `BEGIN DEFERRED` fija la instantánea en la primera lectura, de modo que un
+/// `append_update_history` concurrente no puede situarse entre el recuento y la
+/// ventana: `total` e `items` describen siempre el mismo conjunto de filas. En
+/// WAL la transacción de lectura no bloquea a los escritores.
+pub fn load_update_history_page_with_total(
+    conn: &mut Connection,
+    params: &UpdateHistoryParams,
+) -> SqlResult<(usize, Vec<UpdateHistoryEntry>)> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+    // `Transaction` implementa `Deref<Target = Connection>`, así que `&tx`
+    // coerciona a `&Connection` en ambas consultas: comparten la transacción.
+    let total = count_update_history(&tx, params)?;
+    let items = load_update_history_page(&tx, params)?;
+    tx.commit()?;
+    Ok((total, items))
 }
 
 // ── Update Policies ─────────────────────────────────────────
@@ -1983,5 +2008,155 @@ mod tests {
             total,
             "cada entrada aparece exactamente una vez"
         );
+    }
+
+    // ── update-history-toctou: recuento y página en una lectura coherente ──
+
+    fn hist_entry(container: &str, timestamp: &str) -> UpdateHistoryEntry {
+        UpdateHistoryEntry {
+            container: container.into(),
+            image: "img:latest".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: timestamp.into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        }
+    }
+
+    fn hist_params(page: u32, page_size: u32) -> UpdateHistoryParams {
+        UpdateHistoryParams {
+            page,
+            page_size,
+            ..Default::default()
+        }
+    }
+
+    /// Página llena: `total` e `items` describen la misma instantánea.
+    #[test]
+    fn test_page_with_total_consistent_for_full_page() {
+        let mut conn = test_conn();
+        for i in 0..25 {
+            append_update_history(
+                &conn,
+                &hist_entry(&format!("c{i:02}"), &format!("2024-01-01T00:00:{i:02}")),
+            )
+            .unwrap();
+        }
+
+        let (total, items) =
+            load_update_history_page_with_total(&mut conn, &hist_params(1, 50)).unwrap();
+        assert_eq!(total, 25, "total debe contar todas las filas");
+        assert_eq!(
+            items.len(),
+            25,
+            "la única página debe traer todas las filas"
+        );
+        assert_eq!(total, items.len(), "total e items deben coincidir");
+    }
+
+    /// `offset` más allá del final: página vacía pero `total` intacto.
+    #[test]
+    fn test_page_with_total_beyond_end_keeps_total() {
+        let mut conn = test_conn();
+        for i in 0..25 {
+            append_update_history(
+                &conn,
+                &hist_entry(&format!("c{i:02}"), &format!("2024-01-01T00:00:{i:02}")),
+            )
+            .unwrap();
+        }
+
+        let (total, items) =
+            load_update_history_page_with_total(&mut conn, &hist_params(99, 20)).unwrap();
+        assert!(items.is_empty(), "una página más allá del final está vacía");
+        assert_eq!(total, 25, "el total no depende de la página pedida");
+    }
+
+    /// Appends concurrentes: cada lectura debe ser una instantánea coherente.
+    ///
+    /// DB en fichero temporal (no `:memory:`, donde cada conexión abre una base
+    /// distinta) con pool de 2 conexiones. Un hilo escribe mientras el test lee
+    /// páginas con `page_size` >= total; con dos sentencias sueltas el recuento
+    /// y la ventana pueden caer a distinto lado de un commit (TOCTOU).
+    #[tokio::test]
+    async fn test_page_with_total_is_snapshot_under_concurrent_appends() {
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path: PathBuf = dir.path().join("hist.db");
+
+        let pool = pool_with_schema(PoolConfig {
+            path: path.clone(),
+            pool: Some(deadpool_sqlite::PoolConfig::new(2)),
+        });
+
+        // Semilla y modo WAL antes de arrancar el writer, para que ninguna
+        // conexión de la pool quede en journal por defecto.
+        {
+            let obj = pool.get().await.unwrap();
+            let conn = obj.lock().unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+            append_update_history(&conn, &hist_entry("seed", "2024-01-01T00:00:00")).unwrap();
+        }
+
+        let writer_done = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = std::thread::spawn({
+            let path = path.clone();
+            let writer_done = std::sync::Arc::clone(&writer_done);
+            move || {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+                for i in 0..40 {
+                    append_update_history(
+                        &conn,
+                        &hist_entry(&format!("w{i}"), &format!("2024-01-01T01:00:{:02}", i % 60)),
+                    )
+                    .unwrap();
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                writer_done.store(true, Ordering::Release);
+            }
+        });
+
+        // Se lee durante toda la vida del writer y al menos 400 veces más.
+        let mut iterations: usize = 0;
+        while !writer_done.load(Ordering::Acquire) || iterations < 400 {
+            {
+                let obj = pool.get().await.unwrap();
+                let mut conn = obj.lock().unwrap();
+                let (total, items) =
+                    load_update_history_page_with_total(&mut conn, &hist_params(1, 50)).unwrap();
+                assert!(
+                    items.len() <= 50,
+                    "la página no puede exceder page_size: {}",
+                    items.len()
+                );
+                // Se comprueba en cada iteración (no se acumula para el final):
+                // la igualdad estricta solo es exigible en la última página, que
+                // es la única con menos filas que `page_size`. Así, si el writer
+                // creciera por encima de 50 el test no se relajaría en silencio.
+                if items.len() < 50 {
+                    assert_eq!(
+                        total,
+                        items.len(),
+                        "total e items deben describir la misma instantánea"
+                    );
+                }
+            }
+            iterations += 1;
+            // Tope de seguridad: evita colgarse si el writer muere sin marcar
+            // `writer_done` (p. ej. panic dentro del hilo).
+            if iterations >= 20_000 {
+                break;
+            }
+        }
+
+        writer
+            .join()
+            .expect("el hilo writer no debe entrar en panic");
     }
 }
