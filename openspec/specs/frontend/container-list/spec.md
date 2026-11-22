@@ -1,7 +1,7 @@
 # frontend/container-list Specification
 
 ## Purpose
-TBD - created by archiving change container-row-ellipsis. Update Purpose after archive.
+Esta capability define el comportamiento de la lista de contenedores en el frontend: truncado con elipsis real, layout de la fila, paginación y filtros resueltos en el servidor, paginador 10/20/50, tiempo real ligado a página y filtros, búsqueda con debounce y reinicio de la expansión al cambiar de página.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # backend/container-pagination Specification
 
 ## Purpose
-TBD - created by archiving change container-list-pagination. Update Purpose after archive.
+Esta capability cubre la paginación y el filtrado del listado de contenedores en el servidor: parámetros `page`/`page_size`, orden determinista, entrega de la página solicitada por tiempo real y un resumen global. Garantiza respuestas consistentes y escalables para `GET /api/containers`.
 
 ## Requirements
 

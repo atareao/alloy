@@ -1,7 +1,7 @@
 # backend/update-history-lock Specification
 
 ## Purpose
-TBD - created by archiving change update-history-lock-order. Update Purpose after archive.
+Esta capability fija el orden correcto de adquisición de locks en el historial de actualizaciones: ningún guard de `update_history` debe sobrevivir al `await` de la pool, y el historial en memoria debe publicarse antes de persistir. Evita interbloqueos con los handlers que toman la conexión antes que el estado.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # docs/readme Specification
 
 ## Purpose
-TBD - created by archiving change readme-update. Update Purpose after archive.
+Esta capability mantiene el `README.md` alineado con la realidad del proyecto: la stack real de frontend y backend, la persistencia SQLite y los módulos y tests realmente existentes.
 
 ## Requirements
 

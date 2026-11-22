@@ -1,7 +1,7 @@
 # auth/session Specification
 
 ## Purpose
-TBD - created by archiving change session-expiry-fix. Update Purpose after archive.
+This capability covers server-side session expiry enforcement: rejecting idle sessions and sessions past their maximum duration, handling invalid or missing tokens gracefully, and marking the session cookie `Secure`. It guarantees that stale sessions cannot keep accessing the API and that session cookies follow secure transport rules.
 
 ## Requirements
 

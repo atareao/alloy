@@ -1,11 +1,16 @@
 # ui/layout Specification
 
 ## Purpose
-TBD - created by archiving change sidebar-to-topbar-v1. Update Purpose after archive.
+Define la estructura de navegación de Alloy basada en topbar: el `Layout.Header`
+con logo y botones de navegación en desktop y mobile, y la ausencia de `Sider`
+o menú hamburguesa.
 
 ## Requirements
 
 ### Requirement: Navegación via Topbar en desktop
+En desktop (>768px), la aplicación MUST renderizar la navegación en el
+`Layout.Header` (topbar), con el logo + "Alloy" a la izquierda y 4 botones
+(Dashboard, Historial, Config, Salir) a la derecha.
 **Given** un usuario en desktop (>768px)
 **When** se renderiza la aplicación
 **Then** el `Layout.Header` contiene el logo + "Alloy" a la izquierda
@@ -24,6 +29,9 @@ TBD - created by archiving change sidebar-to-topbar-v1. Update Purpose after arc
 **And** el botón "Historial" se muestra como activo
 
 ### Requirement: Navegación via Topbar en mobile
+En mobile (≤768px), la aplicación MUST renderizar la navegación en el
+`Layout.Header`, con el logo a la izquierda y 4 botones con solo icono a la
+derecha.
 **Given** un usuario en mobile (≤768px)
 **When** se renderiza la aplicación
 **Then** el `Layout.Header` contiene el logo a la izquierda
@@ -39,6 +47,8 @@ TBD - created by archiving change sidebar-to-topbar-v1. Update Purpose after arc
 **Then** la vista cambia a configuración
 
 ### Requirement: Sin Sider ni hamburguesa
+La aplicación MUST NOT renderizar un `Layout.Sider` ni un botón flotante de
+hamburguesa, ni mantener el estado `siderCollapsed`.
 **Given** un usuario autenticado
 **When** se renderiza la aplicación
 **Then** NO hay `Layout.Sider` en el DOM

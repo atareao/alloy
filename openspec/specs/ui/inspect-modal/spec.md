@@ -1,7 +1,7 @@
 # ui/inspect-modal Specification
 
 ## Purpose
-TBD - created by archiving change inspect-modal-image. Update Purpose after archive.
+Esta capability define el renderizado de `InspectModal`: la imagen truncada con tooltip y fallback, el bloque de información adicional condicional y la cobertura por tests de sus escenarios.
 
 ## Requirements
 
