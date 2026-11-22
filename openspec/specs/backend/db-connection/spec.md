@@ -1,7 +1,8 @@
 # backend/db-connection Specification
 
 ## Purpose
-TBD - created by archiving change db-connection-pragmas. Update Purpose after archive.
+
+Configuración de las conexiones SQLite del backend: PRAGMAs de sesión (`busy_timeout`, `foreign_keys`) aplicados a toda la pool, incluida la reaplicación al reciclar, y verificación del modo journal al arrancar con aviso si no es WAL.
 
 ## Requirements
 
