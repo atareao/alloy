@@ -43,8 +43,13 @@ function mockAuthResponse(authenticated = true) {
       // Return a promise that never resolves to prevent infinite polling loop
       return new Promise(() => {});
     }
-    if (url === "/api/history") {
-      return Promise.resolve(new Response(JSON.stringify([])));
+    if (url.startsWith("/api/history")) {
+      // Envelope paginado (D1): `HistoryPage` es quien lo consume.
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ items: [], total: 0, page: 1, page_size: 20 }),
+        ),
+      );
     }
     if (url === "/api/config") {
       return Promise.resolve(
@@ -566,5 +571,40 @@ describe("App - server-side pagination and filters", () => {
     await waitFor(() =>
       expect(EventSourceMock.last()!.url).toContain("page=2"),
     );
+  });
+});
+
+// ── El histórico ya no lo posee App (D3) ────────────────────────────
+/** URL list of every `/api/history` request issued against the mock. */
+function historyCalls(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls
+    .map((c) => c[0] as string)
+    .filter((u) => typeof u === "string" && u.startsWith("/api/history"));
+}
+
+describe("App - el histórico pasa a ser responsabilidad de HistoryPage", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    EventSourceMock.reset();
+  });
+
+  it("3.9 App ya NO solicita /api/history (no mantiene el array del histórico)", async () => {
+    const fetchMock = mockAuthResponse(true);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <Wrapper>
+        <App colorScheme="dark" setColorScheme={() => {}} />
+      </Wrapper>,
+    );
+
+    await screen.findByText("Alloy");
+    // Espera a que arranque la carga de contenedores para que el efecto de
+    // montaje de App ya haya corrido por completo.
+    await waitFor(() =>
+      expect(containerCalls(fetchMock).length).toBeGreaterThan(0),
+    );
+
+    expect(historyCalls(fetchMock)).toEqual([]);
   });
 });
