@@ -1,4 +1,19 @@
 # Changelog
+## [0.28.0] - 2026-11-22
+
+### Documentation
+
+- *(release)* Actualiza HANDOFF y deploy-co1 a v0.27.0 tras verificar la CSP
+- *(lint)* Documenta la política de cero warnings de oxlint (#189)
+- *(handoff)* Cierra los follow-ups #188, #189 y #190
+
+### Features
+
+- *(ui)* Imagen del contenedor con elipsis, tooltip y fallback en InspectModal (#188)
+
+### Other
+
+- *(frontend)* Deduplica @ant-design/cssinjs a 2.1.2 (#190)
 ## [0.27.0] - 2026-11-22
 
 ### Bug Fixes
@@ -39,6 +54,7 @@
 
 - *(cache)* Rust-cache y cache buildx en CI/release (#161)
 - *(docs)* Actualiza HANDOFF con el cierre del backlog de deuda
+- Release v0.27.0
 
 ### Other
 
