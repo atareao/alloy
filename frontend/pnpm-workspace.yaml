@@ -1,0 +1,5 @@
+# pnpm 11 reads settings from this file, not from the `pnpm` field in package.json.
+# Dedupe @ant-design/cssinjs: antd 6.7.1 wants ~2.1.2, @ant-design/cssinjs-utils
+# wants ^2.1.2. Pin 2.1.2 so a single copy is resolved (issue #190).
+overrides:
+  "@ant-design/cssinjs": "2.1.2"

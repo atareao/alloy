@@ -42,6 +42,7 @@ RUN PNPM_VERSION=$(node -p 'require("./package.json").packageManager.replace(/^p
     && npm install -g "pnpm@$PNPM_VERSION"
 
 COPY frontend/pnpm-lock.yaml ./
+COPY frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
