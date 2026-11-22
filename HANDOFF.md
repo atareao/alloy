@@ -1,86 +1,39 @@
 # HANDOFF
 
-## Estado
+## Estado: sin tareas pendientes
 
-Última release: **v0.27.0** (`ghcr.io/atareao/alloy:0.27.0` y `:latest`); `main` **= `7b34d4f`**.
-`develop` va por delante de `main` con **#188**, **#189** y **#190** (PRs **#191**, **#192**, **#193**, mergeados). co1 corre **0.27.0**. Backlog de deuda **#155–#170**: **todos cerrados** (no quedan issues abiertos).
+La feature del histórico paginado (#197) está **completa, mergeada y cerrada**. No hay trabajo en curso.
 
-### Completado esta sesión (repo)
+## Última feature cerrada — paginación y filtros del histórico (#197)
 
-- **#160** (README) mergeado y cerrado → **PR #174** (merge `d208c52`).
-- **#161** (CI cache) mergeado y cerrado → **PR #175** (merge `4ee0273`).
-- **#162** `frontend-test-coverage` implementado, verificado y publicado en **PR #176** (base `develop`).
-  - Change archivado: `openspec/specs/frontend/test-coverage/spec.md`. Doc: `docs/frontend-test-coverage.md`. Plan: `plans/PLAN-019-ARCHIVED.md`.
-- **#159 punto 4** `sse-token-auth` → **PR #173** (base `develop`) + archivado.
-  - `GET /api/auth/sse-token` emite un ticket firmado de 60 s con `purpose="sse"` y `Cache-Control: no-store`.
-  - El middleware sólo acepta `?token=` en `GET /api/stream` y sólo como ticket SSE; rechaza el JWT de sesión por query, el ticket fuera del stream, expirado, o por cookie/Bearer.
-  - La validación de sesión rechaza tokens con `purpose`; cookie/Bearer siguen funcionando.
-  - Spec: `openspec/specs/auth/sse-ticket/spec.md`. Docs: `docs/architecture.md`, `docs/backend-hardening.md`. Plan: `plans/PLAN-016-ARCHIVED.md`.
-  - Auditoría `@rust-reviewer`: **apto** (2 rondas; hallazgos no bloqueantes corregidos). Backend `cargo test` → **492 OK**.
-- **#163 fase 1** `deps-minor` mergeado → **PR #177** (merge `9860f005`).
-  - Bump de parches/menores sin cruzar majors: antd 6.7.1, react/react-dom 19.3.1, vite 8.3.8, oxlint 1.94, plugin-react 6.3.0, testing-library 16.3.3, types 19.3.0; jest-dom capado a `~6.9.1`.
-  - Change archivado: `openspec/specs/frontend/deps/spec.md`. Doc: `docs/frontend-deps.md`. Plan: `plans/PLAN-020-ARCHIVED.md`.
-  - Auditoría `@react-reviewer`: **apto**.
-- **#163 fase 2** `deps-major` → **PR #180** (`86ae6e1`), issue #163 cerrado.
-  - Majors: `vitest 5.1.1`, `jsdom 31.0.1`, `typescript 7.0.2`, `@testing-library/jest-dom 8.0.0`; `engines.node ^24.15`; ajuste en `test-setup.ts` (`@testing-library/jest-dom/vitest`).
-  - **174 tests**. Change archivado; `plans/PLAN-021-ARCHIVED.md`; `docs/frontend-deps.md`, `docs/security-dependencies.md`.
-- **#166 parte 1** `container-row-ellipsis` → **PR #181**, issue #166 cerrado junto con la parte 2.
-  - Elipsis real con tooltip, `minWidth: 0`, `flexShrink: 0`.
-  - **179 tests**. Change archivado; `plans/PLAN-022-ARCHIVED.md`; `docs/container-row-ellipsis.md`.
-- **#166 parte 2** `container-list-pagination` → **PR #182** (`0c4468d`).
-  - Paginación y filtrado en servidor (REST + SSE + long-poll), contrato `{items,total,page,page_size}`, `state` repetible (OR), orden determinista, `summary` global.
-  - Frontend: filtros en `App`, `containerQuery.ts`, debounce, reconexión del stream, `Pagination` 10/20/50, colapso al paginar.
-  - **539 tests backend + 192 frontend**. Auditorías `@rust-reviewer` y `@react-reviewer`: **apto**.
-  - Change archivado; `plans/PLAN-023-ARCHIVED.md`; `docs/container-list-pagination.md`.
-- **#179** `lint-set-state-in-effect` → **PR #183** (`d464ac5`).
-  - Warnings `react(set-state-in-effect)` resueltos; hook `useConfigSync`; `--deny-warnings` activado.
-  - **201 tests**. Auditoría `@react-reviewer`: **apto**. Change archivado; `plans/PLAN-024-ARCHIVED.md`; `docs/lint-set-state-in-effect.md`.
-- **#170** `update-history-lock-order` → **PR #184** (`23771a9`).
-  - `append_stack_history` y `delete_history_h` liberan el guard antes de la pool; `record_update_entry` eliminado.
-  - **541 tests**. Auditoría `@rust-reviewer`: **apto**. Change archivado; `plans/PLAN-025-ARCHIVED.md`; `docs/update-history-lock-order.md`.
-- **Release v0.27.0** → commit `7b34d4f`, merge **PR #186** (`6851750`), tag publicado e imagen en GHCR.
-- **Ops manual (2026-11-22)**: verificado en `co1` con 0.27.0 que la SPA carga con la CSP aplicada.
-  - `curl -I https://alloy.territoriolinux.es/` devuelve la CSP (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'`), junto a `x-frame-options: DENY`, `x-content-type-options: nosniff`, `referrer-policy` y HSTS.
-  - La SPA renderiza bajo CSP (`#root` poblado con clases `ant-*`, sin violaciones en la consola de Chrome headless).
-  - `/api/health` → `{"docker":true,"status":"ok"}`; `/api/stream` y `/api/auth/sse-token` sin sesión → 401.
-- **#188** `inspect-modal-image` → **PR #191** (`423a3b9`).
-  - Imagen del contenedor en `InspectModal` con elipsis + tooltip, `minWidth: 0` y fallback `image:tag`; `InfoRow` extraído y tipos reutilizados (`Pick<ContainerInfo,...>`).
-  - **209 tests** frontend. Auditoría `@react-reviewer`: **apto** en 2ª ronda (bloqueantes: test de no-desbordamiento y test falso-verde).
-  - Change archivado: `openspec/specs/ui/inspect-modal/spec.md`. Doc: `docs/inspect-modal-image.md`. Plan: `plans/PLAN-026-ARCHIVED.md`.
-- **#189** `oxlint` → **PR #193**.
-  - Verificación + doc: `pnpm run lint` (`oxlint --deny-warnings`) exit 0 con 0 diagnósticos; el job `frontend` de `ci.yml` lo hace cumplir.
-  - Doc: `docs/oxlint-zero-warnings.md` (131 reglas: 129 `correctness` + 2 explícitas). Plan: `plans/PLAN-027-ARCHIVED.md`.
-- **#190** `dedupe-antd-cssinjs` → **PR #192** (`1c7f2d2`).
-  - `overrides` en `frontend/pnpm-workspace.yaml` fijando `@ant-design/cssinjs@2.1.2` (pnpm ≥11 ignora el campo `pnpm` de `package.json`); lock con una sola versión; bundle −7,6 kB.
-  - `Dockerfile` copia el workspace antes de `pnpm install --frozen-lockfile` (fallaba con `ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`); `ci.yml` cachea también el workspace. **209 tests**.
-  - Auditoría `@react-reviewer`: no apto en 1ª ronda (Dockerfile y spec con mecanismo falso), corregido y re-validado.
-  - Change archivado: `openspec/specs/frontend/deps-dedupe/spec.md`. Docs: `docs/dedupe-antd-cssinjs.md`, `docs/frontend-deps.md`. Plan: `plans/PLAN-028-ARCHIVED.md`.
+- **Issue**: #197 — cerrado.
+- **PRs**: #198 (feature) y #199 (archivado del plan), ambos mergeados en `develop`.
+- **Change OpenSpec**: archivado en `openspec/specs/backend/update-history-pagination/` y `openspec/specs/frontend/update-history/`.
+- **Plan**: `plans/PLAN-029-ARCHIVED.md`.
+- **Doc**: `docs/update-history-pagination.md`.
+- **Verificación**: backend 587 tests / frontend 233; CI en verde; auditorías `@rust-reviewer` y `@react-reviewer` aptas.
 
-### Pendiente
+`GET /api/history` queda paginado y filtrado en el servidor (tamaños 10/20/50, filtros `q` y `status`),
+sin cap de 100 y sin el lock del histórico en memoria. `HistoryPage` es dueña de su página y su consulta,
+con elipsis real + tooltip, columna única `Versión` y clave de fila estable.
 
-- Ninguno.
+## Follow-ups abiertos (candidatos a su propio change proposal)
 
-### Follow-ups / deuda conocida
+1. **Trampa de orden en el workflow SDD**: el hook `pre-commit` exige un proposal activo para commits que
+   toquen fuente, y `openspec archive` mueve el proposal a `openspec/changes/archive/`, fuera de su glob.
+   Hay que **commitear antes de archivar**. No está documentado en `docs/pre-commit-hook.md`.
+2. **`.git/hooks/pre-commit` obsoleto** respecto a la copia canónica `.githooks/pre-commit` (hoy inocuo
+   porque `core.hooksPath = .githooks`).
+3. **`openspec validate --strict --specs`**: 27 fallos preexistentes por «Purpose section is still a
+   placeholder» en `updates/progress` y `updates/update-health-guard`.
+4. Deudas de la feature, documentadas en `docs/update-history-pagination.md` § Follow-ups:
+   `load_update_history` sigue truncando a 100 filas al arrancar, TOCTOU entre `total` e `items`,
+   colisión teórica de `historyRowKey`, columna `Estado` sin cota, `overlayStyle` deprecado en antd v6,
+   y la tabla `update_history` sin poda.
 
-- El tooltip de la imagen truncada en `InspectModal` no es accesible por teclado (falta `tabIndex={0}`/`aria-label`; limitación de AntD ya presente en `ContainerRow`). Ver `docs/inspect-modal-image.md`.
-- El campo `ID:` de `InspectModal` sigue sin elipsis y puede desbordar.
-- Revisar el override de `@ant-design/cssinjs` cuando antd amplíe su rango `~2.1.2` (ver `docs/dedupe-antd-cssinjs.md`).
+## Convenciones que muerden (recordatorio)
 
-### Backlog pendiente (sin empezar)
-
-- No quedan issues abiertos: backlog de deuda **#155–#170** cerrado.
-
-## Baselines de verificación
-
-- Backend: `cargo test` → **541 OK**; `just check` limpio.
-- Frontend: `npx vitest run` → **209 OK**; `pnpm exec tsc -b`, `lint`, `build` limpios.
-
-## Entorno
-
-- **co1** (Dockge) en `https://alloy.territoriolinux.es` — corre v0.27.0, sano. Procedimiento: `docs/deploy-co1.md`.
-
-## Notas
-
-- No quedan issues abiertos; los PRs se fusionan con `--merge --delete-branch` solo cuando el head es una rama `feature/*` o `hotfix/*`; los issues se cerraron con `gh issue close`.
-- **Nunca** usar `gh pr merge --delete-branch` en un PR cuyo head es `develop`: borra la rama remota (pasó con el PR #186 y rompió "Sync develop with main"; se restauró con `git push origin origin/main:refs/heads/develop`).
-- `pnpm` ≥11 lee los `overrides` de `frontend/pnpm-workspace.yaml`, no del campo `pnpm` de `package.json`; el `Dockerfile` debe copiar ese fichero antes de `pnpm install --frozen-lockfile`.
+- La rama de integración es **`develop`**, no `development`. La rama por defecto es **`main`**, así que
+  `Closes #NNN` **no** autocierra al mergear en `develop`: hay que cerrar el issue a mano.
+- El historial de `develop` usa **merge commits**, no squashes.
+- `git commit -am` deja fuera los ficheros nuevos: usar `git add -A`.

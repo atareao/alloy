@@ -7,7 +7,7 @@ Procedimiento para (re)desplegar Alloy en el servidor `co1` **pinchando una vers
 - **Host**: `co1` (Contabo), accesible por SSH (`ssh co1`).
 - **Runtime**: Docker 28.2.2, stack gestionado por **Dockge** (`louislam/dockge`).
 - **Stack**: `alloy` → `/home/lorenzo/docker/dockge/stacks/alloy/compose.yaml` (+ `.env`).
-- **Imagen**: `ghcr.io/atareao/alloy`, **pinchada a una versión** (p. ej. `:0.27.0`).
+- **Imagen**: `ghcr.io/atareao/alloy`, **pinchada a una versión** (p. ej. `:0.28.0`).
 - **Dominio**: `https://alloy.territoriolinux.es` (Traefik, red `proxy`).
 - **Socket**: `/var/run/docker.sock` montado; `group_add: ["999"]` (GID del socket) para el usuario no privilegiado `app`.
 
@@ -18,13 +18,13 @@ Procedimiento para (re)desplegar Alloy en el servidor `co1` **pinchando una vers
 
 ## Pinchar la versión
 
-1. Elegir la versión objetivo `X.Y.Z` (p. ej. `0.27.0`), la última release publicada.
+1. Elegir la versión objetivo `X.Y.Z` (p. ej. `0.28.0`), la última release publicada.
 2. Editar `compose.yaml` y fijar la imagen:
 
 ```yaml
 services:
   alloy:
-    image: ghcr.io/atareao/alloy:0.27.0
+    image: ghcr.io/atareao/alloy:0.28.0
 ```
 
 ## Procedimiento
@@ -34,14 +34,14 @@ ssh co1
 cd /home/lorenzo/docker/dockge/stacks/alloy
 
 # 1. Traer la imagen de la versión pinchada
-docker pull ghcr.io/atareao/alloy:0.27.0
+docker pull ghcr.io/atareao/alloy:0.28.0
 
 # 2. Redeploy (recrea el contenedor con la nueva imagen)
 docker compose up -d
 
 # 3. Verificar (por TAG, no por digest)
 docker ps --format '{{.Names}} {{.Image}} {{.Status}}' | grep -i alloy
-docker inspect alloy --format '{{.Config.Image}}'   # debe imprimir ghcr.io/atareao/alloy:0.27.0
+docker inspect alloy --format '{{.Config.Image}}'   # debe imprimir ghcr.io/atareao/alloy:0.28.0
 curl -s -o /dev/null -w '%{http_code}\n' https://alloy.territoriolinux.es/
 ```
 

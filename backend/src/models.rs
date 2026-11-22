@@ -648,6 +648,16 @@ impl AppError {
     pub fn from_pool<E: std::fmt::Display>(e: E) -> Self {
         AppError::Internal(format!("base de datos no disponible: {e}"))
     }
+
+    /// Traduce un fallo de una consulta a SQLite (`rusqlite`) a
+    /// `AppError::Internal` (HTTP 500).
+    ///
+    /// Compañero de [`AppError::from_pool`] para que los handlers no repitan
+    /// `AppError::Internal(format!(...))` por cada `query_row`/`prepare`:
+    /// `db::count_update_history(...).map_err(AppError::from_db)?`.
+    pub fn from_db<E: std::fmt::Display>(e: E) -> Self {
+        AppError::Internal(format!("consulta a base de datos fallida: {e}"))
+    }
 }
 
 impl IntoResponse for AppError {
@@ -884,13 +894,154 @@ pub struct PagedContainers {
     pub page_size: u32,
 }
 
+/// Parámetros de `GET /api/history` tal y como llegan por query string.
+///
+/// La deserialización es manual (ver el `impl Deserialize` más abajo) porque
+/// `serde_urlencoded` —el deserializador que usa `axum::extract::Query`— no sabe
+/// mapear claves repetidas a un campo escalar. Tolerancias idénticas a
+/// [`ContainerListQuery`]: escalares repetidos → *last-wins*; claves
+/// desconocidas → ignoradas; `status` acumula todas sus ocurrencias.
+#[derive(Clone, Debug, Default)]
+pub struct UpdateHistoryQuery {
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+    /// Substring case-insensitive sobre `container`, `image`, `old_digest` y `new_digest`.
+    pub q: Option<String>,
+    /// Estados aceptados. Puede repetirse (`?status=error&status=rolled-back`) y
+    /// se aplica con semántica OR; un conjunto vacío no filtra por estado.
+    pub status: Vec<String>,
+}
+
+impl UpdateHistoryQuery {
+    /// Valida y normaliza la query a [`UpdateHistoryParams`].
+    ///
+    /// Aplica los defaults (`page = 1`, `page_size = 20`) y recorta los filtros
+    /// de texto en blanco (`q`/`status` vacíos se tratan como ausentes). Los
+    /// valores no numéricos (`?page=abc`) ya fallan en la deserialización.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve [`AppError::BadRequest`] (HTTP 400) si `page` es 0 o si
+    /// `page_size` no pertenece a [`ALLOWED_PAGE_SIZES`].
+    pub fn normalize(self) -> Result<UpdateHistoryParams, AppError> {
+        let page = self.page.unwrap_or(DEFAULT_PAGE);
+        if page == 0 {
+            return Err(AppError::BadRequest(format!(
+                "page debe ser >= 1 (recibido {page})"
+            )));
+        }
+
+        let page_size = self.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
+        if !ALLOWED_PAGE_SIZES.contains(&page_size) {
+            return Err(AppError::BadRequest(format!(
+                "page_size debe ser uno de {ALLOWED_PAGE_SIZES:?} (recibido {page_size})"
+            )));
+        }
+
+        Ok(UpdateHistoryParams {
+            page,
+            page_size,
+            q: normalize_filter(self.q),
+            status: normalize_state_values(self.status),
+        })
+    }
+}
+
+/// Deserialización manual de [`UpdateHistoryQuery`].
+///
+/// **Por qué no `derive`**: `axum::extract::Query` usa `serde_urlencoded`, que
+/// deserializa el top-level como un mapa de pares clave/valor. Con `derive`, un
+/// campo `Vec<String>` recibe el valor de la **primera** ocurrencia como un
+/// escalar y falla (`invalid type: string "error", expected a sequence`), y un
+/// campo escalar rechaza la segunda ocurrencia (`duplicate field`).
+///
+/// Este `visit_map` recorre las entradas en orden —incluidas las claves
+/// repetidas— y acumula todos los valores de `status` en el `Vec`, replicando
+/// exactamente las tolerancias de [`ContainerListQuery`]:
+///
+/// - **Claves escalares repetidas** (`?page=1&page=2`): **last-wins**.
+/// - **Claves desconocidas** (`?pageSize=50`): se **ignoran** a propósito.
+///
+/// Los valores con el tipo equivocado (`?page=abc`, `?page_size=-1`) sí son un
+/// error de deserialización y producen `400`.
+impl<'de> Deserialize<'de> for UpdateHistoryQuery {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct UpdateHistoryQueryVisitor;
+
+        impl<'de> Visitor<'de> for UpdateHistoryQueryVisitor {
+            type Value = UpdateHistoryQuery;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("una query string con page, page_size, q y status")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut query = UpdateHistoryQuery::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "page" => query.page = Some(map.next_value()?),
+                        "page_size" => query.page_size = Some(map.next_value()?),
+                        "q" => query.q = Some(map.next_value()?),
+                        // Puede aparecer varias veces: se acumulan los valores.
+                        "status" => query.status.push(map.next_value()?),
+                        // Clave desconocida: se ignora (tolerancia hacia delante).
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(query)
+            }
+        }
+
+        deserializer.deserialize_map(UpdateHistoryQueryVisitor)
+    }
+}
+
+/// Filtros y paginación del histórico ya validados y normalizados.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateHistoryParams {
+    pub page: u32,
+    pub page_size: u32,
+    pub q: Option<String>,
+    /// Conjunto de estados aceptados (semántica OR). Vacío → no filtra por estado.
+    pub status: Vec<String>,
+}
+
+impl Default for UpdateHistoryParams {
+    fn default() -> Self {
+        Self {
+            page: DEFAULT_PAGE,
+            page_size: DEFAULT_PAGE_SIZE,
+            q: None,
+            status: Vec::new(),
+        }
+    }
+}
+
+/// Página del histórico devuelta por `GET /api/history`.
+#[derive(Clone, Debug, Serialize)]
+pub struct PagedUpdateHistory {
+    pub items: Vec<UpdateHistoryEntry>,
+    /// Recuento **tras** aplicar los filtros (no de la página).
+    pub total: usize,
+    pub page: u32,
+    pub page_size: u32,
+}
+
 /// Offset de la primera entrada de `page` (base 0) para un `page_size` dado.
 ///
 /// Usa aritmética saturante en ambos pasos: `page = u32::MAX` desbordaría `usize`
 /// en plataformas de 32 bits. Con el offset saturado, el `skip` deja la página
 /// vacía sin panickear (que es el comportamiento contratado para una página más
 /// allá del final).
-fn page_offset(page: u32, page_size: u32) -> usize {
+pub(crate) fn page_offset(page: u32, page_size: u32) -> usize {
     (page.saturating_sub(1) as usize).saturating_mul(page_size as usize)
 }
 
@@ -2082,5 +2233,150 @@ mod tests {
         assert_eq!(json["page"], 3);
         assert_eq!(json["page_size"], 50);
         assert_eq!(json["total"], 123);
+    }
+
+    // ── histórico: query, normalización y envelope ─────────────
+    // (change: update-history-pagination — tareas 1.1, 1.2 y 1.9)
+
+    fn history_normalize(query: UpdateHistoryQuery) -> UpdateHistoryParams {
+        query.normalize().expect("query válida")
+    }
+
+    /// 1.1 — defaults cuando la query string está vacía.
+    #[test]
+    fn test_history_query_deserializes_defaults_from_empty_query_string() {
+        let uri: axum::http::Uri = "/api/history".parse().expect("uri válida");
+        let Query(query) = Query::<UpdateHistoryQuery>::try_from_uri(&uri).expect("query vacía");
+        let params = history_normalize(query);
+        assert_eq!(params.page, 1);
+        assert_eq!(params.page_size, 20);
+        assert_eq!(params.q, None);
+        assert!(params.status.is_empty());
+    }
+
+    /// 1.1 — escalares repetidos: *last-wins* (`?page=1&page=2` aplica 2).
+    #[test]
+    fn test_history_query_deserializes_repeated_scalar_last_wins() {
+        let uri: axum::http::Uri = "/api/history?page=1&page=2".parse().expect("uri válida");
+        let Query(query) = Query::<UpdateHistoryQuery>::try_from_uri(&uri).expect("query válida");
+        let params = history_normalize(query);
+        assert_eq!(params.page, 2);
+    }
+
+    /// 1.1 — parámetros desconocidos se ignoran (`pageSize` cae al default).
+    #[test]
+    fn test_history_query_deserializes_unknown_params_ignored() {
+        let uri: axum::http::Uri = "/api/history?pageSize=50".parse().expect("uri válida");
+        let Query(query) = Query::<UpdateHistoryQuery>::try_from_uri(&uri).expect("query válida");
+        let params = history_normalize(query);
+        assert_eq!(params.page_size, 20);
+    }
+
+    /// 1.1 — `status` es multi-valor: se acumulan todas sus ocurrencias.
+    #[test]
+    fn test_history_query_deserializes_repeated_status_values() {
+        let uri: axum::http::Uri = "/api/history?status=error&status=rolled-back"
+            .parse()
+            .expect("uri válida");
+        let Query(query) = Query::<UpdateHistoryQuery>::try_from_uri(&uri).expect("query válida");
+        let params = history_normalize(query);
+        assert_eq!(
+            params.status,
+            vec!["error".to_string(), "rolled-back".to_string()]
+        );
+    }
+
+    /// 1.1 — todos los parámetros juntos.
+    #[test]
+    fn test_history_query_deserializes_all_params() {
+        let uri: axum::http::Uri = "/api/history?page=3&page_size=50&q=web&status=success"
+            .parse()
+            .expect("uri válida");
+        let Query(query) = Query::<UpdateHistoryQuery>::try_from_uri(&uri).expect("query válida");
+        let params = history_normalize(query);
+        assert_eq!(params.page, 3);
+        assert_eq!(params.page_size, 50);
+        assert_eq!(params.q.as_deref(), Some("web"));
+        assert_eq!(params.status, vec!["success".to_string()]);
+    }
+
+    /// 1.2 — `page=0` → `400`.
+    #[test]
+    fn test_history_query_normalize_page_zero_is_bad_request() {
+        let query = UpdateHistoryQuery {
+            page: Some(0),
+            ..Default::default()
+        };
+        let err = query.normalize().expect_err("page=0 debe rechazarse");
+        assert!(matches!(&err, AppError::BadRequest(_)));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// 1.2 — `page_size=30` (fuera de {10,20,50}) → `400`.
+    #[test]
+    fn test_history_query_normalize_invalid_page_size_is_bad_request() {
+        let query = UpdateHistoryQuery {
+            page_size: Some(30),
+            ..Default::default()
+        };
+        let err = query.normalize().expect_err("page_size=30 debe rechazarse");
+        assert!(matches!(&err, AppError::BadRequest(_)));
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// 1.2 — `page=abc` es error de deserialización (axum responde `400`).
+    #[test]
+    fn test_history_query_page_abc_is_deserialization_error() {
+        let uri: axum::http::Uri = "/api/history?page=abc".parse().expect("uri válida");
+        assert!(Query::<UpdateHistoryQuery>::try_from_uri(&uri).is_err());
+    }
+
+    /// 1.2 — `page_size=abc` es error de deserialización (axum responde `400`).
+    #[test]
+    fn test_history_query_page_size_abc_is_deserialization_error() {
+        let uri: axum::http::Uri = "/api/history?page_size=abc".parse().expect("uri válida");
+        assert!(Query::<UpdateHistoryQuery>::try_from_uri(&uri).is_err());
+    }
+
+    /// 1.2 — los tres tamaños permitidos pasan la validación.
+    #[test]
+    fn test_history_query_normalize_accepts_all_allowed_page_sizes() {
+        for size in ALLOWED_PAGE_SIZES {
+            let query = UpdateHistoryQuery {
+                page_size: Some(size),
+                ..Default::default()
+            };
+            assert_eq!(history_normalize(query).page_size, size);
+        }
+    }
+
+    /// 1.9 — el envelope serializa exactamente `{items,total,page,page_size}`.
+    #[test]
+    fn test_paged_update_history_serializes_envelope() {
+        let page = PagedUpdateHistory {
+            items: vec![UpdateHistoryEntry {
+                container: "web".into(),
+                image: "nginx".into(),
+                old_digest: "sha256:old".into(),
+                new_digest: "sha256:new".into(),
+                timestamp: "2026-01-01T00:00:00".into(),
+                status: "success".into(),
+                duration_ms: 10,
+                attempts: 0,
+            }],
+            total: 42,
+            page: 2,
+            page_size: 20,
+        };
+        let json = serde_json::to_value(&page).expect("serializa");
+        let obj = json.as_object().expect("objeto JSON");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["items", "page", "page_size", "total"]);
+        assert_eq!(json["total"], 42);
+        assert_eq!(json["page"], 2);
+        assert_eq!(json["page_size"], 20);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(json["items"][0]["container"], "web");
     }
 }
