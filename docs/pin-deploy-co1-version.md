@@ -33,8 +33,8 @@ Ops manual en co1 (ver `docs/deploy-co1.md`):
 
 ```sh
 ssh co1 && cd /home/lorenzo/docker/dockge/stacks/alloy
-# editar compose.yaml → image: ghcr.io/atareao/alloy:0.27.0
-docker pull ghcr.io/atareao/alloy:0.27.0 && docker compose up -d
+# editar compose.yaml → image: ghcr.io/atareao/alloy:0.28.0
+docker pull ghcr.io/atareao/alloy:0.28.0 && docker compose up -d
 docker inspect alloy --format '{{.Config.Image}}'
 ```
 
