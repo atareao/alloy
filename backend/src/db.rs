@@ -2159,4 +2159,56 @@ mod tests {
             .join()
             .expect("el hilo writer no debe entrar en panic");
     }
+
+    #[tokio::test]
+    async fn test_pool_two_connections() {
+        let pool = test_pool_with_max_size(2);
+        let obj1 = pool.get().await.unwrap();
+        let conn1 = obj1.lock().unwrap();
+        let bt: i64 = conn1.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        let fk: i64 = conn1.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(bt, 5000);
+        assert_eq!(fk, 1);
+
+        let obj2 = pool.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let bt2: i64 = conn2.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        let fk2: i64 = conn2.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(bt2, 5000);
+        assert_eq!(fk2, 1);
+    }
+
+    #[tokio::test]
+    async fn test_pool_recycle() {
+        let pool = test_pool_with_max_size(1);
+        {
+            let obj = pool.get().await.unwrap();
+            let _conn = obj.lock().unwrap();
+        }
+        pool.close();
+
+        let pool2 = test_pool_with_max_size(1);
+        let obj2 = pool2.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let bt: i64 = conn2.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert_eq!(bt, 5000);
+    }
+
+    #[tokio::test]
+    async fn test_init_db_tempdir_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        let pool = init_db(path.to_str().unwrap()).await.unwrap();
+        let obj = pool.get().await.unwrap();
+        let conn = obj.lock().unwrap();
+        let mode: String = conn.query_row("PRAGMA journal_mode;", [], |r| r.get(0)).unwrap();
+        assert!(mode == "wal");
+
+        let pool2 = init_db(path.to_str().unwrap()).await.unwrap();
+        let obj2 = pool2.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let mode2: String = conn2.query_row("PRAGMA journal_mode;", [], |r| r.get(0)).unwrap();
+        assert!(mode2 == "wal");
+    }
 }
