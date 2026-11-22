@@ -1,10 +1,9 @@
-# Spec Delta
+# frontend/update-history Specification
 
 ## Purpose
-
 Definir el comportamiento de la vista del histórico de actualizaciones: paginación en servidor con selector 10/20/50, elipsis real con tooltip en las columnas de texto y una única columna de versión.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: La vista del histórico SHALL paginarse contra el servidor
 
@@ -58,7 +57,7 @@ El control de paginación MUST ofrecer los tamaños 10, 20 y 50 y MUST mostrar e
 
 ### Requirement: Las columnas de texto SHALL truncarse con elipsis real y tooltip
 
-Las columnas `Container` e `Imagen` MUST truncar su contenido con elipsis real (CSS/Ant Design) cuando no quepa y MUST mostrar el valor completo en un tooltip. MUST NOT cortar el texto manualmente con `slice` ni añadir `"..."` a mano. Las celdas truncables MUST permitir encogerse (`minWidth: 0`) para que la elipsis se aplique de verdad y MUST NOT provocar desbordamiento horizontal de la fila.
+Las columnas `Container` e `Imagen` MUST truncar su contenido con elipsis real (CSS/Ant Design) cuando no quepa y MUST mostrar el valor completo en un tooltip. MUST NOT cortar el texto manualmente con `slice` ni añadir `"..."` a mano. Las celdas truncables MUST tener una anchura acotada para que la elipsis se aplique de verdad y MUST NOT provocar desbordamiento horizontal de la fila. En un contenedor flex la celda MUST además poder encogerse (`minWidth: 0`); en una tabla de anchura natural (`width: max-content`), donde la celda se dimensiona a su max-content, la cota de anchura es lo que hace efectiva la elipsis.
 
 #### Scenario: Nombre largo
 
@@ -78,6 +77,13 @@ Las columnas `Container` e `Imagen` MUST truncar su contenido con elipsis real (
 - **GIVEN** un contenedor con un nombre muy largo
 - **WHEN** se renderiza la fila
 - **THEN** el ancho del contenido no excede el ancho de la celda
+
+#### Scenario: Anchura acotada
+
+- **GIVEN** una entrada cuyo contenedor tiene un nombre que no cabe en la columna
+- **WHEN** se renderiza la fila
+- **THEN** la celda truncable tiene una cota de anchura explícita
+- **THEN** el contenido se muestra truncado con elipsis y no desborda la celda
 
 ### Requirement: La versión SHALL mostrarse en una única columna
 
@@ -122,3 +128,37 @@ El histórico MUST seguir cargándose por REST y MUST NOT añadirse al `snapshot
 - **GIVEN** el usuario navega a la vista del histórico
 - **WHEN** cambia de página en el histórico
 - **THEN** la conexión del stream no se reconecta por ese motivo
+
+### Requirement: La vista SHALL permitir filtrar por texto y por estado
+
+`HistoryPage` MUST ofrecer un campo de búsqueda de texto libre y un control para seleccionar uno o varios estados. El texto MUST aplicarse como filtro `q` y los estados seleccionados como `status` repetido, y la consulta al servidor MUST incluir ambos junto a `page` y `page_size`. La búsqueda MUST aplicar un retardo de 300 ms antes de consultar el servidor. Cambiar cualquiera de los dos filtros MUST resetear la página a 1. El filtrado MUST resolverse en el servidor: la página MUST NOT descartar en cliente ninguno de los `items` recibidos. Un filtro sin valor MUST NOT añadirse a la consulta.
+
+#### Scenario: Búsqueda con debounce
+
+- **GIVEN** la vista del histórico en la página 3
+- **WHEN** el usuario escribe "web" en el buscador y deja de escribir durante 300 ms
+- **THEN** se solicita `/api/history?page=1&page_size=20&q=web`
+
+#### Scenario: Filtro por estado
+
+- **GIVEN** el usuario selecciona los estados `error` y `rolled-back`
+- **WHEN** se lanza la consulta
+- **THEN** se solicita `/api/history?page=1&page_size=20&status=error&status=rolled-back`
+
+#### Scenario: Filtros combinados y reset de página
+
+- **GIVEN** la vista en la página 2 con el buscador vacío
+- **WHEN** el usuario escribe "web" y selecciona el estado `error`
+- **THEN** se solicita `page=1` con `q=web` y `status=error`
+
+#### Scenario: Sin filtros
+
+- **GIVEN** el buscador vacío y ningún estado seleccionado
+- **WHEN** se consulta el histórico
+- **THEN** la consulta sólo incluye `page` y `page_size`
+
+#### Scenario: Filtrado en servidor
+
+- **GIVEN** un filtro activo y una respuesta con `items`
+- **WHEN** se renderiza la tabla
+- **THEN** se pintan todos los `items` recibidos, sin descartar ninguno en cliente

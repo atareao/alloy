@@ -1,5 +1,6 @@
 use deadpool_sqlite::{Config as PoolConfig, Runtime};
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::types::Value;
+use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use std::collections::HashMap;
 
 use crate::models::*;
@@ -110,6 +111,13 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
     let _ = conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_update_history_container_ts
          ON update_history(container, timestamp DESC, id DESC);",
+    );
+    // update-history-pagination: orden determinista `timestamp DESC, id DESC` para
+    // la paginación (`LIMIT`/`OFFSET`), sin el cual SQLite ordenaría toda la tabla
+    // en cada página.
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_update_history_ts_id
+         ON update_history(timestamp DESC, id DESC);",
     );
     Ok(())
 }
@@ -473,6 +481,117 @@ pub fn append_update_history(conn: &Connection, entry: &UpdateHistoryEntry) -> S
 pub fn clear_update_history(conn: &Connection) -> SqlResult<()> {
     conn.execute("DELETE FROM update_history", [])?;
     Ok(())
+}
+
+/// Cláusula `WHERE` y valores de los filtros `q`/`status` de `params`.
+///
+/// Se comparte entre [`count_update_history`] y [`load_update_history_page`] para
+/// que `total` y `items` apliquen **exactamente** el mismo criterio y no se
+/// desincronicen. Devuelve la cláusula (vacía si no hay filtros) y los valores ya
+/// en el orden de los `?` de la cláusula.
+///
+/// El filtro `q` usa `LIKE`, que SQLite compara **case-insensitive solo en
+/// ASCII** (el rango `A-Z`/`a-z`); fuera de ASCII `LIKE` es sensible a
+/// mayúsculas. En este dominio eso es equivalente al `to_lowercase()` (Unicode)
+/// que usa el filtrado de la lista de contenedores: los nombres de contenedor y
+/// las referencias de imagen están restringidos a ASCII por Docker/OCI, y los
+/// digests son hexadecimales. Filtrar en la aplicación con `to_lowercase()` se
+/// descarta porque rompería la paginación en SQL: `total` y la ventana dejarían
+/// de derivarse de la misma consulta.
+fn update_history_filter(params: &UpdateHistoryParams) -> (String, Vec<Value>) {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut values: Vec<Value> = Vec::new();
+
+    if let Some(q) = params.q.as_deref() {
+        // Substring case-insensitive: `LIKE` de SQLite lo es para ASCII por
+        // defecto. Se escapan `%`/`_`/`\` para que `q` sea un substring literal.
+        let pattern = format!("%{}%", escape_like(q));
+        clauses.push(
+            "(container LIKE ? ESCAPE '\\'
+              OR image LIKE ? ESCAPE '\\'
+              OR old_digest LIKE ? ESCAPE '\\'
+              OR new_digest LIKE ? ESCAPE '\\')"
+                .to_string(),
+        );
+        values.extend((0..4).map(|_| Value::Text(pattern.clone())));
+    }
+
+    if !params.status.is_empty() {
+        // Semántica OR: coincidencia exacta con cualquiera de los estados.
+        let placeholders = vec!["?"; params.status.len()].join(", ");
+        clauses.push(format!("status IN ({placeholders})"));
+        values.extend(params.status.iter().cloned().map(Value::Text));
+    }
+
+    let where_clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", clauses.join(" AND "))
+    };
+    (where_clause, values)
+}
+
+/// Escapa los metacaracteres de `LIKE` (`\`, `%` y `_`) para que el valor se
+/// trate como substring literal. El `\` debe escaparse primero.
+fn escape_like(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// Número de entradas del histórico que cumplen los filtros de `params`.
+///
+/// `total` es el recuento **tras** filtrar y **sin** límite superior: no aplica
+/// el antiguo recorte de 100 filas. El filtro `q` es case-insensitive solo en
+/// ASCII (ver [`update_history_filter`]).
+pub fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> SqlResult<usize> {
+    let (where_clause, values) = update_history_filter(params);
+    let sql = format!("SELECT COUNT(*) FROM update_history{where_clause}");
+    let count: i64 = conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
+    Ok(count as usize)
+}
+
+/// Página del histórico que cumple los filtros de `params`.
+///
+/// Orden determinista `timestamp DESC, id DESC` (desempata por inserción) y
+/// ventana `LIMIT`/`OFFSET` derivada de `params.page`/`params.page_size`. El
+/// filtro `q` es case-insensitive solo en ASCII (ver [`update_history_filter`]).
+pub fn load_update_history_page(
+    conn: &Connection,
+    params: &UpdateHistoryParams,
+) -> SqlResult<Vec<UpdateHistoryEntry>> {
+    let (where_clause, mut values) = update_history_filter(params);
+    // `page_offset` satura, pero su tope (u32::MAX) no cabe en `i64`: se acota
+    // para no envolver a negativo.
+    let offset = page_offset(params.page, params.page_size).min(i64::MAX as usize) as i64;
+    values.push(Value::Integer(params.page_size as i64));
+    values.push(Value::Integer(offset));
+
+    let sql = format!(
+        "SELECT container, image, old_digest, new_digest, timestamp, status, duration_ms, attempts
+         FROM update_history{where_clause}
+         ORDER BY timestamp DESC, id DESC
+         LIMIT ? OFFSET ?"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(values), |row| {
+        Ok(UpdateHistoryEntry {
+            container: row.get(0)?,
+            image: row.get(1)?,
+            old_digest: row.get(2)?,
+            new_digest: row.get(3)?,
+            timestamp: row.get(4)?,
+            status: row.get(5)?,
+            duration_ms: row.get::<_, i64>(6)? as u64,
+            attempts: row.get::<_, i64>(7)? as u32,
+        })
+    })?;
+    let mut result = Vec::new();
+    for r in rows {
+        result.push(r?);
+    }
+    Ok(result)
 }
 
 // ── Update Policies ─────────────────────────────────────────
@@ -1366,5 +1485,503 @@ mod tests {
         assert_eq!(map.len(), 1, "only non-empty digests must be included");
         assert_eq!(map.get("cached"), Some(&"sha256:bbb".to_string()));
         assert_eq!(map.get("empty"), None);
+    }
+
+    // ── update-history-pagination: filtros, recuento y ventana ──
+    // (change: update-history-pagination — tareas 1.4, 1.5 y 1.6)
+
+    fn hist_full(
+        container: &str,
+        image: &str,
+        old_digest: &str,
+        new_digest: &str,
+        status: &str,
+        timestamp: &str,
+    ) -> UpdateHistoryEntry {
+        UpdateHistoryEntry {
+            container: container.into(),
+            image: image.into(),
+            old_digest: old_digest.into(),
+            new_digest: new_digest.into(),
+            timestamp: timestamp.into(),
+            status: status.into(),
+            duration_ms: 0,
+            attempts: 0,
+        }
+    }
+
+    fn seed_history(conn: &Connection, entries: &[UpdateHistoryEntry]) {
+        for entry in entries {
+            append_update_history(conn, entry).unwrap();
+        }
+    }
+
+    /// Params del histórico construidos directamente (independientes de
+    /// `UpdateHistoryQuery::normalize`, que aún es RED en esta fase).
+    fn history_params(
+        q: Option<&str>,
+        status: &[&str],
+        page: u32,
+        page_size: u32,
+    ) -> UpdateHistoryParams {
+        UpdateHistoryParams {
+            page,
+            page_size,
+            q: q.map(str::to_string),
+            status: status.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// 1.5 — sin filtros, `total` es el recuento de todas las filas.
+    #[test]
+    fn test_count_update_history_without_filters_counts_all() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full("web", "nginx", "a", "b", "success", "2026-01-01T00:00:00"),
+                hist_full("db", "postgres", "c", "d", "error", "2026-01-02T00:00:00"),
+                hist_full(
+                    "cache",
+                    "redis",
+                    "e",
+                    "f",
+                    "rolled-back",
+                    "2026-01-03T00:00:00",
+                ),
+            ],
+        );
+        let params = history_params(None, &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 3);
+    }
+
+    /// 1.5 — `q` es case-insensitive sobre `container`.
+    #[test]
+    fn test_count_update_history_q_matches_container_case_insensitively() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full("Web", "nginx", "a", "b", "success", "2026-01-01T00:00:00"),
+                hist_full("db", "postgres", "c", "d", "error", "2026-01-02T00:00:00"),
+            ],
+        );
+        let params = history_params(Some("WEB"), &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 1);
+    }
+
+    /// 1.5 — `q` casa sobre `image`.
+    #[test]
+    fn test_count_update_history_q_matches_image() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full(
+                    "web",
+                    "nginx:1.27",
+                    "a",
+                    "b",
+                    "success",
+                    "2026-01-01T00:00:00",
+                ),
+                hist_full(
+                    "db",
+                    "postgres:16",
+                    "c",
+                    "d",
+                    "success",
+                    "2026-01-02T00:00:00",
+                ),
+            ],
+        );
+        let params = history_params(Some("NGINX"), &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 1);
+    }
+
+    /// 1.5 — `q` casa sobre `old_digest`.
+    #[test]
+    fn test_count_update_history_q_matches_old_digest() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full(
+                    "web",
+                    "nginx",
+                    "sha256:oldabc",
+                    "sha256:new",
+                    "success",
+                    "2026-01-01T00:00:00",
+                ),
+                hist_full(
+                    "db",
+                    "postgres",
+                    "sha256:zzz",
+                    "sha256:new",
+                    "success",
+                    "2026-01-02T00:00:00",
+                ),
+            ],
+        );
+        let params = history_params(Some("sha256:oldabc"), &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 1);
+    }
+
+    /// 1.5 — `q` casa sobre `new_digest`.
+    #[test]
+    fn test_count_update_history_q_matches_new_digest() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full(
+                    "web",
+                    "nginx",
+                    "sha256:old",
+                    "sha256:abc123",
+                    "success",
+                    "2026-01-01T00:00:00",
+                ),
+                hist_full(
+                    "db",
+                    "postgres",
+                    "sha256:old",
+                    "sha256:zzz",
+                    "success",
+                    "2026-01-02T00:00:00",
+                ),
+            ],
+        );
+        let params = history_params(Some("sha256:abc"), &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 1);
+    }
+
+    /// 1.5 — `status` repetible con semántica OR.
+    #[test]
+    fn test_count_update_history_status_or_semantics() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full("web", "nginx", "a", "b", "success", "2026-01-01T00:00:00"),
+                hist_full("db", "postgres", "c", "d", "error", "2026-01-02T00:00:00"),
+                hist_full(
+                    "cache",
+                    "redis",
+                    "e",
+                    "f",
+                    "rolled-back",
+                    "2026-01-03T00:00:00",
+                ),
+            ],
+        );
+        let params = history_params(None, &["error", "rolled-back"], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 2);
+    }
+
+    /// 1.5 — filtros combinados `q` + `status`.
+    #[test]
+    fn test_count_update_history_combined_filters() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full("web", "nginx", "a", "b", "success", "2026-01-01T00:00:00"),
+                hist_full("web", "nginx", "c", "d", "error", "2026-01-02T00:00:00"),
+                hist_full("db", "postgres", "e", "f", "error", "2026-01-03T00:00:00"),
+            ],
+        );
+        let params = history_params(Some("web"), &["error"], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 1);
+    }
+
+    /// 1.5 — `total` es el recuento **tras** filtrar, no el total bruto.
+    #[test]
+    fn test_count_update_history_returns_count_after_filtering() {
+        let conn = test_conn();
+        let entries: Vec<UpdateHistoryEntry> = (0..25)
+            .map(|i| {
+                let container = if i % 5 == 0 { "web" } else { "db" };
+                hist_full(
+                    container,
+                    "img",
+                    "a",
+                    "b",
+                    "success",
+                    &format!("2026-01-01T00:{:02}:00", i % 60),
+                )
+            })
+            .collect();
+        seed_history(&conn, &entries);
+        let params = history_params(Some("web"), &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 5);
+    }
+
+    /// 1.6 — `count` ya no aplica el cap de 100 filas.
+    #[test]
+    fn test_count_update_history_counts_beyond_100_rows() {
+        let conn = test_conn();
+        let entries: Vec<UpdateHistoryEntry> = (0..150)
+            .map(|i| {
+                hist_full(
+                    &format!("c{i:03}"),
+                    "img",
+                    "a",
+                    "b",
+                    "success",
+                    &format!("2026-01-01T00:{:02}:{:02}", i / 60, i % 60),
+                )
+            })
+            .collect();
+        seed_history(&conn, &entries);
+        let params = history_params(None, &[], 1, 20);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 150);
+    }
+
+    /// 1.6 — la ventana alcanza filas más allá de las 100 primeras.
+    /// GIVEN 250 filas WHEN `page=13&page_size=20` THEN `items` tiene 10.
+    #[test]
+    fn test_load_update_history_page_window_beyond_100_rows() {
+        let conn = test_conn();
+        let entries: Vec<UpdateHistoryEntry> = (0..250)
+            .map(|i| {
+                hist_full(
+                    &format!("c{i:03}"),
+                    "img",
+                    "a",
+                    "b",
+                    "success",
+                    &format!("2026-01-01T00:{:02}:{:02}", i / 60, i % 60),
+                )
+            })
+            .collect();
+        seed_history(&conn, &entries);
+        let params = history_params(None, &[], 13, 20);
+        let items = load_update_history_page(&conn, &params).unwrap();
+        assert_eq!(items.len(), 10);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 250);
+    }
+
+    /// 1.6 — `total` es independiente de la página.
+    /// GIVEN 250 filas WHEN `page=2&page_size=50` THEN `items` tiene 50.
+    #[test]
+    fn test_load_update_history_page_total_independent_of_page() {
+        let conn = test_conn();
+        let entries: Vec<UpdateHistoryEntry> = (0..250)
+            .map(|i| {
+                hist_full(
+                    &format!("c{i:03}"),
+                    "img",
+                    "a",
+                    "b",
+                    "success",
+                    &format!("2026-01-01T00:{:02}:{:02}", i / 60, i % 60),
+                )
+            })
+            .collect();
+        seed_history(&conn, &entries);
+        let params = history_params(None, &[], 2, 50);
+        let items = load_update_history_page(&conn, &params).unwrap();
+        assert_eq!(items.len(), 50);
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 250);
+    }
+
+    /// 1.6 — `LIMIT`/`OFFSET` devuelven la ventana exacta de la página 2.
+    #[test]
+    fn test_load_update_history_page_applies_limit_and_offset() {
+        let conn = test_conn();
+        // Timestamps crecientes → orden descendente conocido: c24, c23, …, c00.
+        let entries: Vec<UpdateHistoryEntry> = (0..25)
+            .map(|i| {
+                hist_full(
+                    &format!("c{i:02}"),
+                    "img",
+                    "a",
+                    "b",
+                    "success",
+                    &format!("2026-01-01T00:00:{i:02}"),
+                )
+            })
+            .collect();
+        seed_history(&conn, &entries);
+        let params = history_params(None, &[], 2, 10);
+        let items = load_update_history_page(&conn, &params).unwrap();
+        assert_eq!(items.len(), 10);
+        assert_eq!(
+            items[0].container, "c14",
+            "la página 2 empieza tras las 10 más recientes"
+        );
+        assert_eq!(items[9].container, "c05");
+    }
+
+    /// 1.6 — los filtros se aplican antes de paginar.
+    #[test]
+    fn test_load_update_history_page_with_filters() {
+        let conn = test_conn();
+        let mut entries: Vec<UpdateHistoryEntry> = (0..30)
+            .map(|i| {
+                hist_full(
+                    &format!("c{i:02}"),
+                    "img",
+                    "a",
+                    "b",
+                    if i % 2 == 0 { "success" } else { "error" },
+                    &format!("2026-01-01T00:00:{i:02}"),
+                )
+            })
+            .collect();
+        entries.push(hist_full(
+            "web",
+            "nginx",
+            "a",
+            "b",
+            "error",
+            "2026-01-02T00:00:00",
+        ));
+        seed_history(&conn, &entries);
+        let params = history_params(Some("web"), &["error"], 1, 20);
+        let items = load_update_history_page(&conn, &params).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].container, "web");
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 1);
+    }
+
+    /// 1.6 — página más allá del final → ventana vacía.
+    #[test]
+    fn test_load_update_history_page_empty_when_page_beyond_end() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full("web", "nginx", "a", "b", "success", "2026-01-01T00:00:00"),
+                hist_full("db", "postgres", "c", "d", "error", "2026-01-02T00:00:00"),
+            ],
+        );
+        let params = history_params(None, &[], 99, 20);
+        assert!(load_update_history_page(&conn, &params).unwrap().is_empty());
+        assert_eq!(count_update_history(&conn, &params).unwrap(), 2);
+    }
+
+    /// 1.4 — orden por `timestamp` descendente.
+    #[test]
+    fn test_load_update_history_page_orders_by_timestamp_desc() {
+        let conn = test_conn();
+        seed_history(
+            &conn,
+            &[
+                hist_full("old", "img", "a", "b", "success", "2024-01-01T00:00:00"),
+                hist_full("newest", "img", "a", "b", "success", "2024-06-01T00:00:00"),
+                hist_full("middle", "img", "a", "b", "success", "2024-03-01T00:00:00"),
+            ],
+        );
+        let params = history_params(None, &[], 1, 20);
+        let items = load_update_history_page(&conn, &params).unwrap();
+        let containers: Vec<&str> = items.iter().map(|e| e.container.as_str()).collect();
+        assert_eq!(containers, vec!["newest", "middle", "old"]);
+    }
+
+    /// 1.4 — a igual `timestamp`, desempata por inserción descendente (`id DESC`).
+    #[test]
+    fn test_load_update_history_page_tie_breaks_by_insertion_desc() {
+        let conn = test_conn();
+        let ts = "2026-01-01T00:00:00+00:00";
+        seed_history(
+            &conn,
+            &[
+                hist_full("first", "img", "a", "b", "success", ts),
+                hist_full("second", "img", "a", "b", "success", ts),
+                hist_full("third", "img", "a", "b", "success", ts),
+            ],
+        );
+        let params = history_params(None, &[], 1, 20);
+        let items = load_update_history_page(&conn, &params).unwrap();
+        let containers: Vec<&str> = items.iter().map(|e| e.container.as_str()).collect();
+        assert_eq!(containers, vec!["third", "second", "first"]);
+    }
+
+    /// Scenario: Timestamps iguales (spec) — con más entradas de las que cubre una
+    /// página, el desempate `id DESC` debe mantenerse estable a través de
+    /// `LIMIT`/`OFFSET`: sin duplicados ni omisiones en la frontera entre páginas
+    /// y con el mismo orden en llamadas sucesivas.
+    ///
+    /// Se usa `test_pool_with_max_size(1)` porque en SQLite `:memory:` cada
+    /// conexión abre su propia base de datos: sembrar y leer desde conexiones
+    /// distintas no compartiría el histórico.
+    #[tokio::test]
+    async fn test_load_update_history_page_paginates_ties_without_gaps_or_dupes() {
+        let pool = test_pool_with_max_size(1);
+        let obj = pool.get().await.expect("conexión única de test");
+        let conn = obj.lock().expect("lock de conexión");
+
+        // 25 entradas con el MISMO `timestamp`: solo `id DESC` decide el orden.
+        // Contenedores distintos (c00..c24) para observar el orden sin exponer `id`.
+        let ts = "2026-01-01T00:00:00+00:00";
+        let entries: Vec<UpdateHistoryEntry> = (0..25)
+            .map(|i| hist_full(&format!("c{i:02}"), "img", "a", "b", "success", ts))
+            .collect();
+        seed_history(&conn, &entries);
+
+        let params = |page: u32, page_size: u32| history_params(None, &[], page, page_size);
+        let containers = |page: u32, page_size: u32| -> Vec<String> {
+            load_update_history_page(&conn, &params(page, page_size))
+                .unwrap()
+                .iter()
+                .map(|e| e.container.clone())
+                .collect()
+        };
+
+        let total = count_update_history(&conn, &params(1, 10)).unwrap();
+        assert_eq!(total, 25);
+
+        // Orden global de referencia (una sola consulta) y las dos páginas de 10.
+        let full = containers(1, 25);
+        let page1 = containers(1, 10);
+        let page2 = containers(2, 10);
+        assert_eq!(page1.len(), 10);
+        assert_eq!(page2.len(), 10);
+
+        // `id DESC` observable: inserción ascendente ⇒ página 1 en orden inverso.
+        let expected_page1: Vec<String> = (15..25).rev().map(|i| format!("c{i:02}")).collect();
+        assert_eq!(page1, expected_page1);
+
+        // Sin omisiones ni desorden en la frontera: las dos páginas concatenadas
+        // son exactamente la misma ventana que la consulta global.
+        let mut union = page1.clone();
+        union.extend(page2.iter().cloned());
+        assert_eq!(union.as_slice(), &full[..20]);
+        let unique: std::collections::HashSet<&String> = union.iter().collect();
+        assert_eq!(
+            unique.len(),
+            union.len(),
+            "no debe haber duplicados entre páginas"
+        );
+
+        // Orden reproducible: repetir cada página devuelve lo mismo.
+        assert_eq!(containers(1, 10), page1);
+        assert_eq!(containers(2, 10), page2);
+
+        // Cobertura completa: recorrer el resto de páginas da cada entrada una vez.
+        let mut seen = union;
+        let mut page = 3;
+        loop {
+            let items = containers(page, 10);
+            if items.is_empty() {
+                break;
+            }
+            seen.extend(items);
+            page += 1;
+        }
+        let seen_unique: std::collections::HashSet<&String> = seen.iter().collect();
+        assert_eq!(
+            seen.len(),
+            total,
+            "la unión de páginas debe cubrir el total"
+        );
+        assert_eq!(
+            seen_unique.len(),
+            total,
+            "cada entrada aparece exactamente una vez"
+        );
     }
 }

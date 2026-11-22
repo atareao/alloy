@@ -42,6 +42,10 @@ Efecto colateral positivo: el handler deja de tomar `update_history.lock()` en l
 
 Alternativa descartada: sólo paginación. Con ocho columnas y un histórico sin poda, la búsqueda es la mitad del valor de la vista; el patrón ya está resuelto en contenedores y reutilizarlo no añade conceptos nuevos.
 
+La vista expone ambos filtros: un buscador con debounce de 300 ms y un selector múltiple de estado construido con el vocabulario ya presente en la página (`success`, `error`, `rolled-back`, `failed-stopped` y la familia `update-check-*`). El filtrado sigue siendo en servidor: la página sólo pinta los `items` recibidos.
+
+La comparación de `q` es case-insensitive **en ASCII**: el `LIKE` de SQLite no aplica plegado Unicode (a diferencia de `to_lowercase()`, que sí usa el filtrado de la lista de contenedores). Se acepta y se documenta porque en este dominio es equivalente: los nombres de contenedor y las referencias de imagen están restringidos a ASCII por Docker y por la especificación de imágenes OCI, y los digests son hexadecimales. La alternativa —traer las filas y filtrar en aplicación con `to_lowercase()`— se descarta porque rompería la paginación en SQL.
+
 ### D3 — El estado de página vive en `HistoryPage`, no en `App`
 
 En la lista de contenedores la página vive en `App` porque el `EventSource` necesita la misma query. El histórico no tiene stream, así que `HistoryPage` puede construir su query, hacer su `fetch` y guardar `page`, `page_size` y filtros. `App` deja de mantener el array del histórico y sólo pasa `refreshToken: number`, que se incrementa al terminar un batch para forzar la recarga.
@@ -51,6 +55,8 @@ Alternativa descartada: replicar el reparto de contenedores (`App` como dueño d
 ### D4 — Componente compartido `EllipsisText` para elipsis y tooltip
 
 El patrón actual del proyecto es inline (`Typography.Text ellipsis={{ tooltip }}` en `ContainerRow` e `InspectModal`), pero `HistoryPage` necesita el mismo comportamiento en dos columnas de la tabla y en la tarjeta móvil, así que se extrae `frontend/src/components/EllipsisText.tsx` (props: `value`, `mono?`, `secondary?`, `style?`) con elipsis real, `minWidth: 0` y tooltip. Se usa en `HistoryPage`; `ContainerRow` e `InspectModal` se dejan como están para acotar el radio de cambio.
+
+La elipsis de las columnas `Container` e `Imagen` exige una cota de anchura explícita por columna. La tabla del histórico se renderiza con `width: max-content` y `table-layout: auto`, así que cada celda se dimensiona a su max-content: sin cota el contenido nunca excede la celda y la elipsis no se dispara (verificado en Chromium real: un valor de 1687 px no trunca y desborda el contenedor; con `max-width: 250px` trunca y no desborda). `minWidth: 0` sólo actúa dentro de un contenedor flex, por eso basta en la tarjeta móvil y en la columna `Versión` (que ya lleva `maxWidth: 260`) pero no en una celda de tabla. Alternativas descartadas: `scroll={{ x: "max-content" }}` (inyecta la fila oculta `ant-table-measure-row` y duplica el texto de las cabeceras) y `table-layout: fixed` con reparto porcentual (fuerza anchos fijos y empeora el resto de columnas).
 
 ### D5 — Orden determinista `timestamp DESC, id DESC` e índice nuevo
 

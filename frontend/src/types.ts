@@ -202,6 +202,14 @@ export interface PagedContainers {
   page_size: number;
 }
 
+/** Paginated envelope returned by `GET /api/history` (D1). */
+export interface PagedHistory {
+  items: HistoryEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface StateResponse {
   containers: ContainerInfo[];
   total: number;

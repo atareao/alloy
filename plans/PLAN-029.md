@@ -2,8 +2,8 @@
 
 - **Issue**: #197 (https://github.com/atareao/alloy/issues/197)
 - **Change OpenSpec**: `update-history-pagination`
-- **Estado**: propuesta SDD creada — PENDIENTE de aprobación del spec
-- **Base gitflow**: rama `feature/update-history-pagination` desde `development`; PR a `development`.
+- **Estado**: implementada y verificada (TDD RED → GREEN, backend y frontend); auditorías `@rust-reviewer` y `@react-reviewer` sin hallazgos bloqueantes; pendiente de archivado del change y de PR a `develop`.
+- **Base gitflow**: rama `feature/update-history-pagination` desde `develop`; PR a `develop`.
 
 ## Objetivo
 
@@ -54,6 +54,8 @@ El checklist TDD (RED → GREEN → REFACTOR, backend y frontend) vive en `opens
 - Frontend: `pnpm exec tsc -b`, `pnpm run lint`, `pnpm run test` (baseline 209 tests, no bajar) y `pnpm run build`.
 - Auditorías: `@rust-reviewer` (backend) y `@react-reviewer` (frontend), sin hallazgos bloqueantes.
 - E2E: `GET /api/history?page=2&page_size=50` con el envelope correcto, `page_size=30` → 400, y la vista paginando con 10/20/50.
+
+Resultados medidos: backend `cargo test` → 576 passed / 0 failed (baseline 541) y `just check` limpio; frontend `pnpm run test` → 233 passed / 0 failed (baseline 209), con `tsc -b`, `lint` y `build` limpios, y la suite verificada estable en 5 ejecuciones consecutivas bajo carga de CPU. El cap de 100 se elimina al servir; `load_update_history` sigue truncando a 100 filas al arrancar, pero solo alimenta el vector en memoria (`export_config_h` y los `push` de los workers), no la vista.
 
 ## Riesgos
 

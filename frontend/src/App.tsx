@@ -19,7 +19,6 @@ import type {
   StateResponse,
   NotifEvent,
   UpdateProgress,
-  HistoryEntry,
   AppConfig,
   UpdateCheckConfig,
 } from "./types";
@@ -176,8 +175,10 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   }, []);
 
   // ── Cached data for instant tab switching ────────────────
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [config, setConfig] = useState<AppConfig | null>(null);
+  // Señal de refresco del histórico (D3): la página es dueña de su estado y de su
+  // consulta; `App` sólo indica cuándo debe recargar (al terminar un batch).
+  const [historyRefresh, setHistoryRefresh] = useState(0);
   const api = useCallback(async (path: string) => {
     try {
       return await (await apiFetch(path)).json();
@@ -187,9 +188,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   }, []);
   useEffect(() => {
     if (!authenticated) return;
-    api("/api/history").then((d) => {
-      if (d) setHistory(d);
-    });
     api("/api/config").then((d) => {
       if (d) setConfig(d);
     });
@@ -246,9 +244,8 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       const results = mapBatchToResults(bp);
       setCheckResults(results.check);
       setUpdateResults(results.update);
-      api("/api/history").then((d) => {
-        if (d) setHistory(d);
-      });
+      // Al terminar un batch, señaliza al histórico para que recargue su página.
+      setHistoryRefresh((n) => n + 1);
       api("/api/config").then((d) => {
         if (d) setConfig(d);
       });
@@ -568,7 +565,7 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
               />
             )}
             {view === "history" && (
-              <HistoryPage history={history} setHistory={setHistory} />
+              <HistoryPage refreshToken={historyRefresh} />
             )}
             {view === "config" && (
               <ConfigPage
