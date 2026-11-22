@@ -38,7 +38,7 @@ Versiones resultantes tras `pnpm update`:
 - **`frontend/src/test-setup.ts` → `import "@testing-library/jest-dom/vitest"`:** jest-dom 8 ya no amplía los matchers globalmente y vitest 5 dejó de heredar de `jest.Matchers`, lo que provocaba 41 errores `TS2339` (propiedades como `toBeInTheDocument` no existían). El import del entrypoint `/vitest` registra los matchers con los tipos correctos.
 - **`@types/node` en `^24.13.2` (resuelve 24.13.3):** coherencia con `engines.node ^24` y el Dockerfile `node:24`. No se sube a 26.
 - **`oxlint` 1.74 → 1.94:** activa 5 warnings preexistentes de `react(set-state-in-effect)` (`TelegramCard.tsx:42`, `ValetCard.tsx:41`, `MatrixCard.tsx:42`, `DashboardPage.tsx:199`, `App.tsx:326`). No bloquean, pero **no añadir `--deny-warnings`** hasta resolverlos.
-- **antd 6.7.1:** introduce un duplicado upstream de `@ant-design/cssinjs` (2.1.2 + 2.2.0). No forzar con `pnpm.overrides`.
+- **antd 6.7.1:** introduce un duplicado upstream de `@ant-design/cssinjs` (2.1.2 + 2.2.0). **Ya deduplicado en #190** (plan `PLAN-028`): `frontend/pnpm-workspace.yaml` fuerza `2.1.2` con `overrides`. En pnpm 11 los overrides viven en `pnpm-workspace.yaml`, no en el campo `pnpm` de `package.json`. Detalle en `docs/dedupe-antd-cssinjs.md`.
 
 ## Verificación
 
