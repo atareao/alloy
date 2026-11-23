@@ -54,9 +54,6 @@ interface SetupOptions {
   debouncedSearch?: string;
   stateFilter?: string[];
   showPendingUpdates?: boolean;
-  page?: number;
-  pageSize?: number;
-  total?: number;
 }
 
 function makeHandlers() {
@@ -66,8 +63,6 @@ function makeHandlers() {
     setSearchQuery: vi.fn(),
     setStateFilter: vi.fn(),
     setShowPendingUpdates: vi.fn(),
-    onPageChange: vi.fn(),
-    onPageSizeChange: vi.fn(),
   };
 }
 
@@ -89,7 +84,6 @@ function dashboardElement(
           errors: 0,
           checking: "",
         }}
-        containersLoaded
         batchPhase={overrides.batchPhase ?? "idle"}
         checkResults={emptyResults}
         updateResults={emptyResults}
@@ -107,9 +101,6 @@ function dashboardElement(
         debouncedSearch={overrides.debouncedSearch ?? ""}
         stateFilter={overrides.stateFilter ?? []}
         showPendingUpdates={overrides.showPendingUpdates ?? false}
-        total={overrides.total ?? containers.length}
-        page={overrides.page ?? 1}
-        pageSize={overrides.pageSize ?? 20}
         {...handlers}
       />
     </Wrapper>
@@ -141,6 +132,28 @@ describe("DashboardPage", () => {
     });
   });
 
+  // ⚠️ Debe ser el PRIMER test del fichero: React deduplica el warning de
+  // `key` por proceso, y si otro test renderiza antes, el spy ya no lo ve.
+  it("no emite warnings de React por filas sin `key`", () => {
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      setup();
+      const keyWarnings = errorSpy.mock.calls.filter((args) =>
+        args.some(
+          (a) =>
+            typeof a === "string" &&
+            (a.includes("Each child in a list") ||
+              a.includes('unique "key" prop')),
+        ),
+      );
+      expect(keyWarnings).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("renderiza la tabla con los contenedores", async () => {
     setup();
     expect(screen.getByText("web")).toBeInTheDocument();
@@ -149,6 +162,26 @@ describe("DashboardPage", () => {
     await waitFor(() =>
       expect(apiFetchMock).toHaveBeenCalledWith("/api/update-policies"),
     );
+  });
+
+  /**
+   * El Dashboard no pagina: pinta la lista completa recibida y NO delega
+   * ninguna paginación en `ContainerTable`, así que no debe existir ningún
+   * `.ant-pagination`.
+   */
+  it("muestra todos los contenedores recibidos y no renderiza Pagination", async () => {
+    const containers = Array.from({ length: 37 }, (_, i) =>
+      makeContainer({ id: `id-c-${i}`, name: `c-${i}` }),
+    );
+    const { container } = setup({ containers });
+
+    await waitFor(() =>
+      expect(apiFetchMock).toHaveBeenCalledWith("/api/update-policies"),
+    );
+
+    expect(container.querySelector(".ant-pagination")).toBeNull();
+    expect(screen.getByText("c-0")).toBeInTheDocument();
+    expect(screen.getByText("c-36")).toBeInTheDocument();
   });
 
   it("filtra por búsqueda", () => {
@@ -171,20 +204,6 @@ describe("DashboardPage", () => {
     const { setShowPendingUpdates } = setup();
     fireEvent.click(screen.getByRole("switch"));
     expect(setShowPendingUpdates).toHaveBeenCalledWith(true);
-  });
-
-  it("colapsa las filas expandidas al cambiar de página", async () => {
-    const handlers = makeHandlers();
-    const { rerender } = render(dashboardElement({ page: 1 }, handlers));
-
-    expandRow("web");
-    expect(screen.getByText("Parar")).toBeInTheDocument();
-
-    rerender(dashboardElement({ page: 2 }, handlers));
-
-    await waitFor(() =>
-      expect(screen.queryByText("Parar")).not.toBeInTheDocument(),
-    );
   });
 
   it("no colapsa al cambiar searchQuery sin debounce", () => {

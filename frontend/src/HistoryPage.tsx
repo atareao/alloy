@@ -19,7 +19,7 @@ import { apiFetch } from "./api";
 import EllipsisText from "./components/EllipsisText";
 import {
   buildHistoryQuery,
-  DEFAULT_PAGE_SIZE,
+  DEFAULT_HISTORY_PAGE_SIZE,
   historyRowKey,
   PAGE_SIZE_OPTIONS,
 } from "./historyQuery";
@@ -214,7 +214,7 @@ export default function HistoryPage({ refreshToken = 0 }: HistoryPageProps) {
 
   // ── Estado propio de la página (D3) ──────────────────────────
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [pageSize, setPageSize] = useState(DEFAULT_HISTORY_PAGE_SIZE);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string[]>([]);

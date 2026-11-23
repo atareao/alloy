@@ -18,4 +18,10 @@ pub fn routes() -> Router<AppState> {
             "/api/history",
             get(history::get_history_h).delete(axum::routing::delete(history::delete_history_h)),
         )
+        .route("/api/updates/retention", get(history::get_retention_h))
+        .route(
+            "/api/updates/retention",
+            axum::routing::put(history::put_retention_h),
+        )
+        .route("/api/updates/retention/prune", post(history::post_prune_h))
 }

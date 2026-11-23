@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useMediaQuery } from "./useMediaQuery";
 import { useRealtime } from "./useRealtime";
-import { buildContainerQuery, DEFAULT_PAGE_SIZE } from "./containerQuery";
+import { buildContainerQuery } from "./containerQuery";
 import { notification } from "antd";
 import { Layout, Button, Typography, Flex, Space } from "antd";
 import {
@@ -50,10 +50,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
-  const [containersLoaded, setContainersLoaded] = useState(false);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   // Filters live here (not in DashboardPage) so the server query is built in one place.
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -113,30 +109,27 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
     return () => clearInterval(interval);
   }, [authenticated]);
 
-  // Debounce the search box before it reaches the query (300 ms); once the
-  // search settles, jump back to the first page.
+  // Debounce the search box before it reaches the query (300 ms).
   useEffect(() => {
     const t = setTimeout(() => {
       setDebouncedQuery(searchQuery);
-      setPage(1);
     }, 300);
     return () => clearTimeout(t);
   }, [searchQuery]);
 
-  // Canonical query shared by the REST list and the realtime transports.
+  // Canonical query shared by the REST list and the realtime transports. The
+  // Dashboard requests the whole filtered fleet (`all=true`), no pagination.
   const queryString = useMemo(
     () =>
       buildContainerQuery({
-        page,
-        pageSize,
         q: debouncedQuery,
         state: stateFilter,
         hasUpdate: showPendingUpdates,
       }),
-    [page, pageSize, debouncedQuery, stateFilter, showPendingUpdates],
+    [debouncedQuery, stateFilter, showPendingUpdates],
   );
 
-  // Eager fetch of the requested page — refetches whenever the query changes.
+  // Eager fetch of the whole fleet — refetches whenever the query changes.
   useEffect(() => {
     if (!authenticated) return;
     let cancelled = false;
@@ -144,34 +137,23 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
       .then((res) => res.json())
       .then((data: PagedContainers) => {
         if (cancelled) return;
-        // The client owns `page`/`pageSize`; the server response is only the data.
         setContainers(data.items);
-        setTotal(data.total);
-        setContainersLoaded(true);
       })
       .catch(() => {
-        if (!cancelled) setContainersLoaded(true);
+        // error is handled below
       });
     return () => {
       cancelled = true;
     };
   }, [authenticated, queryString]);
 
-  // Filter and page-size changes reset the list to the first page, so the
-  // query never points at a page that may no longer exist.
+  // Simple passthroughs: each handler updates its own state only (no side-effects).
   const handleStateFilterChange = useCallback((filter: string[]) => {
     setStateFilter(filter);
-    setPage(1);
   }, []);
 
   const handleShowPendingUpdatesChange = useCallback((value: boolean) => {
     setShowPendingUpdates(value);
-    setPage(1);
-  }, []);
-
-  const handlePageSizeChange = useCallback((size: number) => {
-    setPageSize(size);
-    setPage(1);
   }, []);
 
   // ── Cached data for instant tab switching ────────────────
@@ -261,8 +243,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
 
   const onState = useCallback((state: StateResponse) => {
     setContainers(state.containers);
-    setContainersLoaded(true);
-    setTotal(state.total);
     setSummary(state.summary);
     setProgress(state.progress);
     setBatchProgress({
@@ -540,7 +520,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
               <DashboardPage
                 containers={containers}
                 progress={progress}
-                containersLoaded={containersLoaded}
                 batchPhase={batchPhase}
                 checkResults={checkResults}
                 updateResults={updateResults}
@@ -557,11 +536,6 @@ export default function App({ colorScheme, setColorScheme }: AppProps) {
                 setStateFilter={handleStateFilterChange}
                 showPendingUpdates={showPendingUpdates}
                 setShowPendingUpdates={handleShowPendingUpdatesChange}
-                total={total}
-                page={page}
-                pageSize={pageSize}
-                onPageChange={setPage}
-                onPageSizeChange={handlePageSizeChange}
               />
             )}
             {view === "history" && (
