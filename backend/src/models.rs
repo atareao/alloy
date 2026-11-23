@@ -770,6 +770,9 @@ pub struct ContainerListQuery {
     pub state: Vec<String>,
     /// Si es `true`, limita a contenedores con actualización pendiente.
     pub has_update: Option<bool>,
+    /// Si es `true`, devuelve toda la flota filtrada en una sola respuesta,
+    /// ignorando (y sin validar) `page`/`page_size`.
+    pub all: bool,
 }
 
 /// Deserialización manual de [`ContainerListQuery`].
@@ -809,7 +812,7 @@ impl<'de> Deserialize<'de> for ContainerListQuery {
             type Value = ContainerListQuery;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("una query string con page, page_size, q, state y has_update")
+                f.write_str("una query string con page, page_size, q, state, has_update y all")
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
@@ -825,6 +828,7 @@ impl<'de> Deserialize<'de> for ContainerListQuery {
                         // Puede aparecer varias veces: se acumulan los valores.
                         "state" => query.state.push(map.next_value()?),
                         "has_update" => query.has_update = Some(map.next_value()?),
+                        "all" => query.all = map.next_value()?,
                         // Clave desconocida: se ignora (tolerancia hacia delante).
                         _ => {
                             map.next_value::<serde::de::IgnoredAny>()?;
@@ -849,7 +853,26 @@ impl ContainerListQuery {
     ///
     /// Devuelve [`AppError::BadRequest`] (HTTP 400) si `page` es 0 o si
     /// `page_size` no pertenece a [`ALLOWED_PAGE_SIZES`].
+    ///
+    /// Con `all = true` la paginación se ignora por completo: `page` y
+    /// `page_size` no se validan y los parámetros normalizados llevan los
+    /// defaults (el resultado final los sobreescribe con el conjunto completo).
     pub fn normalize(self) -> Result<ContainerListParams, AppError> {
+        let q = normalize_filter(self.q);
+        let state = normalize_state_values(self.state);
+        let has_update = self.has_update;
+
+        if self.all {
+            return Ok(ContainerListParams {
+                page: DEFAULT_PAGE,
+                page_size: DEFAULT_PAGE_SIZE,
+                q,
+                state,
+                has_update,
+                all: true,
+            });
+        }
+
         let page = self.page.unwrap_or(DEFAULT_PAGE);
         if page == 0 {
             return Err(AppError::BadRequest(format!(
@@ -867,9 +890,10 @@ impl ContainerListQuery {
         Ok(ContainerListParams {
             page,
             page_size,
-            q: normalize_filter(self.q),
-            state: normalize_state_values(self.state),
-            has_update: self.has_update,
+            q,
+            state,
+            has_update,
+            all: false,
         })
     }
 }
@@ -883,6 +907,9 @@ pub struct ContainerListParams {
     /// Conjunto de estados aceptados (semántica OR). Vacío → no filtra por estado.
     pub state: Vec<String>,
     pub has_update: Option<bool>,
+    /// Si es `true`, `paginate_containers` devuelve todo el conjunto filtrado en
+    /// `page = 1` con `page_size = items.len()`.
+    pub all: bool,
 }
 
 impl Default for ContainerListParams {
@@ -893,6 +920,7 @@ impl Default for ContainerListParams {
             q: None,
             state: Vec::new(),
             has_update: None,
+            all: false,
         }
     }
 }
@@ -1084,6 +1112,10 @@ pub(crate) fn page_offset(page: u32, page_size: u32) -> usize {
 /// cadena vacía, por lo que va primero) y, dentro de cada proyecto, `name`
 /// ascendente. `total` es el recuento **tras** filtrar; una `page` más allá del
 /// final devuelve `items` vacío conservando el `total` real.
+///
+/// Con `params.all = true` se devuelve el conjunto completo filtrado en una sola
+/// página: `page = 1` y `page_size = items.len()`; `page`/`page_size` de la
+/// petición se ignoran.
 pub fn paginate_containers(
     containers: &[ContainerInfo],
     params: &ContainerListParams,
@@ -1101,6 +1133,19 @@ pub fn paginate_containers(
     });
 
     let total = filtered.len();
+
+    if params.all {
+        let items: Vec<ContainerInfo> = filtered.into_iter().cloned().collect();
+        // La flota real nunca se acerca a `u32::MAX`; se satura defensivamente.
+        let page_size = u32::try_from(items.len()).unwrap_or(u32::MAX);
+        return PagedContainers {
+            items,
+            total,
+            page: DEFAULT_PAGE,
+            page_size,
+        };
+    }
+
     let offset = page_offset(params.page, params.page_size);
     let items = filtered
         .into_iter()

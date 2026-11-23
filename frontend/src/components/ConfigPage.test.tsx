@@ -134,8 +134,33 @@ function getCard(title: string): HTMLElement {
   return card as HTMLElement;
 }
 
-function getValetCard(): HTMLElement {
-  return getCard("🪐 Valet");
+/**
+ * Activa una sub-pestaña vertical (antd `Tabs tabPosition="left"`) y devuelve la
+ * Card cuyo título coincide con `cardName`.
+ *
+ * Desde la migración a pestañas verticales, las Cards de canal viven dentro de
+ * su propia pestaña y antd monta los paneles en diferido: el contenido de una
+ * pestaña inactiva no está en el DOM. Por eso primero se pulsa la pestaña
+ * (`role="tab"`) y después se busca la Card. El título lleva emoji, así que se
+ * localiza con un matcher por regex sobre el `heading`, no con string exacto.
+ */
+async function openSubTabCard(
+  tabName: RegExp,
+  cardName: RegExp,
+): Promise<HTMLElement> {
+  fireEvent.click(screen.getByRole("tab", { name: tabName }));
+  const heading = await screen.findByRole("heading", { name: cardName });
+  const card = heading.closest(".ant-card");
+  if (!card) throw new Error(`Card "${cardName}" not found`);
+  return card as HTMLElement;
+}
+
+async function getValetCard(): Promise<HTMLElement> {
+  return openSubTabCard(/^valet$/i, /valet/i);
+}
+
+async function getMatrixCard(): Promise<HTMLElement> {
+  return openSubTabCard(/^matrix$/i, /matrix/i);
 }
 
 describe("ConfigPage — tarjeta Valet", () => {
@@ -150,11 +175,8 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("🪐 Valet")).toBeInTheDocument();
-    });
-
-    const card = getValetCard();
+    // La Card de Valet vive en su sub-pestaña: activarla primero.
+    const card = await getValetCard();
 
     // URL visible in the (plain) input
     expect(within(card).getByDisplayValue("https://valet.test")).toBeInTheDocument();
@@ -172,11 +194,8 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("🪐 Valet")).toBeInTheDocument();
-    });
-
-    const card = getValetCard();
+    // La Card de Valet vive en su sub-pestaña: activarla primero.
+    const card = await getValetCard();
 
     expect(
       within(card).getByRole("switch", { name: "Activar Valet" }),
@@ -196,7 +215,7 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    const card = getValetCard();
+    const card = await getValetCard();
 
     // Activar el switch
     const switchEl = within(card).getByRole("switch");
@@ -232,7 +251,7 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    const card = getValetCard();
+    const card = await getValetCard();
 
     fireEvent.click(
       within(card).getByRole("button", { name: /guardar valet/i }),
@@ -255,7 +274,7 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    const card = getValetCard();
+    const card = await getValetCard();
 
     // Apagar el switch
     const switchEl = within(card).getByRole("switch");
@@ -284,7 +303,7 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    const card = getValetCard();
+    const card = await getValetCard();
 
     fireEvent.change(within(card).getByLabelText("Ingest key de Valet"), {
       target: { value: "   " },
@@ -310,7 +329,7 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    const card = getValetCard();
+    const card = await getValetCard();
 
     const tokenInput = within(card).getByLabelText("Ingest key de Valet");
     fireEvent.change(tokenInput, { target: { value: "val_new" } });
@@ -338,7 +357,7 @@ describe("ConfigPage — tarjeta Valet", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    const card = getValetCard();
+    const card = await getValetCard();
 
     fireEvent.click(within(card).getByRole("button", { name: /test/i }));
 
@@ -654,11 +673,8 @@ describe("ConfigPage — tarjeta Matrix", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     const tokenInput = within(card).getByPlaceholderText("•••• configurado");
     expect(tokenInput).toHaveValue("");
@@ -684,11 +700,8 @@ describe("ConfigPage — tarjeta Matrix", () => {
     const config = makeConfig({ matrix_configured: false });
     const { calls } = renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     fireEvent.click(within(card).getByRole("switch"));
 
@@ -724,11 +737,8 @@ describe("ConfigPage — tarjeta Matrix", () => {
     });
     const { calls } = renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     fireEvent.click(within(card).getByRole("switch"));
 
@@ -757,11 +767,8 @@ describe("ConfigPage — tarjeta Matrix", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     expect(
       within(card).getByRole("switch", { name: "Activar Matrix" }),
@@ -785,11 +792,8 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     expect(
       within(card).getByRole("switch", { name: "Activar Matrix" }),
@@ -810,11 +814,8 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     expect(
       within(card).getByRole("switch", { name: "Activar Matrix" }),
@@ -833,11 +834,8 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     expect(
       within(card).getByRole("switch", { name: "Activar Matrix" }),
@@ -877,11 +875,8 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
     });
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("🪐 Valet")).toBeInTheDocument();
-    });
-
-    const card = getValetCard();
+    // La Card de Valet vive en su sub-pestaña: activarla primero.
+    const card = await getValetCard();
 
     expect(
       within(card).getByRole("switch", { name: "Activar Valet" }),
@@ -896,11 +891,8 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
     const config = makeConfig();
     renderConfigPage(config);
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
-
-    const card = getCard("💬 Matrix");
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const card = await getMatrixCard();
 
     const switchEl = within(card).getByRole("switch", {
       name: "Activar Matrix",
@@ -985,25 +977,24 @@ describe("ConfigPage — aviso de configuración incompleta", () => {
       </Wrapper>,
     );
 
-    await waitFor(() => {
-      expect(screen.getByText("💬 Matrix")).toBeInTheDocument();
-    });
+    // La Card de Matrix vive en su sub-pestaña: activarla primero.
+    const matrixCard = await getMatrixCard();
 
     expect(
-      within(getCard("💬 Matrix")).getByText(
+      within(matrixCard).getByText(
         "Faltan campos para completar la configuración",
       ),
     ).toBeInTheDocument();
 
     fireEvent.click(
-      within(getCard("💬 Matrix")).getByRole("button", {
+      within(matrixCard).getByRole("button", {
         name: /guardar matrix/i,
       }),
     );
 
     await waitFor(() => {
       expect(
-        within(getCard("💬 Matrix")).queryByText(
+        within(matrixCard).queryByText(
           "Faltan campos para completar la configuración",
         ),
       ).not.toBeInTheDocument();
@@ -1876,7 +1867,10 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
   it("renderiza los overrides y precarga sus valores desde GET /api/update-policies/default", async () => {
     renderDefaultPolicyPage();
 
+    // Pestaña «Actualizaciones» → sub-pestaña «Política» (los paneles de antd
+    // se montan en diferido, así que hay que activarla).
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+    fireEvent.click(screen.getByRole("tab", { name: /^política$/i }));
 
     await waitFor(() =>
       expect(
@@ -1894,6 +1888,7 @@ describe("ConfigPage — overrides de la guarda en la política por defecto", ()
     const { calls } = renderDefaultPolicyPage();
 
     fireEvent.click(screen.getByText("⬆️ Actualizaciones"));
+    fireEvent.click(screen.getByRole("tab", { name: /^política$/i }));
 
     // Espera a que la precarga asíncrona del GET se aplique antes de editar.
     await waitFor(() =>

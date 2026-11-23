@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { ConfigProvider } from "antd";
+import { useState } from "react";
 import ContainerTable from "./ContainerTable";
 import { makeContainer } from "./testFixtures";
 import type { ContainerInfo } from "../types";
@@ -16,9 +17,6 @@ interface SetupOptions {
   stateFilter?: string[];
   showPendingUpdates?: boolean;
   batchPhase?: "idle" | "active";
-  total?: number;
-  page?: number;
-  pageSize?: number;
 }
 
 function setup({
@@ -28,17 +26,12 @@ function setup({
   stateFilter = [],
   showPendingUpdates = false,
   batchPhase = "idle",
-  total = 0,
-  page = 1,
-  pageSize = 20,
 }: SetupOptions = {}) {
   const handlers = {
     setSearchQuery: vi.fn(),
     setStateFilter: vi.fn(),
     setShowPendingUpdates: vi.fn(),
     onCheckAll: vi.fn(),
-    onPageChange: vi.fn(),
-    onPageSizeChange: vi.fn(),
   };
   const renderGroup = vi.fn((project: string, items: ContainerInfo[]) => (
     <div key={project} data-testid={`group-${project}`}>
@@ -63,9 +56,6 @@ function setup({
         renderGroup={renderGroup}
         renderRow={renderRow}
         batchPhase={batchPhase}
-        total={total}
-        page={page}
-        pageSize={pageSize}
         {...handlers}
       />
     </Wrapper>,
@@ -130,40 +120,143 @@ describe("ContainerTable", () => {
     expect(screen.queryByRole("button", { name: /check/i })).toBeNull();
     expect(screen.queryByText("Solo pendientes de actualizar")).toBeNull();
   });
+});
 
-  it("oculta el paginador en modo batch", () => {
-    setup({ batchPhase: "active", total: 25, pageSize: 10 });
-    expect(document.querySelector(".ant-pagination")).toBeNull();
+/**
+ * Dashboard sin paginación.
+ *
+ * Contrato que cumple la implementación:
+ *  - `ContainerTable` ya NO renderiza ningún `Pagination` ni selector de tamaño.
+ *  - Se eliminaron las props `total`, `page`, `pageSize`, `onPageChange` y
+ *    `onPageSizeChange` (el Dashboard pinta la lista filtrada entera).
+ */
+describe("ContainerTable — Dashboard sin paginación", () => {
+  it("muestra todas las filas de un dataset de 37 contenedores y no renderiza Pagination", () => {
+    const containers = Array.from({ length: 37 }, (_, i) =>
+      makeContainer({ id: `id-c-${i}`, name: `c-${i}` }),
+    );
+    const renderRow = (c: ContainerInfo) => (
+      <div key={c.id} data-testid="row">
+        {c.name}
+      </div>
+    );
+
+    const { container } = render(
+      <Wrapper>
+        <ContainerTable
+          sortedGroups={[]}
+          noStack={containers}
+          searchQuery=""
+          setSearchQuery={vi.fn()}
+          stateFilter={[]}
+          setStateFilter={vi.fn()}
+          showPendingUpdates={false}
+          setShowPendingUpdates={vi.fn()}
+          availableStates={["running"]}
+          isMobile={false}
+          onCheckAll={vi.fn()}
+          lastCheck={null}
+          nextCheck={null}
+          expandedStacks={{}}
+          renderGroup={vi.fn()}
+          renderRow={renderRow}
+          batchPhase="idle"
+        />
+      </Wrapper>,
+    );
+
+    // No hay ningún control de paginación en el Dashboard.
+    expect(container.querySelector(".ant-pagination")).toBeNull();
+    // Se renderizan las 37 filas, sin recorte por página.
+    expect(screen.getAllByTestId("row")).toHaveLength(37);
   });
+});
 
-  it("muestra el total recibido en el paginador", () => {
-    setup({ total: 25, pageSize: 10 });
-    expect(screen.getByText("25 contenedores")).toBeInTheDocument();
-  });
+// ── Accesibilidad de los filtros (criterio de HistoryPage 3.11) ─────
+describe("ContainerTable — filtros accesibles (a11y)", () => {
+  function TagTestHarness() {
+    const [sf, setSf] = useState<string[]>([]);
+    return (
+      <Wrapper>
+        <ContainerTable
+          sortedGroups={[]}
+          noStack={[]}
+          searchQuery=""
+          setSearchQuery={() => {}}
+          stateFilter={sf}
+          setStateFilter={setSf}
+          showPendingUpdates={false}
+          setShowPendingUpdates={() => {}}
+          availableStates={["running", "exited"]}
+          isMobile={false}
+          onCheckAll={() => {}}
+          lastCheck={null}
+          nextCheck={null}
+          expandedStacks={{}}
+          renderGroup={() => null}
+          renderRow={() => null}
+          batchPhase="idle"
+        />
+      </Wrapper>
+    );
+  }
 
-  it("pide cambiar de página (sin tocar el tamaño) al pulsar otra página", () => {
-    const { onPageChange, onPageSizeChange } = setup({
-      total: 25,
-      pageSize: 10,
-      page: 1,
+  it("el tag de estado se activa con teclado (foco + Enter/Space) y expone aria-pressed", async () => {
+    render(<TagTestHarness />);
+    const chip = screen.getByText("running");
+    // Es un botón alcanzable por teclado, no un `span` inerte.
+    expect(chip).toHaveAttribute("role", "button");
+    expect(chip).toHaveAttribute("tabindex", "0");
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+
+    chip.focus();
+    expect(chip).toHaveFocus();
+
+    await act(async () => {
+      fireEvent.keyDown(chip, { key: "Enter" });
     });
-    fireEvent.click(screen.getByLabelText("Page 2"));
-    expect(onPageChange).toHaveBeenCalledWith(2);
-    expect(onPageSizeChange).not.toHaveBeenCalled();
+    expect(chip).toHaveAttribute("aria-pressed", "true");
+
+    // `Space` también activa el chip (alternándolo de nuevo).
+    await act(async () => {
+      fireEvent.keyDown(chip, { key: " " });
+    });
+    expect(chip).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("pide cambiar el tamaño (y no la página) al elegir otra opción", async () => {
-    const { onPageChange, onPageSizeChange } = setup({
-      total: 100,
-      pageSize: 10,
-      page: 1,
+  function LabelTestHarness() {
+    const [show, setShow] = useState(false);
+    return (
+      <Wrapper>
+        <ContainerTable
+          sortedGroups={[]}
+          noStack={[]}
+          searchQuery=""
+          setSearchQuery={() => {}}
+          stateFilter={[]}
+          setStateFilter={() => {}}
+          showPendingUpdates={show}
+          setShowPendingUpdates={setShow}
+          availableStates={["running"]}
+          isMobile={false}
+          onCheckAll={() => {}}
+          lastCheck={null}
+          nextCheck={null}
+          expandedStacks={{}}
+          renderGroup={() => null}
+          renderRow={() => null}
+          batchPhase="idle"
+        />
+      </Wrapper>
+    );
+  }
+
+  it("la etiqueta 'Solo pendientes de actualizar' está asociada al switch", async () => {
+    render(<LabelTestHarness />);
+    // Click en la etiqueta activa el control asociado (htmlFor/id).
+    await act(async () => {
+      fireEvent.click(screen.getByText("Solo pendientes de actualizar"));
     });
-
-    fireEvent.mouseDown(document.querySelector(".ant-select")!);
-    const option = await screen.findByTitle("50 / page");
-    fireEvent.click(option);
-
-    await waitFor(() => expect(onPageSizeChange).toHaveBeenCalledWith(50));
-    expect(onPageChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("switch")).toBeChecked();
   });
 });

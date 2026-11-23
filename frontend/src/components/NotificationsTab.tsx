@@ -1,4 +1,4 @@
-import { Space } from "antd";
+import { Tabs } from "antd";
 import type { AppConfig } from "../types";
 import type { SavingKey, TestingKey } from "../useConfigPage";
 import TelegramCard from "./TelegramCard";
@@ -28,46 +28,59 @@ export default function NotificationsTab({
   showSuccess,
 }: NotificationsTabProps) {
   return (
-    <Space
-      direction="vertical"
-      size="middle"
+    <Tabs
+      tabPosition="left"
       style={{ width: "100%", paddingTop: 16 }}
-    >
-      {/* ═══ Telegram ═══ */}
-      <TelegramCard
-        configProp={configProp}
-        setConfigProp={setConfigProp}
-        saving={saving}
-        setSaving={setSaving}
-        testing={testing}
-        setTesting={setTesting}
-        setError={setError}
-        showSuccess={showSuccess}
-      />
-
-      {/* ═══ Matrix ═══ */}
-      <MatrixCard
-        configProp={configProp}
-        setConfigProp={setConfigProp}
-        saving={saving}
-        setSaving={setSaving}
-        testing={testing}
-        setTesting={setTesting}
-        setError={setError}
-        showSuccess={showSuccess}
-      />
-
-      {/* ═══ Valet ═══ */}
-      <ValetCard
-        configProp={configProp}
-        setConfigProp={setConfigProp}
-        saving={saving}
-        setSaving={setSaving}
-        testing={testing}
-        setTesting={setTesting}
-        setError={setError}
-        showSuccess={showSuccess}
-      />
-    </Space>
+      items={[
+        {
+          key: "telegram",
+          label: "Telegram",
+          children: (
+            <TelegramCard
+              configProp={configProp}
+              setConfigProp={setConfigProp}
+              saving={saving}
+              setSaving={setSaving}
+              testing={testing}
+              setTesting={setTesting}
+              setError={setError}
+              showSuccess={showSuccess}
+            />
+          ),
+        },
+        {
+          key: "matrix",
+          label: "Matrix",
+          children: (
+            <MatrixCard
+              configProp={configProp}
+              setConfigProp={setConfigProp}
+              saving={saving}
+              setSaving={setSaving}
+              testing={testing}
+              setTesting={setTesting}
+              setError={setError}
+              showSuccess={showSuccess}
+            />
+          ),
+        },
+        {
+          key: "valet",
+          label: "Valet",
+          children: (
+            <ValetCard
+              configProp={configProp}
+              setConfigProp={setConfigProp}
+              saving={saving}
+              setSaving={setSaving}
+              testing={testing}
+              setTesting={setTesting}
+              setError={setError}
+              showSuccess={showSuccess}
+            />
+          ),
+        },
+      ]}
+    />
   );
 }

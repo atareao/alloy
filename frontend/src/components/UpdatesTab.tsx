@@ -1,4 +1,4 @@
-import { Space } from "antd";
+import { Tabs } from "antd";
 import type { AppConfig } from "../types";
 import type { SavingKey } from "../useConfigPage";
 import type { UseUpdateCheckConfigResult } from "../useUpdateCheckConfig";
@@ -28,29 +28,38 @@ export default function UpdatesTab({
   showSuccess,
 }: UpdatesTabProps) {
   return (
-    <Space
-      direction="vertical"
-      size="middle"
+    <Tabs
+      tabPosition="left"
       style={{ width: "100%", paddingTop: 16 }}
-    >
-      {/* ═══ Revisión de actualizaciones ═══ */}
-      <UpdateCheckCard
-        configProp={configProp}
-        updateCheck={updateCheck}
-        saving={saving}
-        setSaving={setSaving}
-        setError={setError}
-        showSuccess={showSuccess}
-      />
-
-      {/* ═══ Política de actualización por defecto ═══ */}
-      <DefaultPolicyCard
-        defaultPolicy={defaultPolicy}
-        saving={saving}
-        setSaving={setSaving}
-        setError={setError}
-        showSuccess={showSuccess}
-      />
-    </Space>
+      items={[
+        {
+          key: "revision",
+          label: "Revisión",
+          children: (
+            <UpdateCheckCard
+              configProp={configProp}
+              updateCheck={updateCheck}
+              saving={saving}
+              setSaving={setSaving}
+              setError={setError}
+              showSuccess={showSuccess}
+            />
+          ),
+        },
+        {
+          key: "policy",
+          label: "Política",
+          children: (
+            <DefaultPolicyCard
+              defaultPolicy={defaultPolicy}
+              saving={saving}
+              setSaving={setSaving}
+              setError={setError}
+              showSuccess={showSuccess}
+            />
+          ),
+        },
+      ]}
+    />
   );
 }

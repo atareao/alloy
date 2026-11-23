@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
+import { useId } from "react";
 import {
   Button,
   Card,
   Flex,
   Input,
-  Pagination,
   Switch,
   Tag,
   Typography,
@@ -12,7 +12,6 @@ import {
 } from "antd";
 import { SearchOutlined, AppstoreOutlined } from "@ant-design/icons";
 import type { ContainerInfo } from "../types";
-import { PAGE_SIZE_OPTIONS } from "../containerQuery";
 
 export interface ContainerTableProps {
   sortedGroups: [string, ContainerInfo[]][];
@@ -32,12 +31,6 @@ export interface ContainerTableProps {
   renderGroup: (project: string, items: ContainerInfo[]) => ReactNode;
   renderRow: (c: ContainerInfo) => ReactNode;
   batchPhase: "idle" | "active";
-  // Server-side pagination
-  total: number;
-  page: number;
-  pageSize: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
 }
 
 export default function ContainerTable({
@@ -58,12 +51,8 @@ export default function ContainerTable({
   renderGroup,
   renderRow,
   batchPhase,
-  total,
-  page,
-  pageSize,
-  onPageChange,
-  onPageSizeChange,
 }: ContainerTableProps) {
+  const pendingSwitchId = useId();
   return (
     <>
       {/* Search + filters bar — hidden during batch operation */}
@@ -124,33 +113,51 @@ export default function ContainerTable({
               <Flex gap="small" wrap="wrap" align="center">
                 {availableStates.length > 0 && (
                   <Flex gap="small" wrap="wrap">
-                    {availableStates.map((s) => (
-                      <Tag
-                        key={s}
-                        color={stateFilter.includes(s) ? "blue" : undefined}
-                        style={{ cursor: "pointer" }}
-                        onClick={() => {
-                          if (stateFilter.includes(s)) {
-                            setStateFilter(stateFilter.filter((f) => f !== s));
-                          } else {
-                            setStateFilter([...stateFilter, s]);
-                          }
-                        }}
-                      >
-                        {s}
-                      </Tag>
-                    ))}
+                    {availableStates.map((s) => {
+                      const selected = stateFilter.includes(s);
+                      return (
+                        <Tag
+                          key={s}
+                          color={selected ? "blue" : undefined}
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={selected}
+                          style={{ cursor: "pointer", marginInlineEnd: 0 }}
+                          onClick={() => {
+                            if (stateFilter.includes(s)) {
+                              setStateFilter(stateFilter.filter((f) => f !== s));
+                            } else {
+                              setStateFilter([...stateFilter, s]);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              // Space desplazaría la página; se anula al activar.
+                              e.preventDefault();
+                              if (stateFilter.includes(s)) {
+                                setStateFilter(stateFilter.filter((f) => f !== s));
+                              } else {
+                                setStateFilter([...stateFilter, s]);
+                              }
+                            }
+                          }}
+                        >
+                          {s}
+                        </Tag>
+                      );
+                    })}
                   </Flex>
                 )}
                 <Flex align="center" gap="small">
                   <Switch
+                    id={pendingSwitchId}
                     checked={showPendingUpdates}
                     onChange={(checked) => setShowPendingUpdates(checked)}
                     size="small"
                   />
-                  <Typography.Text style={{ fontSize: 12 }}>
+                  <label htmlFor={pendingSwitchId} style={{ fontSize: 12, cursor: "pointer" }}>
                     Solo pendientes de actualizar
-                  </Typography.Text>
+                  </label>
                 </Flex>
               </Flex>
             </Flex>
@@ -226,28 +233,6 @@ export default function ContainerTable({
           </Card>
         ))}
 
-      {/* Server-side pagination — hidden during batch, like the filter bar */}
-      {batchPhase === "idle" && (
-        <Flex justify="center" style={{ marginTop: 16 }}>
-          <Pagination
-            current={page}
-            pageSize={pageSize}
-            total={total}
-            pageSizeOptions={PAGE_SIZE_OPTIONS}
-            showSizeChanger
-            showTotal={(t) => `${t} contenedores`}
-            size={isMobile ? "small" : "medium"}
-            onChange={(nextPage, nextPageSize) => {
-              if (nextPageSize !== pageSize) {
-                // Size change resets to the first page.
-                onPageSizeChange(nextPageSize);
-              } else {
-                onPageChange(nextPage);
-              }
-            }}
-          />
-        </Flex>
-      )}
     </>
   );
 }
