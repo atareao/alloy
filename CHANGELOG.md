@@ -1,4 +1,19 @@
 # Changelog
+## [0.31.0] - 2026-11-23
+
+### Documentation
+
+- *(openspec)* Archivar change update-history-retention
+
+### Features
+
+- *(updates)* Retención configurable de update_history
+- *(ux)* Dashboard sin paginación, historial pageSize 10, config tabs verticales
+
+### Other
+
+- Bump version to 0.31.0
+- V0.31.0
 ## [0.30.0] - 2026-11-23
 
 ### Bug Fixes
@@ -28,6 +43,7 @@
 
 - *(openspec)* Archivar change pre-commit-hook-sdd-trap
 - *(openspec)* Archivar change update-history-toctou
+- Release v0.30.0
 
 ### Other
 
