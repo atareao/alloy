@@ -62,17 +62,15 @@ describe("useRealtime", () => {
 
   it("reopens the stream with the new query when it changes", () => {
     const { rerender } = render(
-      <Harness onState={vi.fn()} query="page=1&page_size=20" />,
+      <Harness onState={vi.fn()} query="all=true" />,
     );
-    expect(EventSourceMock.last()!.url).toBe("/api/stream?page=1&page_size=20");
+    expect(EventSourceMock.last()!.url).toBe("/api/stream?all=true");
 
-    rerender(<Harness onState={vi.fn()} query="page=2&page_size=20" />);
+    rerender(<Harness onState={vi.fn()} query="all=true&q=web" />);
 
     expect(EventSourceMock.instances).toHaveLength(2);
     expect(EventSourceMock.instances[0].closed).toBe(true);
-    expect(EventSourceMock.last()!.url).toBe(
-      "/api/stream?page=2&page_size=20",
-    );
+    expect(EventSourceMock.last()!.url).toBe("/api/stream?all=true&q=web");
   });
 
   it("processes a snapshot event into onState", () => {

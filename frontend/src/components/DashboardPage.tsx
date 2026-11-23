@@ -32,7 +32,6 @@ import type { BatchResults } from "./BatchProgress";
 interface DashboardPageProps {
   containers: ContainerInfo[];
   progress: BatchProgress;
-  containersLoaded: boolean;
   // Batch state (managed in App to survive tab switches)
   batchPhase: "idle" | "active";
   checkResults: BatchResults;
@@ -53,12 +52,6 @@ interface DashboardPageProps {
   setStateFilter: (f: string[]) => void;
   showPendingUpdates: boolean;
   setShowPendingUpdates: (v: boolean) => void;
-  // Server-side pagination (owned by App)
-  total: number;
-  page: number;
-  pageSize: number;
-  onPageChange: (page: number) => void;
-  onPageSizeChange: (size: number) => void;
 }
 
 /** Keyframes for the transient container highlight (desktop + mobile). */
@@ -97,11 +90,6 @@ export default function DashboardPage({
   setStateFilter,
   showPendingUpdates,
   setShowPendingUpdates,
-  total,
-  page,
-  pageSize,
-  onPageChange,
-  onPageSizeChange,
 }: DashboardPageProps) {
   const isMobile = useMediaQuery("(max-width: 768px)");
 
@@ -126,11 +114,11 @@ export default function DashboardPage({
     {},
   );
 
-  // Collapse expanded rows/stacks whenever the page or the *debounced* search
-  // (or another filter) changes, so we never keep expansion state for
-  // containers that left the page. Using the debounced value means typing does
-  // not collapse rows until the search is actually applied.
-  const listKey = `${page}|${pageSize}|${debouncedSearch}|${stateFilter.join(",")}|${showPendingUpdates}`;
+  // Collapse expanded rows/stacks whenever the *debounced* search (or another
+  // filter) changes, so we never keep expansion state for containers that left
+  // the list. Using the debounced value means typing does not collapse rows
+  // until the search is actually applied.
+  const listKey = `${debouncedSearch}|${stateFilter.join(",")}|${showPendingUpdates}`;
   const [lastListKey, setLastListKey] = useState(listKey);
   if (lastListKey !== listKey) {
     setLastListKey(listKey);
@@ -341,6 +329,7 @@ export default function DashboardPage({
   // ── Render props ──────────────────────────────────────────
   const renderRow = (c: ContainerInfo) => (
     <ContainerRow
+      key={c.id}
       container={c}
       isMobile={isMobile}
       expanded={!!expandedRows[c.name]}
@@ -601,11 +590,6 @@ export default function DashboardPage({
         renderGroup={renderGroup}
         renderRow={renderRow}
         batchPhase={batchPhase}
-        total={total}
-        page={page}
-        pageSize={pageSize}
-        onPageChange={onPageChange}
-        onPageSizeChange={onPageSizeChange}
       />
 
       {/* Inspect modal */}

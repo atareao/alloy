@@ -415,7 +415,7 @@ describe("App layout - mobile topbar", () => {
   });
 });
 
-// ── Server-side pagination & filters ────────────────────────────────
+// ── Server-side filters ─────────────────────────────────────────────
 function pagedItems(): ContainerInfo[] {
   return [
     makeContainer({
@@ -435,18 +435,17 @@ function containerCalls(fetchMock: ReturnType<typeof vi.fn>): string[] {
     .filter((u) => u.startsWith("/api/containers"));
 }
 
-/** Echoes the requested page/page_size back, like the backend envelope. */
-function echoEnvelope(url: string, total = 2) {
+/** Echoes the requested params back, like the backend envelope. */
+function echoEnvelope(url: string) {
   const u = new URL(url, "http://localhost");
   return {
     items: pagedItems(),
-    total,
-    page: Number(u.searchParams.get("page") ?? 1),
-    page_size: Number(u.searchParams.get("page_size") ?? 20),
+    total: pagedItems().length,
+    all: u.searchParams.get("all") === "true",
   };
 }
 
-/** Wraps `mockAuthResponse` overriding only the paginated list endpoint. */
+/** Wraps `mockAuthResponse` overriding only the containers list endpoint. */
 function pagedFetch(makeBody: (url: string) => unknown) {
   const base = mockAuthResponse(true);
   return vi.fn().mockImplementation((url: string) => {
@@ -457,13 +456,13 @@ function pagedFetch(makeBody: (url: string) => unknown) {
   });
 }
 
-describe("App - server-side pagination and filters", () => {
+describe("App - server-side filters", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     EventSourceMock.reset();
   });
 
-  it("pide /api/containers con page y page_size en la carga inicial", async () => {
+  it("pide /api/containers con all=true en la carga inicial", async () => {
     const fetchMock = pagedFetch((url) => echoEnvelope(url));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -476,9 +475,7 @@ describe("App - server-side pagination and filters", () => {
     await waitFor(() =>
       expect(containerCalls(fetchMock).length).toBeGreaterThan(0),
     );
-    expect(containerCalls(fetchMock)[0]).toBe(
-      "/api/containers?page=1&page_size=20",
-    );
+    expect(containerCalls(fetchMock)[0]).toBe("/api/containers?all=true");
   });
 
   it("pide /api/containers con q tras el debounce de la búsqueda", async () => {
@@ -547,29 +544,6 @@ describe("App - server-side pagination and filters", () => {
       expect(
         containerCalls(fetchMock).some((u) => u.includes("has_update=true")),
       ).toBe(true),
-    );
-  });
-
-  it("pide la página 2 y reabre el stream al cambiar de página", async () => {
-    const fetchMock = pagedFetch((url) => echoEnvelope(url, 25));
-    vi.stubGlobal("fetch", fetchMock);
-
-    render(
-      <Wrapper>
-        <App colorScheme="dark" setColorScheme={() => {}} />
-      </Wrapper>,
-    );
-
-    await screen.findByText("25 contenedores");
-    fireEvent.click(screen.getByLabelText("Page 2"));
-
-    await waitFor(() =>
-      expect(containerCalls(fetchMock).some((u) => u.includes("page=2"))).toBe(
-        true,
-      ),
-    );
-    await waitFor(() =>
-      expect(EventSourceMock.last()!.url).toContain("page=2"),
     );
   });
 });

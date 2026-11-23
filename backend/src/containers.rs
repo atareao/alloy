@@ -1239,6 +1239,136 @@ mod tests {
         );
     }
 
+    // ── modo all=true (listado completo) ─────────────────────
+    //
+    // `all=true` devuelve TODA la flota filtrada en una sola respuesta: `items`
+    // incluye todos los contenedores, `total` es su número y `page`/`page_size`
+    // reflejan el conjunto completo (`page=1`, `page_size=items.len()`). Los
+    // parámetros `page`/`page_size` de la petición se ignoran (no se validan).
+
+    /// `all=true` con una flota mayor que la página por defecto devuelve los 120.
+    #[tokio::test]
+    async fn test_list_containers_all_returns_every_container() {
+        let containers: Vec<ContainerInfo> = (0..120)
+            .map(|i| make_listed_container(&format!("c{i:03}"), "running", false, Some("alpha")))
+            .collect();
+        let (status, json) = get_json(list_app(containers).await, "/api/containers?all=true").await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(120));
+        assert_eq!(json["total"], 120);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["page_size"], 120);
+    }
+
+    /// `all=true` aplica los filtros y devuelve TODOS los que pasan el filtro,
+    /// no solo la primera página.
+    #[tokio::test]
+    async fn test_list_containers_all_applies_state_filter() {
+        let mut containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("run{i:03}"), "running", false, None))
+            .collect();
+        containers.extend(
+            (0..10).map(|i| make_listed_container(&format!("stop{i:03}"), "exited", false, None)),
+        );
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?all=true&state=running",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(25));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// `all=true&page_size=30`: `page_size` se ignora, no se valida → `200` con
+    /// todos los items (no `400`).
+    #[tokio::test]
+    async fn test_list_containers_all_ignores_invalid_page_size() {
+        let containers: Vec<ContainerInfo> = (0..3)
+            .map(|i| make_listed_container(&format!("c{i}"), "running", false, None))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?all=true&page_size=30",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(3));
+        assert_eq!(json["total"], 3);
+    }
+
+    /// `all=true` también ignora `page`: no recorta a partir de la página 2.
+    #[tokio::test]
+    async fn test_list_containers_all_ignores_page() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:03}"), "running", false, None))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?all=true&page=2&page_size=10",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(25));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// `all=true` combinado con el filtro `q` devuelve todos los coincidentes.
+    #[tokio::test]
+    async fn test_list_containers_all_applies_q_filter() {
+        let mut containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("web{i:03}"), "running", false, Some("alpha")))
+            .collect();
+        containers.extend(
+            (0..5).map(|i| {
+                make_listed_container(&format!("db{i:03}"), "running", false, Some("beta"))
+            }),
+        );
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?all=true&q=alpha",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(25));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// Regresión: `all=false` (o ausente) mantiene la paginación intacta.
+    #[tokio::test]
+    async fn test_list_containers_all_false_keeps_pagination() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_listed_container(&format!("c{i:03}"), "running", false, None))
+            .collect();
+        let (status, json) = get_json(
+            list_app(containers).await,
+            "/api/containers?all=false&page=1&page_size=20",
+        )
+        .await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(json["items"].as_array().map(Vec::len), Some(20));
+        assert_eq!(json["total"], 25);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["page_size"], 20);
+    }
+
+    /// Regresión: sin `all`, `page_size=30` sigue siendo un `400`.
+    #[tokio::test]
+    async fn test_list_containers_without_all_still_rejects_page_size_30() {
+        let (status, _) = get_json(
+            list_app(vec![make_listed_container("web", "running", false, None)]).await,
+            "/api/containers?all=false&page_size=30",
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
     // ── strip_name ───────────────────────────────────────────
 
     #[test]

@@ -655,4 +655,155 @@ mod tests {
         assert_eq!(json["total"], 2);
         assert_eq!(json["summary"]["total"], 3, "summary global sobre la flota");
     }
+
+    // ── /api/state y /api/stream con all=true (flota completa) ──
+
+    /// Parsea la query de un endpoint de tiempo real a [`ContainerListParams`],
+    /// exactamente como hacen `state_h`/`stream_h` (`Query` + `normalize`).
+    fn params_from_query(uri: &str) -> ContainerListParams {
+        let uri: axum::http::Uri = uri.parse().expect("uri válida");
+        let Query(query) = Query::<ContainerListQuery>::try_from_uri(&uri).expect("query válida");
+        query.normalize().expect("query normalizable")
+    }
+
+    /// Ejecuta `GET <uri>` contra un router de eventos con la caché poblada y
+    /// pre-notifica el long-poll para que `/api/state` retorne de inmediato.
+    async fn get_state_json(containers: Vec<ContainerInfo>, uri: &str) -> serde_json::Value {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let state = crate::test_support::test_app_state(
+            crate::config::Config::default(),
+            crate::db::test_pool(),
+        );
+        *state.cached_containers.write().await = Some(containers);
+        // Notifica antes de poll-ear `notified()`: el long-poll retorna ya.
+        state.state_notify.notify_one();
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&body).expect("JSON de /api/state")
+    }
+
+    /// Construye el stream de `/api/stream` con `params` y devuelve el JSON del
+    /// primer evento `snapshot`.
+    async fn first_stream_snapshot(
+        containers: Vec<ContainerInfo>,
+        params: ContainerListParams,
+    ) -> serde_json::Value {
+        use crate::models::{
+            BatchProgress, ContainerEvent, NotifEvent, StateEvent, UpdateProgress,
+        };
+        use futures::StreamExt;
+
+        let cached: CachedContainers = Arc::new(RwLock::new(Some(containers)));
+        let progress_cache: Arc<Mutex<BatchProgress>> =
+            Arc::new(Mutex::new(BatchProgress::default()));
+        let (tx, _) = broadcast::channel::<StateEvent>(8);
+        let (progress_tx, _) = broadcast::channel::<UpdateProgress>(8);
+        let (notif_tx, _) = broadcast::channel::<NotifEvent>(8);
+        let (container_event_tx, _) = broadcast::channel::<ContainerEvent>(8);
+
+        let mut stream = Box::pin(
+            build_event_stream(
+                cached,
+                progress_cache,
+                tx,
+                progress_tx,
+                notif_tx,
+                container_event_tx,
+                params,
+            )
+            .await,
+        );
+
+        let first = timeout(Duration::from_secs(2), stream.next())
+            .await
+            .expect("first event within timeout")
+            .expect("stream yields an item")
+            .expect("event is Ok");
+        sse_data_json(&render_event(first).await)
+    }
+
+    /// `GET /api/state?all=true` devuelve toda la flota, no la primera página.
+    #[tokio::test]
+    async fn test_state_all_true_returns_full_fleet() {
+        let containers: Vec<ContainerInfo> = (0..120)
+            .map(|i| make_container(&format!("c{i:03}"), "running", false))
+            .collect();
+        let json = get_state_json(containers, "/api/state?all=true").await;
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(120));
+        assert_eq!(json["total"], 120);
+    }
+
+    /// `GET /api/state?all=true&state=running` devuelve todos los filtrados.
+    #[tokio::test]
+    async fn test_state_all_true_applies_state_filter() {
+        let mut containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_container(&format!("run{i:03}"), "running", false))
+            .collect();
+        containers.extend((0..10).map(|i| make_container(&format!("stop{i:03}"), "exited", false)));
+        let json = get_state_json(containers, "/api/state?all=true&state=running").await;
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(25));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// El primer `snapshot` de `/api/stream?all=true` contiene toda la flota.
+    #[tokio::test]
+    async fn test_stream_snapshot_all_true_returns_full_fleet() {
+        let containers: Vec<ContainerInfo> = (0..120)
+            .map(|i| make_container(&format!("c{i:03}"), "running", false))
+            .collect();
+        let json =
+            first_stream_snapshot(containers, params_from_query("/api/stream?all=true")).await;
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(120));
+        assert_eq!(json["total"], 120);
+    }
+
+    /// `snapshot` de `/api/stream?all=true` con filtro devuelve todos los filtrados.
+    #[tokio::test]
+    async fn test_stream_snapshot_all_true_applies_filter() {
+        let mut containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_container(&format!("run{i:03}"), "running", true))
+            .collect();
+        containers.extend((0..10).map(|i| make_container(&format!("stop{i:03}"), "exited", false)));
+        let json = first_stream_snapshot(
+            containers,
+            params_from_query("/api/stream?all=true&state=running"),
+        )
+        .await;
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(25));
+        assert_eq!(json["total"], 25);
+    }
+
+    /// Regresión: `/api/stream` sin `all` sigue entregando solo la primera página.
+    #[tokio::test]
+    async fn test_stream_snapshot_without_all_stays_paginated() {
+        let containers: Vec<ContainerInfo> = (0..25)
+            .map(|i| make_container(&format!("c{i:02}"), "running", false))
+            .collect();
+        let json = first_stream_snapshot(containers, params_from_query("/api/stream")).await;
+
+        assert_eq!(json["containers"].as_array().map(Vec::len), Some(20));
+        assert_eq!(json["total"], 25);
+        assert_eq!(json["page"], 1);
+        assert_eq!(json["page_size"], 20);
+    }
 }

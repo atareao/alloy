@@ -10,7 +10,7 @@ import type { HistoryEntry, PagedHistory } from "./types";
  *
  * Contrato que deben cumplir estos tests (aún NO implementado):
  *  - `HistoryPage` es dueña de su estado y de su consulta (D3): al montar pide
- *    `/api/history?page=1&page_size=20` y pinta los `items` con el `total` recibido.
+ *    `/api/history?page=1&page_size=10` y pinta los `items` con el `total` recibido.
  *  - `Pagination` con selector 10/20/50 en escritorio y móvil; cambiar de página
  *    consulta la página nueva y cambiar de tamaño resetea a la página 1.
  *  - `Container`/`Imagen` usan elipsis real (sin `slice` manual) con tooltip del valor completo.
@@ -71,7 +71,7 @@ function historyFetch(pages: Record<number, HistoryEntry[]>, total: number) {
       }
       const u = new URL(url, "http://localhost");
       const page = Number(u.searchParams.get("page") ?? 1);
-      const pageSize = Number(u.searchParams.get("page_size") ?? 20);
+      const pageSize = Number(u.searchParams.get("page_size") ?? 10);
       return Promise.resolve(
         new Response(
           JSON.stringify(
@@ -208,14 +208,14 @@ afterEach(() => {
 
 // ── 3.1 Carga inicial contra el servidor ───────────────────────────
 describe("HistoryPage — paginación en servidor (D1/D3)", () => {
-  it("3.1 solicita /api/history?page=1&page_size=20 al montar y pinta items y total", async () => {
+  it("3.1 solicita /api/history?page=1&page_size=10 al montar y pinta items y total", async () => {
     const fetchMock = historyFetch({ 1: makeEntries(20) }, 25);
     vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
 
     await waitFor(() =>
-      expect(historyCalls(fetchMock)[0]).toBe("/api/history?page=1&page_size=20"),
+      expect(historyCalls(fetchMock)[0]).toBe("/api/history?page=1&page_size=10"),
     );
     // Pinta los items de la respuesta (no una lista completa recortada en cliente).
     expect(await screen.findByText("c-0")).toBeInTheDocument();
@@ -361,7 +361,7 @@ describe("HistoryPage — paginación en servidor (D1/D3)", () => {
       expect(historyCalls(fetchMock).length).toBeGreaterThan(before),
     );
     expect(historyCalls(fetchMock).at(-1)).toBe(
-      "/api/history?page=2&page_size=20",
+      "/api/history?page=2&page_size=10",
     );
   });
 
@@ -394,7 +394,7 @@ describe("HistoryPage — paginación en servidor (D1/D3)", () => {
       expect(
         historyCalls(fetchMock)
           .slice(readsBeforeDelete)
-          .some((u) => u === "/api/history?page=1&page_size=20"),
+          .some((u) => u === "/api/history?page=1&page_size=10"),
       ).toBe(true),
     );
   });
@@ -669,7 +669,7 @@ describe("HistoryPage — filtros de texto y estado (servidor)", () => {
       });
 
       expect(historyCalls(fetchMock).at(-1)).toBe(
-        "/api/history?page=1&page_size=20&q=web",
+        "/api/history?page=1&page_size=10&q=web",
       );
     } finally {
       vi.useRealTimers();
@@ -696,7 +696,7 @@ describe("HistoryPage — filtros de texto y estado (servidor)", () => {
 
     await waitFor(() =>
       expect(historyCalls(fetchMock).at(-1)).toBe(
-        "/api/history?page=1&page_size=20&status=error&status=rolled-back",
+        "/api/history?page=1&page_size=10&status=error&status=rolled-back",
       ),
     );
   });
@@ -710,7 +710,7 @@ describe("HistoryPage — filtros de texto y estado (servidor)", () => {
       expect(historyCalls(fetchMock).length).toBeGreaterThan(0),
     );
 
-    expect(historyCalls(fetchMock)[0]).toBe("/api/history?page=1&page_size=20");
+    expect(historyCalls(fetchMock)[0]).toBe("/api/history?page=1&page_size=10");
     expect(
       historyCalls(fetchMock).every(
         (u) => !u.includes("q=") && !u.includes("status="),
@@ -844,7 +844,7 @@ describe("HistoryPage — regresión: el debounce no resetea la página al monta
     fireEvent.click(screen.getByLabelText("Page 2"));
     await act(async () => {}); // fetch de la página 2
     expect(historyCalls(fetchMock).at(-1)).toBe(
-      "/api/history?page=2&page_size=20",
+      "/api/history?page=2&page_size=10",
     );
 
     // Se deja pasar la ventana del debounce: ningún temporizador del montaje
@@ -857,7 +857,7 @@ describe("HistoryPage — regresión: el debounce no resetea la página al monta
     const idxPage2 = reads.findIndex((u) => u.includes("page=2"));
     expect(idxPage2).toBeGreaterThanOrEqual(0);
     expect(reads.slice(idxPage2).some((u) => u.includes("page=1"))).toBe(false);
-    expect(reads.at(-1)).toBe("/api/history?page=2&page_size=20");
+    expect(reads.at(-1)).toBe("/api/history?page=2&page_size=10");
   });
 
   it("escribir y borrar dentro de la ventana del debounce no resetea la página 2", async () => {
@@ -885,7 +885,7 @@ describe("HistoryPage — regresión: el debounce no resetea la página al monta
 
     const reads = historyCalls(fetchMock);
     expect(reads.some((u) => u.includes("q=web"))).toBe(false);
-    expect(reads.at(-1)).toBe("/api/history?page=2&page_size=20");
+    expect(reads.at(-1)).toBe("/api/history?page=2&page_size=10");
   });
 });
 
@@ -928,5 +928,39 @@ describe("HistoryPage — mensaje de vacío según filtros", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ── pageSize por defecto del Historial (ui-pagination) ─────────────
+/**
+ * Historial con paginación por defecto de 10.
+ *
+ * Contrato: `HistoryPage` arranca con `DEFAULT_HISTORY_PAGE_SIZE = 10`
+ * (definido en `historyQuery.ts`), de modo que la petición inicial es
+ * `page_size=10` y se pintan 10 filas.
+ */
+describe("HistoryPage — pageSize por defecto 10", () => {
+  it("la petición inicial usa page_size=10 y muestra 10 filas en la página 1", async () => {
+    const fetchMock = historyFetch({ 1: makeEntries(10) }, 25);
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(historyCalls(fetchMock)[0]).toBe(
+        "/api/history?page=1&page_size=10",
+      ),
+    );
+
+    // 10 filas (c-0..c-9) y ninguna más (la elipsis recorta la página 2).
+    expect(await screen.findByText("c-0")).toBeInTheDocument();
+    expect(screen.getByText("c-9")).toBeInTheDocument();
+    expect(screen.queryByText("c-10")).not.toBeInTheDocument();
+
+    // El paginador refleja el total (25) y está en la página 1.
+    expect(await screen.findByText("25 entradas")).toBeInTheDocument();
+    expect(
+      document.querySelector(".ant-pagination-item-active")?.textContent,
+    ).toBe("1");
   });
 });

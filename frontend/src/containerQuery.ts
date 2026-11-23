@@ -1,11 +1,10 @@
 /**
- * Query params shared by the paginated REST list (`GET /api/containers`) and
- * the realtime transports (`/api/stream` and `/api/state`), which accept the
- * same filtering/pagination parameters.
+ * Query params shared by the full REST list (`GET /api/containers`) and the
+ * realtime transports (`/api/stream` and `/api/state`), which accept the same
+ * filtering parameters. The Dashboard no longer paginates: it requests the
+ * whole filtered fleet with `all=true`.
  */
 export interface ContainerQuery {
-  page: number;
-  pageSize: number;
   /** Free-text search over name/image/compose_project (server-side). */
   q: string;
   /** Exact state matches (server-side). */
@@ -14,22 +13,18 @@ export interface ContainerQuery {
   hasUpdate: boolean;
 }
 
-/** Page sizes offered by the paginator (must match the backend allow-list). */
+/** Page sizes offered by the History paginator (must match the backend allow-list). */
 export const PAGE_SIZE_OPTIONS = [10, 20, 50];
-
-/** Default page size, mirroring the backend default. */
-export const DEFAULT_PAGE_SIZE = 20;
 
 /**
  * Serializes a `ContainerQuery` into a query string.
  *
- * `page` and `page_size` are always present; empty filters are omitted so the
- * URL stays canonical and cache-friendly.
+ * Always asks for the complete fleet (`all=true`); empty filters are omitted
+ * so the URL stays canonical and cache-friendly.
  */
 export function buildContainerQuery(query: ContainerQuery): string {
   const params = new URLSearchParams();
-  params.set("page", String(query.page));
-  params.set("page_size", String(query.pageSize));
+  params.set("all", "true");
 
   const q = query.q.trim();
   if (q) params.set("q", q);

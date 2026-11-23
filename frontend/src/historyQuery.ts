@@ -16,8 +16,11 @@ export interface HistoryQuery {
   status: string[];
 }
 
-/** Page sizes and default, shared with the container list (10/20/50, default 20). */
-export { PAGE_SIZE_OPTIONS, DEFAULT_PAGE_SIZE } from "./containerQuery";
+/** Page sizes shared with the container list query module (10/20/50). */
+export { PAGE_SIZE_OPTIONS } from "./containerQuery";
+
+/** Default page size of the History list. */
+export const DEFAULT_HISTORY_PAGE_SIZE = 10;
 
 /**
  * Serializes a `HistoryQuery` into a query string.
