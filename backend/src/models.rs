@@ -304,6 +304,11 @@ pub struct Settings {
     /// (segundos). `None` = sin override.
     #[serde(default)]
     pub default_health_window_secs: Option<u64>,
+
+    /// Días de retención del histórico de actualizaciones (`update_history`).
+    /// `None` → se aplica el default (30). `0` → retención ilimitada.
+    #[serde(default)]
+    pub update_history_retention_days: Option<u32>,
 }
 
 /// Default global: nº máximo de intentos de arranque sano antes del rollback.
@@ -362,6 +367,33 @@ pub(crate) const fn default_update_health_window_secs() -> u64 {
     DEFAULT_UPDATE_HEALTH_WINDOW_SECS
 }
 
+/// Configuración de retención de histórico de actualizaciones.
+///
+/// `retention_days: 0` significa retención ilimitada (no se poda).
+/// Default: 30 días.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateHistoryRetention {
+    /// Días de retención. `0` significa retención ilimitada.
+    pub retention_days: u32,
+}
+
+impl Default for UpdateHistoryRetention {
+    fn default() -> Self {
+        Self { retention_days: 30 }
+    }
+}
+
+/// Resultado de una operación de poda.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PruneResult {
+    /// Número de filas eliminadas.
+    pub deleted: u64,
+    /// Días de retención aplicados (0 = ilimitada, deleted siempre 0).
+    pub retention_days: u32,
+    /// Duración de la operación en milisegundos.
+    pub duration_ms: u64,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -388,6 +420,7 @@ impl Default for Settings {
             update_health_window_secs: DEFAULT_UPDATE_HEALTH_WINDOW_SECS,
             default_max_start_attempts: None,
             default_health_window_secs: None,
+            update_history_retention_days: None,
         }
     }
 }

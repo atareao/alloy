@@ -611,6 +611,27 @@ pub fn clear_update_history(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
+/// Elimina de `update_history` los registros más antiguos que `retention_days`.
+/// Devuelve el número de filas eliminadas.
+/// Si `retention_days == 0`, no elimina nada y devuelve 0.
+pub async fn prune_update_history(pool: &DbPool, retention_days: u32) -> Result<u64, String> {
+    if retention_days == 0 {
+        return Ok(0);
+    }
+    let obj = pool.get().await.map_err(|e| format!("pool error: {e}"))?;
+    let conn = obj
+        .lock()
+        .map_err(|e| format!("connection lock error: {e}"))?;
+    let modifier = format!("-{} days", retention_days);
+    let deleted = conn
+        .execute(
+            "DELETE FROM update_history WHERE timestamp < datetime('now', ?1)",
+            params![modifier],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(deleted as u64)
+}
+
 /// Cláusula `WHERE` y valores de los filtros `q`/`status` de `params`.
 ///
 /// Se comparte entre [`count_update_history`] y [`load_update_history_page`] para
@@ -872,6 +893,9 @@ pub fn load_settings(conn: &Connection) -> SqlResult<Settings> {
         default_health_window_secs: map
             .get("default_health_window_secs")
             .and_then(|v| v.parse().ok()),
+        update_history_retention_days: map
+            .get("update_history_retention_days")
+            .and_then(|v| v.parse().ok()),
     })
 }
 
@@ -938,6 +962,12 @@ pub fn save_settings(conn: &Connection, settings: &Settings) -> SqlResult<()> {
         (
             "default_health_window_secs",
             settings.default_health_window_secs.map(|v| v.to_string()),
+        ),
+        (
+            "update_history_retention_days",
+            settings
+                .update_history_retention_days
+                .map(|v| v.to_string()),
         ),
     ];
 

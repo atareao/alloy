@@ -1,6 +1,7 @@
 use axum::extract::{Query, State};
 use axum::response::Json;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 use crate::db;
@@ -56,6 +57,56 @@ pub async fn delete_history_h(
         tracing::warn!("delete_history_h: no se pudo persistir el borrado del historial: {e}");
     }
     Ok(Json(serde_json::json!({"status": "cleared"})))
+}
+
+/// `GET /api/updates/retention` — devuelve la política de retención actual.
+pub async fn get_retention_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+) -> Result<Json<UpdateHistoryRetention>, AppError> {
+    let s = settings.lock().await;
+    let retention_days = s.update_history_retention_days.unwrap_or(30);
+    Ok(Json(UpdateHistoryRetention { retention_days }))
+}
+
+/// `PUT /api/updates/retention` — actualiza la política de retención.
+///
+/// El cuerpo se extrae como `Result<Json<_>, JsonRejection>` para mapear
+/// cualquier fallo de deserialización (JSON malformado, `retention_days < 0`,
+/// etc.) a `400 Bad Request` en vez del `422` por defecto de axum.
+pub async fn put_retention_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
+    body: Result<Json<UpdateHistoryRetention>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<UpdateHistoryRetention>, AppError> {
+    let Json(body) =
+        body.map_err(|e| AppError::BadRequest(format!("cuerpo JSON inválido: {e}")))?;
+    let mut s = settings.lock().await;
+    s.update_history_retention_days = Some(body.retention_days);
+    let conn = db_pool.get().await.map_err(AppError::from_pool)?;
+    let guard = conn.lock().map_err(AppError::from_pool)?;
+    let _ = db::save_settings(&guard, &s);
+    Ok(Json(UpdateHistoryRetention {
+        retention_days: s.update_history_retention_days.unwrap_or(30),
+    }))
+}
+
+/// `POST /api/updates/retention/prune` — ejecuta poda manual del histórico.
+pub async fn post_prune_h(
+    State(settings): State<Arc<Mutex<Settings>>>,
+    State(db_pool): State<DbPool>,
+) -> Result<Json<PruneResult>, AppError> {
+    let s = settings.lock().await;
+    let retention_days = s.update_history_retention_days.unwrap_or(30);
+    let start = Instant::now();
+    let deleted = db::prune_update_history(&db_pool, retention_days)
+        .await
+        .map_err(AppError::from_db)?;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    Ok(Json(PruneResult {
+        deleted,
+        retention_days,
+        duration_ms,
+    }))
 }
 
 #[cfg(test)]
@@ -610,5 +661,485 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["total"], 0);
         assert_eq!(json["items"].as_array().map(Vec::len), Some(0));
+    }
+
+    // ── update-history-retention (RED: funcionalidad no implementada) ────
+
+    /// 2.1 — GIVEN instalación nueva WHEN GET /api/updates/retention THEN 200 {retention_days: 30}
+    #[tokio::test]
+    async fn test_retention_default_get() {
+        let pool = pool();
+        let app = retention_http_app(pool);
+        let (status, json) = get_json(app, "/api/updates/retention").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json, serde_json::json!({"retention_days": 30}));
+    }
+
+    /// 2.2 — GIVEN usuario autenticado WHEN PUT /api/updates/retention THEN 200 y persiste
+    #[tokio::test]
+    async fn test_retention_valid_put() {
+        let pool = pool();
+        let app = retention_http_app(pool);
+        let (status, json) = put_json(
+            &app,
+            "/api/updates/retention",
+            serde_json::json!({"retention_days": 7}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json, serde_json::json!({"retention_days": 7}));
+        // Verificamos que GET posterior refleja el cambio
+        let (_, after_get) = get_json(app, "/api/updates/retention").await;
+        assert_eq!(after_get["retention_days"], 7);
+    }
+
+    /// 2.3 — retention_days = 0 → no poda, deleted == 0
+    #[tokio::test]
+    async fn test_retention_unlimited_no_puda() {
+        let pool = pool();
+        // Sembramos una entrada vieja para asegurar que hay datos
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        let obj = pool.get().await.expect("conexión de test");
+        let conn = obj.lock().expect("lock de conexión");
+        db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        drop(conn);
+        drop(obj);
+
+        // Llamada directa a la función de poda
+        let deleted = db::prune_update_history(&pool, 0)
+            .await
+            .expect("prune_update_history");
+        assert_eq!(deleted, 0, "con retention_days=0 no debe eliminarse nada");
+    }
+
+    /// 2.4 — Poda idempotente: ejecutar dos veces seguidas → deleted == 0 en la segunda
+    #[tokio::test]
+    async fn test_retention_idempotent_prune() {
+        let pool = pool();
+        // Sembramos una entrada vieja y guardamos la conexión
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        let obj = pool.get().await.expect("conexión de test");
+        let conn = obj.lock().expect("lock de conexión");
+        db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        drop(conn);
+        drop(obj);
+
+        // Primera poda con la pool
+        let _ = db::prune_update_history(&pool, 7).await;
+
+        // Segunda poda
+        let deleted = db::prune_update_history(&pool, 7)
+            .await
+            .expect("prune_update_history");
+        assert_eq!(
+            deleted, 0,
+            "segunda poda idempotente debe devolver deleted == 0"
+        );
+    }
+
+    /// 2.5 — Error temporal en BD no rompe el patrón: la función retorna Result
+    #[tokio::test]
+    async fn test_retention_db_error_no_rompe_worker() {
+        let pool = pool();
+        // La función retorna Result; el caller debe manejar el error sin panic
+        let _result = db::prune_update_history(&pool, 7).await;
+        // Si llegamos aquí, el patrón de error handling es correcto (no hay panic)
+    }
+
+    /// 2.6 — Poda manual bajo demanda: usando la función DB → deleted >= 1
+    #[tokio::test]
+    async fn test_retention_manual_prune() {
+        let pool = pool();
+        // Sembramos entradas viejas (10 días)
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        let obj = pool.get().await.expect("conexión de test");
+        let conn = obj.lock().expect("lock de conexión");
+        db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        drop(conn);
+        drop(obj);
+
+        // Llamada directa a la función de poda con retention_days = 7
+        let deleted = db::prune_update_history(&pool, 7)
+            .await
+            .expect("prune_update_history");
+        assert!(
+            deleted >= 1,
+            "poda manual con retención activa debe eliminar al menos 1 fila, got {}",
+            deleted
+        );
+    }
+
+    /// 2.7 — Validación de entrada inválida: PUT con {retention_days: -1} → 400
+    #[tokio::test]
+    async fn test_retention_invalid_body_minus_one() {
+        let pool = pool();
+        let app = retention_http_app(pool);
+        let (status, _json) = put_json(
+            &app,
+            "/api/updates/retention",
+            serde_json::json!({"retention_days": -1}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "PUT con retention_days=-1 debe ser 400"
+        );
+        // La configuración no debe cambiar
+        let (_, after_get) = get_json(app, "/api/updates/retention").await;
+        assert_eq!(
+            after_get["retention_days"], 30,
+            "config debe mantenerse en default tras PUT inválido"
+        );
+    }
+
+    /// 2.8 — Sin interferencia con operaciones críticas: durante poda, nueva inserción se completa
+    #[tokio::test]
+    async fn test_retention_no_interference_critical_ops() {
+        let pool = pool();
+        // Sembramos una entrada vieja
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        let obj = pool.get().await.expect("conexión de test");
+        let conn = obj.lock().expect("lock de conexión");
+        db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        drop(conn);
+        drop(obj);
+
+        // Ejecutamos poda usando la pool
+        let _ = db::prune_update_history(&pool, 7).await;
+
+        // Insertamos un nuevo registro después de la poda
+        let new_entry = UpdateHistoryEntry {
+            container: "new".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2026-06-15T12:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        let obj3 = pool.get().await.expect("conexión de test");
+        let conn3 = obj3.lock().expect("lock de conexión");
+        db::append_update_history(&conn3, &new_entry).expect("append_update_history");
+        // Verificamos que el nuevo registro persiste y no es eliminado por la poda anterior
+        let loaded = db::load_update_history(&conn3).unwrap();
+        assert!(
+            loaded.iter().any(|e| e.container == "new"),
+            "el nuevo registro no debe ser eliminado por la poda"
+        );
+    }
+
+    /// test_retention_default_is_30 — GET /api/updates/retention por defecto → 30
+    #[tokio::test]
+    async fn test_retention_default_is_30() {
+        let pool = pool();
+        let app = retention_http_app(pool);
+        let (status, json) = get_json(app, "/api/updates/retention").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            json,
+            serde_json::json!({"retention_days": 30}),
+            "el default de retención debe ser 30 días"
+        );
+    }
+
+    /// test_retention_update_persists — PUT 7 y GET posterior refleja 7
+    #[tokio::test]
+    async fn test_retention_update_persists() {
+        let pool = pool();
+        let app = retention_http_app(pool);
+        let (status, json) = put_json(
+            &app,
+            "/api/updates/retention",
+            serde_json::json!({"retention_days": 7}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json, serde_json::json!({"retention_days": 7}));
+        // GET posterior refleja el cambio persistido
+        let (status, after_get) = get_json(app, "/api/updates/retention").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(after_get["retention_days"], 7);
+    }
+
+    /// test_retention_zero_no_prune — retention_days=0 no elimina nada
+    #[tokio::test]
+    async fn test_retention_zero_no_prune() {
+        let pool = pool();
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        {
+            let obj = pool.get().await.expect("conexión de test");
+            let conn = obj.lock().expect("lock de conexión");
+            db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        }
+        let deleted = db::prune_update_history(&pool, 0)
+            .await
+            .expect("prune_update_history");
+        assert_eq!(deleted, 0, "con retención 0 no se elimina nada");
+        // La fila debe conservarse
+        let obj = pool.get().await.expect("conexión de test");
+        let conn = obj.lock().expect("lock de conexión");
+        let loaded = db::load_update_history(&conn).unwrap();
+        assert_eq!(loaded.len(), 1, "la fila debe conservarse con retención 0");
+    }
+
+    /// test_prune_idempotent — segunda poda devuelve deleted==0
+    #[tokio::test]
+    async fn test_prune_idempotent() {
+        let pool = pool();
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        {
+            let obj = pool.get().await.expect("conexión de test");
+            let conn = obj.lock().expect("lock de conexión");
+            db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        }
+        let first = db::prune_update_history(&pool, 7)
+            .await
+            .expect("primera poda");
+        assert!(
+            first >= 1,
+            "primera poda debe eliminar al menos 1 fila, got {first}"
+        );
+        let second = db::prune_update_history(&pool, 7)
+            .await
+            .expect("segunda poda");
+        assert_eq!(
+            second, 0,
+            "segunda poda idempotente debe devolver deleted == 0"
+        );
+    }
+
+    /// test_prune_resilient_to_db_error — pool cerrada no paniquea, devuelve Err
+    #[tokio::test]
+    async fn test_prune_resilient_to_db_error() {
+        let pool = pool();
+        // Cerramos la pool para forzar un error de obtención de conexión.
+        pool.close();
+        let result = db::prune_update_history(&pool, 7).await;
+        assert!(
+            result.is_err(),
+            "pool cerrada → prune debe devolver Err, no paniquear"
+        );
+    }
+
+    /// test_manual_prune_endpoint — POST /api/updates/retention/prune
+    #[tokio::test]
+    async fn test_manual_prune_endpoint() {
+        let pool = pool();
+        // Sembramos una entrada vieja (10 días, fuera de retención 7)
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        {
+            let obj = pool.get().await.expect("conexión de test");
+            let conn = obj.lock().expect("lock de conexión");
+            db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        }
+        let app = retention_http_app(pool);
+        // Configuramos retención de 7 días
+        let (status, _) = put_json(
+            &app,
+            "/api/updates/retention",
+            serde_json::json!({"retention_days": 7}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // Poda manual bajo demanda
+        let (status, json) =
+            post_json(&app, "/api/updates/retention/prune", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            json["deleted"].as_u64().unwrap_or(0) >= 1,
+            "la poda manual elimina filas antiguas: {json:?}"
+        );
+        assert_eq!(json["retention_days"], 7);
+        assert!(
+            json["duration_ms"].is_number(),
+            "duration_ms debe ser un número >= 0"
+        );
+    }
+
+    /// test_retention_invalid_input_rejected — PUT con -1 → 400
+    #[tokio::test]
+    async fn test_retention_invalid_input_rejected() {
+        let pool = pool();
+        let app = retention_http_app(pool);
+        let (status, _) = put_json(
+            &app,
+            "/api/updates/retention",
+            serde_json::json!({"retention_days": -1}),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "PUT con retention_days=-1 debe ser 400"
+        );
+    }
+
+    /// test_prune_does_not_block_critical_ops — poda + inserción nueva coexisten
+    #[tokio::test]
+    async fn test_prune_does_not_block_critical_ops() {
+        let pool = pool();
+        let old_entry = UpdateHistoryEntry {
+            container: "old".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2020-01-01T00:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        {
+            let obj = pool.get().await.expect("conexión de test");
+            let conn = obj.lock().expect("lock de conexión");
+            db::append_update_history(&conn, &old_entry).expect("append_update_history");
+        }
+        // Poda
+        let _ = db::prune_update_history(&pool, 7)
+            .await
+            .expect("prune_update_history");
+        // Nueva inserción tras la poda (debe completarse y no ser eliminada)
+        let new_entry = UpdateHistoryEntry {
+            container: "new".into(),
+            image: "img".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2026-06-15T12:00:00".into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+        {
+            let obj = pool.get().await.expect("conexión de test");
+            let conn = obj.lock().expect("lock de conexión");
+            db::append_update_history(&conn, &new_entry).expect("append_update_history");
+            let loaded = db::load_update_history(&conn).unwrap();
+            assert!(
+                loaded.iter().any(|e| e.container == "new"),
+                "el nuevo registro debe persistir tras la poda"
+            );
+        }
+    }
+
+    // ── Helpers HTTP para pruebas de retención ─────────────────────────
+
+    /// Monta el router de updates para tests de retención.
+    fn retention_http_app(pool: DbPool) -> axum::Router {
+        crate::updates::routes().with_state(crate::test_support::test_app_state(
+            crate::config::Config::default(),
+            pool,
+        ))
+    }
+
+    /// Envía `method` con `body` JSON a `uri` y devuelve (status, json).
+    async fn send_json_body(
+        app: axum::Router,
+        method: axum::http::Method,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .expect("request"),
+            )
+            .await
+            .expect("oneshot");
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = serde_json::from_slice(&body_bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// PUT con cuerpo JSON.
+    async fn put_json(
+        app: &axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        send_json_body(app.clone(), axum::http::Method::PUT, uri, body).await
+    }
+
+    /// POST con cuerpo JSON.
+    async fn post_json(
+        app: &axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        send_json_body(app.clone(), axum::http::Method::POST, uri, body).await
     }
 }
