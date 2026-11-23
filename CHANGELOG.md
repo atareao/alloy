@@ -1,10 +1,44 @@
 # Changelog
+## [0.30.0] - 2026-11-23
+
+### Bug Fixes
+
+- *(backend)* Resolver total e items de /api/history en una transacción (#208)
+- *(db)* Aplicar PRAGMAs por conexión y verificar WAL (#210)
+- *(pre-commit)* Añadir orden commit→archive al mensaje de error del hook (#212)
+- *(pre-commit)* Añadir orden commit→archive al mensaje de error del hook (#212)
+
+### Documentation
+
+- *(openspec)* Higiene de specs — Purpose real y RFC 2119
+- *(openspec)* Archivar change openspec-specs-hygiene
+- *(plan)* Archivar PLAN-030
+- *(pre-commit-hook)* Documentar la trampa commit → archive (#206)
+- *(openspec)* Archivar change db-connection-pragmas (#210)
+- *(openspec)* Completar Purpose de backend/db-connection (#210)
+- *(plans)* Actualizar PLAN-033 con el estado del PR #214 (#210)
+- *(openspec)* Archivar pre-commit-error-hint y planes completados (#212, #208, #210)
+- *(plans)* Archivar planes completados PLAN-001..006
+
+### Features
+
+- *(db)* Add PRAGMA busy_timeout=5000, foreign_keys=ON per connection + tests for issue #210
+
+### Miscellaneous Tasks
+
+- *(openspec)* Archivar change pre-commit-hook-sdd-trap
+- *(openspec)* Archivar change update-history-toctou
+
+### Other
+
+- Develop → main
 ## [0.29.1] - 2026-11-22
 
 ### Miscellaneous Tasks
 
 - Deja de trackear HANDOFF.md y lo añade a .gitignore
 - *(agents)* Deja claro que HANDOFF.md nunca se commitea
+- Release v0.29.1
 ## [0.29.0] - 2026-11-22
 
 ### Documentation
