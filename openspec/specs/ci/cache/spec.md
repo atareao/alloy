@@ -1,7 +1,7 @@
 # ci/cache Specification
 
 ## Purpose
-TBD - created by archiving change ci-cache. Update Purpose after archive.
+Esta capability define el cacheo de compilación en CI: `Swatinem/rust-cache@v2` para los jobs de test y build, y cache de capas en el build Docker de release. Reduce el tiempo de los pipelines manteniendo los workflows válidos.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # updates/update-health-guard Specification
 
 ## Purpose
-TBD - created by archiving change update-rollback-guard. Update Purpose after archive.
+Esta capability especifica la guarda de salud del rollback de updates: verificación de arranque durante una ventana estable, reintentos, rollback por digest exacto, verificación post-rollback, configuración global y por política, persistencia y notificación del resultado, y reconciliación de guards al arrancar.
 
 ## Requirements
 

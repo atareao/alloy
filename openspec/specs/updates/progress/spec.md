@@ -1,7 +1,7 @@
 # updates/progress Specification
 
 ## Purpose
-TBD - created by archiving change fix-update-progress-counters. Update Purpose after archive.
+This capability covers the correctness of update-progress reporting: the backend forwards real counters through `apply_single_policy`, the frontend logs SSE events, and `BatchProgress` handles the `checked=0` case.
 
 ## Requirements
 

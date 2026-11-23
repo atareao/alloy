@@ -1,13 +1,16 @@
 # sse Specification
 
 ## Purpose
-TBD - created by archiving change sse-nodelay-fix. Update Purpose after archive.
+Define el comportamiento de los endpoints SSE de Alloy (estado/progreso,
+notificaciones y logs), asegurando que los eventos se entregan sin retraso de
+agrupación del kernel mediante `TCP_NODELAY` por conexión y un heartbeat
+periódico que evita que los proxies acumulen frames.
 
 ## Requirements
 
 ### Requirement: El servidor SHALL aplicar TCP_NODELAY a cada conexión TCP aceptada
 
-El servidor HTTP DEBE deshabilitar el algoritmo de Nagle (`TCP_NODELAY = true`) en
+El servidor HTTP MUST deshabilitar el algoritmo de Nagle (`TCP_NODELAY = true`) en
 cada socket de conexión individual aceptado por el listener, no solo en el socket
 de escucha, para garantizar que los chunks de streaming (SSE) se envíen sin
 retraso de agrupación del kernel.
@@ -31,7 +34,7 @@ retraso de agrupación del kernel.
 
 ### Requirement: El código de arranque NO SHALL depender de nodelay en el socket de escucha
 
-El código NO DEBE asumir que `set_nodelay` en el socket de escucha (`TcpSocket`)
+El código de arranque MUST NOT asumir que `set_nodelay` en el socket de escucha (`TcpSocket`)
 se propaga a las conexiones aceptadas, ya que esto es falso en Linux/BSD.
 
 #### Scenario: Revisión de código
@@ -69,7 +72,7 @@ Cada endpoint SSE vigente (`GET /api/stream` para estado/progreso/notificaciones
 
 ### Requirement: El heartbeat SHALL implementarse fusionando streams
 
-La implementación DEBE usar `futures::stream::select` o
+La implementación MUST usar `futures::stream::select` o
 `stream::select_all` para fusionar el stream de eventos reales con un
 stream generado por `tokio::time::interval`. No debe usarse
 `Sse::keep_alive()` de axum porque esa función solo envía un comentario

@@ -1,7 +1,7 @@
 # frontend/lint Specification
 
 ## Purpose
-TBD - created by archiving change lint-set-state-in-effect. Update Purpose after archive.
+Esta capability asegura que `pnpm run lint` termine sin warnings y que la regla `react(set-state-in-effect)` no dispare falsos positivos en los componentes afectados, preservando el comportamiento al sincronizar desde props.
 
 ## Requirements
 

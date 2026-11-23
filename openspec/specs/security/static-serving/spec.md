@@ -1,7 +1,7 @@
 # security/static-serving Specification
 
 ## Purpose
-TBD - created by archiving change fix-static-path-traversal. Update Purpose after archive.
+Esta capability confina el servido de ficheros estáticos a `dist/`, evitando el path traversal: el handler solo sirve rutas que, una vez resueltas, permanecen dentro del directorio permitido.
 
 ## Requirements
 

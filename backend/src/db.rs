@@ -1,29 +1,159 @@
-use deadpool_sqlite::{Config as PoolConfig, Runtime};
+use deadpool::managed;
+use deadpool_sqlite::{Config as PoolConfig, Manager as SqliteManager, Runtime};
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, Result as SqlResult};
 use std::collections::HashMap;
 
 use crate::models::*;
 
-pub type DbPool = deadpool_sqlite::Pool;
+/// Pool de conexiones SQLite cuyas conexiones nacen con los PRAGMAs de sesión
+/// aplicados (`busy_timeout=5000`, `foreign_keys=ON`).
+///
+/// El segundo genérico de `Pool<M, W>` es por defecto `Object<M>`, así que no
+/// hace falta explicitarlo.
+pub type DbPool = managed::Pool<PragmaManager>;
+
+/// `Manager` que envuelve el de `deadpool_sqlite` y aplica `configure_connection`
+/// a cada conexión recién creada, antes de entregarla como válida.
+///
+/// Los PRAGMAs de SQLite son por conexión: `deadpool_sqlite::Config` solo aplica
+/// los de `init_db` a la conexión de inicialización, así que el resto de la pool
+/// nacería con los defaults (ver `configure_connection`).
+#[derive(Debug)]
+pub struct PragmaManager {
+    inner: SqliteManager,
+}
+
+impl PragmaManager {
+    /// Crea el manager a partir de la configuración y el runtime de SQLite.
+    #[must_use]
+    pub fn new(config: &PoolConfig, runtime: Runtime) -> Self {
+        Self {
+            inner: SqliteManager::from_config(config, runtime),
+        }
+    }
+}
+
+impl managed::Manager for PragmaManager {
+    type Type = <SqliteManager as managed::Manager>::Type;
+    type Error = rusqlite::Error;
+
+    async fn create(&self) -> Result<Self::Type, Self::Error> {
+        let conn = self.inner.create().await?;
+        // Si no se pueden aplicar los PRAGMAs, la conexión NO se entrega como
+        // válida (`Err` propaga y deadpool descarta la conexión).
+        let configured = conn
+            .interact(|c| configure_connection(c))
+            .await
+            .map_err(|e| pragma_failure(format!("no se pudieron aplicar los PRAGMAs: {e}")))?;
+        configured?;
+        Ok(conn)
+    }
+
+    async fn recycle(
+        &self,
+        conn: &mut Self::Type,
+        metrics: &managed::Metrics,
+    ) -> managed::RecycleResult<Self::Error> {
+        self.inner.recycle(conn, metrics).await?;
+        // Defensa en profundidad: reaplicar los PRAGMAs a la conexión reciclada,
+        // por si su uso previo los dejó en otro valor. Si falla, se devuelve un
+        // `RecycleError` y deadpool descarta la conexión (`try_recycle` → `None`).
+        let configured = conn
+            .interact(|c| configure_connection(c))
+            .await
+            .map_err(|e| {
+                managed::RecycleError::Backend(pragma_failure(format!(
+                    "no se pudieron reaplicar los PRAGMAs al reciclar: {e}"
+                )))
+            })?;
+        configured.map_err(managed::RecycleError::Backend)
+    }
+}
+
+/// Construye una `rusqlite::Error` para un fallo ocurrido fuera de la ejecución
+/// de SQL (p. ej. un `interact` cancelado o con el mutex envenenado). No es un
+/// error nativo de SQLite, pero permite mantener `type Error = rusqlite::Error`
+/// y que el mensaje llegue al log.
+fn pragma_failure(message: String) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+        Some(message),
+    )
+}
+
+/// Construye la pool de `DbPool` aplicando los PRAGMAs de sesión a cada conexión
+/// creada por el manager, y respetando la `PoolConfig` (p. ej. `max_size`) del
+/// `deadpool_sqlite::Config`.
+fn create_pragma_pool(config: PoolConfig, runtime: Runtime) -> Result<DbPool, managed::BuildError> {
+    let manager = PragmaManager::new(&config, runtime);
+    managed::Pool::builder(manager)
+        .config(config.get_pool_config())
+        .runtime(runtime)
+        .build()
+}
 
 /// Initialize database: create tables, set WAL mode, return async connection pool
 pub async fn init_db(path: &str) -> Result<DbPool, Box<dyn std::error::Error>> {
-    let pool = PoolConfig::new(path).create_pool(Runtime::Tokio1)?;
+    let pool = create_pragma_pool(PoolConfig::new(path), Runtime::Tokio1)?;
     let obj = pool.get().await?;
     let conn = obj.lock().unwrap();
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+
+    // `journal_mode` es persistente a nivel de base de datos: se solicita WAL y
+    // se lee el modo efectivo, porque un sistema de ficheros sin soporte WAL
+    // devuelve `delete` sin error. Se avisa (sin abortar) si no es `wal`.
+    let mode: String = conn.query_row("PRAGMA journal_mode=WAL;", [], |row| row.get(0))?;
+    if let Some(warning) = journal_mode_warning(&mode) {
+        tracing::warn!("{warning}");
+    }
 
     apply_schema(&conn)?;
 
     Ok(pool)
 }
 
+/// Aplica a `conn` los PRAGMAs de sesión que toda conexión de la pool debe
+/// tener: `busy_timeout = 5000` ms y `foreign_keys = ON`.
+///
+/// Los PRAGMAs en SQLite son por conexión, no por base de datos: sin esto, cada
+/// conexión que `deadpool_sqlite` abre nace con los defaults de la crate
+/// (`busy_timeout = 0`, `foreign_keys = OFF`) y una colisión de escritores
+/// devuelve `SQLITE_BUSY` inmediato.
+///
+/// # Errors
+///
+/// Propaga el error de SQLite si el `execute_batch` falla.
+pub fn configure_connection(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;")
+}
+
+/// Devuelve `Some(aviso)` si el modo journal efectivo tras solicitar
+/// `PRAGMA journal_mode=WAL` no es `wal`, o `None` si WAL quedó activo.
+///
+/// El aviso es informativo y accionable (qué modo quedó activo y qué implica);
+/// nunca aborta el arranque.
+#[must_use]
+pub fn journal_mode_warning(mode: &str) -> Option<String> {
+    if mode.eq_ignore_ascii_case("wal") {
+        return None;
+    }
+    Some(format!(
+        "modo journal efectivo '{mode}' (no 'wal'): WAL no está disponible, \
+         ¿sistema de ficheros sin soporte? En modo rollback los lectores retienen \
+         SHARED y la contención de escritores crece; busy_timeout=5000 evita el \
+         SQLITE_BUSY inmediato, pero el rendimiento puede degradarse bajo carga. \
+         El arranque continúa."
+    ))
+}
+
 /// Esquema de la base de datos (tablas) + migraciones idempotentes.
 ///
 /// Compartido por `init_db()` (producción) y `test_pool()` (tests) para que el esquema de
 /// test no pueda divergir del real (p. ej. columnas añadidas por migraciones).
-fn apply_schema(conn: &Connection) -> SqlResult<()> {
+///
+/// `pub(crate)` para que los tests de otros módulos (p. ej. el helper de
+/// histórico del scheduler) puedan crear una DB de fichero con el esquema real.
+pub(crate) fn apply_schema(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS containers (
@@ -126,10 +256,8 @@ fn apply_schema(conn: &Connection) -> SqlResult<()> {
 /// esquema real (`apply_schema`), de modo que el esquema de test no pueda divergir
 /// del de producción. La conexión en memoria vive mientras la pool la retenga.
 #[cfg(test)]
-fn pool_with_schema(builder: PoolConfig) -> DbPool {
-    let pool = builder
-        .create_pool(Runtime::Tokio1)
-        .expect("Failed to create test pool");
+fn pool_with_schema(config: PoolConfig) -> DbPool {
+    let pool = create_pragma_pool(config, Runtime::Tokio1).expect("Failed to create test pool");
     // `apply_schema` es síncrono; se ejecuta en su propio hilo con runtime para no
     // exigir un contexto Tokio al llamante.
     let conn = std::thread::spawn({
@@ -545,7 +673,10 @@ fn escape_like(value: &str) -> String {
 /// `total` es el recuento **tras** filtrar y **sin** límite superior: no aplica
 /// el antiguo recorte de 100 filas. El filtro `q` es case-insensitive solo en
 /// ASCII (ver [`update_history_filter`]).
-pub fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> SqlResult<usize> {
+///
+/// Uso interno: la lectura pública coherente es
+/// [`load_update_history_page_with_total`].
+fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> SqlResult<usize> {
     let (where_clause, values) = update_history_filter(params);
     let sql = format!("SELECT COUNT(*) FROM update_history{where_clause}");
     let count: i64 = conn.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
@@ -557,7 +688,10 @@ pub fn count_update_history(conn: &Connection, params: &UpdateHistoryParams) -> 
 /// Orden determinista `timestamp DESC, id DESC` (desempata por inserción) y
 /// ventana `LIMIT`/`OFFSET` derivada de `params.page`/`params.page_size`. El
 /// filtro `q` es case-insensitive solo en ASCII (ver [`update_history_filter`]).
-pub fn load_update_history_page(
+///
+/// Uso interno: la lectura pública coherente es
+/// [`load_update_history_page_with_total`].
+fn load_update_history_page(
     conn: &Connection,
     params: &UpdateHistoryParams,
 ) -> SqlResult<Vec<UpdateHistoryEntry>> {
@@ -592,6 +726,25 @@ pub fn load_update_history_page(
         result.push(r?);
     }
     Ok(result)
+}
+
+/// Recuento y página resueltos en una única transacción de lectura.
+///
+/// El `BEGIN DEFERRED` fija la instantánea en la primera lectura, de modo que un
+/// `append_update_history` concurrente no puede situarse entre el recuento y la
+/// ventana: `total` e `items` describen siempre el mismo conjunto de filas. En
+/// WAL la transacción de lectura no bloquea a los escritores.
+pub fn load_update_history_page_with_total(
+    conn: &mut Connection,
+    params: &UpdateHistoryParams,
+) -> SqlResult<(usize, Vec<UpdateHistoryEntry>)> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+    // `Transaction` implementa `Deref<Target = Connection>`, así que `&tx`
+    // coerciona a `&Connection` en ambas consultas: comparten la transacción.
+    let total = count_update_history(&tx, params)?;
+    let items = load_update_history_page(&tx, params)?;
+    tx.commit()?;
+    Ok((total, items))
 }
 
 // ── Update Policies ─────────────────────────────────────────
@@ -1982,6 +2135,316 @@ mod tests {
             seen_unique.len(),
             total,
             "cada entrada aparece exactamente una vez"
+        );
+    }
+
+    // ── update-history-toctou: recuento y página en una lectura coherente ──
+
+    fn hist_entry(container: &str, timestamp: &str) -> UpdateHistoryEntry {
+        UpdateHistoryEntry {
+            container: container.into(),
+            image: "img:latest".into(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: timestamp.into(),
+            status: "success".into(),
+            duration_ms: 0,
+            attempts: 0,
+        }
+    }
+
+    fn hist_params(page: u32, page_size: u32) -> UpdateHistoryParams {
+        UpdateHistoryParams {
+            page,
+            page_size,
+            ..Default::default()
+        }
+    }
+
+    /// Página llena: `total` e `items` describen la misma instantánea.
+    #[test]
+    fn test_page_with_total_consistent_for_full_page() {
+        let mut conn = test_conn();
+        for i in 0..25 {
+            append_update_history(
+                &conn,
+                &hist_entry(&format!("c{i:02}"), &format!("2024-01-01T00:00:{i:02}")),
+            )
+            .unwrap();
+        }
+
+        let (total, items) =
+            load_update_history_page_with_total(&mut conn, &hist_params(1, 50)).unwrap();
+        assert_eq!(total, 25, "total debe contar todas las filas");
+        assert_eq!(
+            items.len(),
+            25,
+            "la única página debe traer todas las filas"
+        );
+        assert_eq!(total, items.len(), "total e items deben coincidir");
+    }
+
+    /// `offset` más allá del final: página vacía pero `total` intacto.
+    #[test]
+    fn test_page_with_total_beyond_end_keeps_total() {
+        let mut conn = test_conn();
+        for i in 0..25 {
+            append_update_history(
+                &conn,
+                &hist_entry(&format!("c{i:02}"), &format!("2024-01-01T00:00:{i:02}")),
+            )
+            .unwrap();
+        }
+
+        let (total, items) =
+            load_update_history_page_with_total(&mut conn, &hist_params(99, 20)).unwrap();
+        assert!(items.is_empty(), "una página más allá del final está vacía");
+        assert_eq!(total, 25, "el total no depende de la página pedida");
+    }
+
+    /// Appends concurrentes: cada lectura debe ser una instantánea coherente.
+    ///
+    /// DB en fichero temporal (no `:memory:`, donde cada conexión abre una base
+    /// distinta) con pool de 2 conexiones. Un hilo escribe mientras el test lee
+    /// páginas con `page_size` >= total; con dos sentencias sueltas el recuento
+    /// y la ventana pueden caer a distinto lado de un commit (TOCTOU).
+    #[tokio::test]
+    async fn test_page_with_total_is_snapshot_under_concurrent_appends() {
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path: PathBuf = dir.path().join("hist.db");
+
+        let pool = pool_with_schema(PoolConfig {
+            path: path.clone(),
+            pool: Some(deadpool_sqlite::PoolConfig::new(2)),
+        });
+
+        // Semilla y modo WAL antes de arrancar el writer, para que ninguna
+        // conexión de la pool quede en journal por defecto.
+        {
+            let obj = pool.get().await.unwrap();
+            let conn = obj.lock().unwrap();
+            conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+            append_update_history(&conn, &hist_entry("seed", "2024-01-01T00:00:00")).unwrap();
+        }
+
+        let writer_done = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = std::thread::spawn({
+            let path = path.clone();
+            let writer_done = std::sync::Arc::clone(&writer_done);
+            move || {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+                for i in 0..40 {
+                    append_update_history(
+                        &conn,
+                        &hist_entry(&format!("w{i}"), &format!("2024-01-01T01:00:{:02}", i % 60)),
+                    )
+                    .unwrap();
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                writer_done.store(true, Ordering::Release);
+            }
+        });
+
+        // Se lee durante toda la vida del writer y al menos 400 veces más.
+        let mut iterations: usize = 0;
+        while !writer_done.load(Ordering::Acquire) || iterations < 400 {
+            {
+                let obj = pool.get().await.unwrap();
+                let mut conn = obj.lock().unwrap();
+                let (total, items) =
+                    load_update_history_page_with_total(&mut conn, &hist_params(1, 50)).unwrap();
+                assert!(
+                    items.len() <= 50,
+                    "la página no puede exceder page_size: {}",
+                    items.len()
+                );
+                // Se comprueba en cada iteración (no se acumula para el final):
+                // la igualdad estricta solo es exigible en la última página, que
+                // es la única con menos filas que `page_size`. Así, si el writer
+                // creciera por encima de 50 el test no se relajaría en silencio.
+                if items.len() < 50 {
+                    assert_eq!(
+                        total,
+                        items.len(),
+                        "total e items deben describir la misma instantánea"
+                    );
+                }
+            }
+            iterations += 1;
+            // Tope de seguridad: evita colgarse si el writer muere sin marcar
+            // `writer_done` (p. ej. panic dentro del hilo).
+            if iterations >= 20_000 {
+                break;
+            }
+        }
+
+        writer
+            .join()
+            .expect("el hilo writer no debe entrar en panic");
+    }
+
+    // Guarda de regresión (no es un RED válido en este build): en `rusqlite` 0.38
+    // `Connection::open` fija `busy_timeout = 5000` por defecto
+    // (`inner_connection.rs:118`) y `libsqlite3-sys` se compila con
+    // `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, de modo que ambas conexiones ya devuelven
+    // 5000 y 1 sin código propio.
+    //
+    // Limitación conocida del wiring de `create`: como los defaults ya valen
+    // 5000/1, este test NO falla si se elimina el `interact(configure_connection)`
+    // de `PragmaManager::create`. La lógica de `configure_connection` la cubre
+    // `test_configure_connection_applies_pragmas`, y el wiring de `recycle` lo
+    // cubre `test_pool_recycle_reapplies_pragmas` (que "ensucia" los PRAGMAs
+    // antes de reciclar). Se conserva como guarda de regresión de los defaults.
+    #[tokio::test]
+    async fn test_pool_two_connections() {
+        let pool = test_pool_with_max_size(2);
+        let obj1 = pool.get().await.unwrap();
+        let conn1 = obj1.lock().unwrap();
+        let bt: i64 = conn1
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        let fk: i64 = conn1
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bt, 5000);
+        assert_eq!(fk, 1);
+
+        let obj2 = pool.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let bt2: i64 = conn2
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        let fk2: i64 = conn2
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bt2, 5000);
+        assert_eq!(fk2, 1);
+    }
+
+    // No es un RED válido por la misma razón que `test_pool_two_connections`:
+    // `busy_timeout=5000` lo aporta el default de `rusqlite` 0.38 al abrir la
+    // conexión. Se conserva como guarda de regresión del default.
+    #[tokio::test]
+    async fn test_pool_recycle() {
+        let pool = test_pool_with_max_size(1);
+        {
+            let obj = pool.get().await.unwrap();
+            let _conn = obj.lock().unwrap();
+        }
+        pool.close();
+
+        let pool2 = test_pool_with_max_size(1);
+        let obj2 = pool2.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let bt: i64 = conn2
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bt, 5000);
+    }
+
+    /// RED válido de la reaplicación en `recycle`: a diferencia de
+    /// `test_pool_recycle`, "ensucia" los PRAGMAs de la conexión antes de
+    /// devolverla a la pool, de modo que falla si se elimina el
+    /// `interact(configure_connection)` de `PragmaManager::recycle`. Con
+    /// `max_size = 1`, la segunda toma reutiliza la misma conexión y pasa por
+    /// `recycle` (deadpool: `try_recycle`).
+    #[tokio::test]
+    async fn test_pool_recycle_reapplies_pragmas() {
+        let pool = test_pool_with_max_size(1);
+        {
+            let obj = pool.get().await.unwrap();
+            let conn = obj.lock().unwrap();
+            conn.execute_batch("PRAGMA busy_timeout=0; PRAGMA foreign_keys=OFF;")
+                .unwrap();
+        }
+
+        let obj2 = pool.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let bt: i64 = conn2
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        let fk: i64 = conn2
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bt, 5000, "recycle debe reaplicar busy_timeout=5000");
+        assert_eq!(fk, 1, "recycle debe reaplicar foreign_keys=ON");
+    }
+
+    // No es un RED válido: `init_db` ya aplica `PRAGMA journal_mode=WAL` sobre la
+    // conexión de inicialización desde antes de #210, así que pasa sin la
+    // verificación y el aviso que añade esta feature. Se conserva como guarda de
+    // regresión de la idempotencia de `init_db`.
+    #[tokio::test]
+    async fn test_init_db_tempdir_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+
+        let pool = init_db(path.to_str().unwrap()).await.unwrap();
+        let obj = pool.get().await.unwrap();
+        let conn = obj.lock().unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode;", [], |r| r.get(0))
+            .unwrap();
+        assert!(mode == "wal");
+
+        let pool2 = init_db(path.to_str().unwrap()).await.unwrap();
+        let obj2 = pool2.get().await.unwrap();
+        let conn2 = obj2.lock().unwrap();
+        let mode2: String = conn2
+            .query_row("PRAGMA journal_mode;", [], |r| r.get(0))
+            .unwrap();
+        assert!(mode2 == "wal");
+    }
+
+    /// RED (#210): `configure_connection` debe restaurar los PRAGMAs de sesión
+    /// aunque la conexión los tenga forzados a 0/OFF. El stub no-op de la fase
+    /// RED hace fallar este test (esperado 5000/1, obtenido 0/0).
+    #[test]
+    fn test_configure_connection_applies_pragmas() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Neutraliza los defaults de la crate para que el assert dependa
+        // exclusivamente de `configure_connection`.
+        conn.execute_batch("PRAGMA busy_timeout=0; PRAGMA foreign_keys=OFF;")
+            .unwrap();
+
+        configure_connection(&conn).unwrap();
+
+        let bt: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+            .unwrap();
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            bt, 5000,
+            "configure_connection debe fijar busy_timeout=5000"
+        );
+        assert_eq!(fk, 1, "configure_connection debe fijar foreign_keys=ON");
+    }
+
+    /// RED (#210): un modo journal degradado (p. ej. `delete` en un FS sin
+    /// soporte WAL) debe producir un aviso accionable. El stub devuelve `None`.
+    #[test]
+    fn test_journal_mode_warning_for_delete() {
+        let warning = journal_mode_warning("delete");
+        let msg = warning.expect("un modo distinto de 'wal' debe producir un aviso");
+        assert!(
+            msg.contains("delete"),
+            "el aviso debe indicar el modo activo; se obtuvo: {msg}"
+        );
+    }
+
+    /// RED (#210): WAL activo no debe producir ningún aviso de degradación.
+    #[test]
+    fn test_journal_mode_warning_for_wal_is_none() {
+        assert!(
+            journal_mode_warning("wal").is_none(),
+            "con WAL activo no debe registrarse ningún aviso"
         );
     }
 }

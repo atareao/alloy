@@ -1029,7 +1029,7 @@ async fn sqlite_append_update(
     match db_pool.get().await {
         Ok(obj) => match obj.lock() {
             Ok(conn) => {
-                let _ = db::append_update_history(&conn, &entry);
+                append_history_best_effort(&conn, &entry);
             }
             Err(e) => tracing::error!(
                 "update_check: mutex de DB envenenado al anexar historial de '{}': {}",
@@ -1042,6 +1042,21 @@ async fn sqlite_append_update(
             name,
             e
         ),
+    }
+}
+
+/// Persiste `entry` en el histórico en modo best-effort: si
+/// `db::append_update_history` falla, registra el error con nivel `error`
+/// incluyendo el contenedor y la imagen. No propaga el fallo —la operación
+/// principal del scheduler debe continuar— pero tampoco lo descarta en silencio.
+fn append_history_best_effort(conn: &rusqlite::Connection, entry: &UpdateHistoryEntry) {
+    if let Err(e) = db::append_update_history(conn, entry) {
+        tracing::error!(
+            "update_check: fallo al anexar historial de '{}' (imagen '{}'): {}",
+            entry.container,
+            entry.image,
+            e
+        );
     }
 }
 
@@ -1587,6 +1602,89 @@ mod tests {
         assert!(
             !src.contains(lock_unwrap),
             "scheduler.rs no debe paniquear sobre el mutex de conexión"
+        );
+    }
+
+    /// RED (#210): un append de histórico fallido en el camino best-effort no
+    /// debe silenciarse. El helper debe registrar un `tracing::error!` que
+    /// incluya el contenedor y la imagen afectados (y no propagar el fallo).
+    #[test]
+    fn test_append_history_best_effort_logs_error() {
+        use rusqlite::{Connection, OpenFlags};
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        /// `MakeWriter` que acumula el log formateado en memoria para poder
+        /// afirmar sobre él sin tocar la salida estándar.
+        #[derive(Clone, Default)]
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .expect("buffer de log no envenenado")
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> tracing_subscriber::fmt::writer::MakeWriter<'a> for BufWriter {
+            type Writer = BufWriter;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        // DB temporal con el esquema real, cerrada y reabierta en solo lectura:
+        // cualquier INSERT devuelve `SQLITE_READONLY`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("history.db");
+        {
+            let conn = Connection::open(&path).expect("abrir DB temporal");
+            db::apply_schema(&conn).expect("aplicar esquema");
+        }
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("reabrir en solo lectura");
+
+        let entry = UpdateHistoryEntry {
+            container: "app".to_string(),
+            image: "nginx:latest".to_string(),
+            old_digest: String::new(),
+            new_digest: String::new(),
+            timestamp: "2024-01-01T00:00:00".to_string(),
+            status: "updated".to_string(),
+            duration_ms: 0,
+            attempts: 0,
+        };
+
+        let buf = BufWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buf.clone())
+            .with_max_level(tracing::Level::ERROR)
+            .finish();
+
+        // El helper loguea el fallo y no propaga `Result` (best-effort).
+        tracing::subscriber::with_default(subscriber, || append_history_best_effort(&conn, &entry));
+
+        let logged =
+            String::from_utf8(buf.0.lock().expect("buffer de log").clone()).expect("log en UTF-8");
+        assert!(
+            logged.contains("app"),
+            "el log debe incluir el contenedor afectado; se obtuvo: {logged:?}"
+        );
+        assert!(
+            logged.contains("nginx:latest"),
+            "el log debe incluir la imagen afectada; se obtuvo: {logged:?}"
+        );
+        assert!(
+            logged.to_lowercase().contains("fallo"),
+            "el log debe indicar el fallo del append; se obtuvo: {logged:?}"
         );
     }
 }

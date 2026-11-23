@@ -1,7 +1,7 @@
 # frontend/deps-dedupe Specification
 
 ## Purpose
-TBD - created by archiving change dedupe-antd-cssinjs. Update Purpose after archive.
+Esta capability garantiza que el lockfile resuelva una única versión de `@ant-design/cssinjs`, compatible con los rangos declarados, con una comprobación reproducible y el build y los tests en verde.
 
 ## Requirements
 

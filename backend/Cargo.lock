@@ -23,6 +23,7 @@ dependencies = [
  "chrono-tz",
  "cookie",
  "cron",
+ "deadpool",
  "deadpool-sqlite",
  "futures",
  "jsonwebtoken",
